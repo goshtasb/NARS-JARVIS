@@ -17,12 +17,13 @@ import select
 import shutil
 import subprocess
 import sys
+import uuid
 
 from brain import Brain
 from execution import DecisionStats, build_air_gapped_executor, decide
 from jarvis import Jarvis
 from language import IngestionGate, Translator
-from memory import MemoryStore, SqliteGroundingStore
+from memory import MemoryStore, MetricsStore, SqliteGroundingStore
 from sentinel import SurpriseDetector, SystemSentinel
 from sentinel.narrate import Narrator
 
@@ -30,7 +31,7 @@ PROMPT = "jarvis> "
 _STRONG = DecisionStats(0.95, 0.97, 30, 12)  # a REPL `act` is an explicit, high-confidence request
 BANNER = (
     "NARS-JARVIS console — single-thread sentinel + REPL.\n"
-    "  learn <english>   tell <narsese.>   ask <narsese?>   act <op> <arg>   status   help   quit\n"
+    "  learn <english>   tell <narsese.>   ask <narsese?>   act <op> <arg>   status   health   help   quit\n"
     "  (the sentinel polls CPU/mem every tick and alerts on surprises)\n"
 )
 HELP = (
@@ -41,6 +42,7 @@ HELP = (
     "  act   <op> <arg>   propose an action; Suggestion-Only ones prompt [y/n]\n"
     "                     e.g.  act run_saved_command disk_usage   |   act open_app slack\n"
     "  status             last CPU/mem poll + memory counts\n"
+    "  health             ingestion rejection-rate decay + failure taxonomy (local only)\n"
     "  help | quit\n"
 )
 
@@ -100,8 +102,11 @@ class Console:
         # Persistent grounding lives in the SAME db file (atoms/aliases tables) so "ducks"->"duck"
         # survives a restart. Requires the embedder; without it, grounding is off.
         grounding = SqliteGroundingStore(db_path) if embedder is not None else None
+        # Local, privacy-absolute ingestion telemetry (outcome categories only, never text).
+        self._metrics = MetricsStore(db_path, session_id=uuid.uuid4().hex[:8])
         self._jarvis = Jarvis(Translator(_make_claim_source(), embedder=embedder, cache=grounding),
-                              self._store, self._brain, executor=self._executor, gate=gate)
+                              self._store, self._brain, executor=self._executor, gate=gate,
+                              metrics=self._metrics)
         narrator = Narrator(_NoNarrationLLM(), on_alert=self._on_alert)
         self._detector = SurpriseDetector(self._brain, threshold=0.5, on_surprise=narrator.narrate)
         self._sentinel = SystemSentinel(sink=self._detector.observe, poll_interval=poll_interval)
@@ -215,7 +220,7 @@ class Console:
         handler = {
             "help": lambda: self._out(HELP), "?": lambda: self._out(HELP),
             "quit": self._do_quit, "exit": self._do_quit,
-            "status": self._do_status,
+            "status": self._do_status, "health": self._do_health,
             "learn": lambda: self._do_learn(rest), "tell": lambda: self._do_tell(rest),
             "ask": lambda: self._do_ask(rest), "act": lambda: self._do_act(rest),
         }.get(cmd)
@@ -229,6 +234,30 @@ class Console:
 
     def _do_status(self) -> None:
         self._out(f"last poll: {self._last} | L2 facts: {self._store.count()}")
+
+    def _do_health(self) -> None:
+        s = self._metrics.summary()
+        if s["total"] == 0:
+            return self._out("no ingestion telemetry yet — teach me something with `learn`.")
+        glob = (s["global_rate"] or 0.0) * 100
+        out = [f"ingestion health — {s['total']} attempts ({s['session_total']} this session)"]
+        sr, pr = s["session_rate"], s["prior_rate"]
+        if sr is None:
+            out.append(f"  rejection rate: {glob:.0f}% all-time (nothing learned this session yet)")
+        elif pr is None:
+            out.append(f"  rejection rate: {sr * 100:.0f}% this session (first session — no history to compare)")
+        else:
+            srp, prp = sr * 100, pr * 100
+            trend = ("trending healthy ↓ (learning the dialect)" if srp < prp - 1 else
+                     "friction rising ↑ (scope may be too narrow)" if srp > prp + 1 else "steady →")
+            small = "  [n small — not yet significant]" if s["session_total"] < 5 else ""
+            out.append(f"  rejection rate: {srp:.0f}% this session vs {prp:.0f}% prior -> {trend}{small}")
+        fails = {k: v for k, v in s["taxonomy"].items() if k != "COMMIT_CLEAN" and k != "ESCALATE_ACCEPTED"}
+        if fails:
+            label = {"REJECT_STRUCTURAL": "structural", "REJECT_FUSED": "fused",
+                     "REJECT_SEMANTIC": "semantic", "ESCALATE_DECLINED": "esc-declined"}
+            out.append("  failures: " + " · ".join(f"{label.get(k, k)} {v}" for k, v in sorted(fails.items())))
+        self._out("\n".join(out))
 
     def _do_learn(self, text: str) -> None:
         if not text:

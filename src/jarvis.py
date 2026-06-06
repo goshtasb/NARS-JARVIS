@@ -15,6 +15,7 @@ from execution import DecisionStats, Executor, decide
 from language import Decision, IngestionGate, Translator, back_render, to_narsese
 from memory import (
     MemoryStore,
+    MetricsStore,
     is_valid_belief,
     observe,
     reload_into_brain,
@@ -41,17 +42,26 @@ RejectPresenter = Callable[[list[GateItem]], None]      # Phase 1: show what bou
 EscalationConfirm = Callable[[GateItem], bool]          # Phase 2: ask the human [y/n]
 
 
+def _reject_outcome(res) -> tuple[str | None, str]:
+    """Map a gate REJECT to a privacy-safe telemetry (layer, outcome) — no text."""
+    if res.layer == "L0":
+        return ("L0", "REJECT_FUSED" if "fused" in res.reason else "REJECT_STRUCTURAL")
+    return ("L1", "REJECT_SEMANTIC")
+
+
 class Jarvis:
     def __init__(self, translator: Translator, store: MemoryStore, brain: Brain,
                  guard: ContradictionGuard | None = None,
                  executor: Executor | None = None,
-                 gate: IngestionGate | None = None) -> None:
+                 gate: IngestionGate | None = None,
+                 metrics: MetricsStore | None = None) -> None:
         self._translator = translator
         self._store = store
         self._brain = brain
         self._guard = guard
         self._executor = executor  # None => orchestrator stays learn/ask only (no execution path)
         self._gate = gate          # None => ungated learn (no semantic gate; e.g. no embedder)
+        self._metrics = metrics    # None => no telemetry; gate-friction outcomes only, never text
 
     def learn(self, sentence: str, *, on_rejects: RejectPresenter | None = None,
               confirm_escalation: EscalationConfirm | None = None) -> list[str]:
@@ -74,14 +84,17 @@ class Jarvis:
         commit_q: list[object] = []
         reject_q: list[GateItem] = []
         escalate_q: list[tuple[object, GateItem]] = []
+        metric_rows: list[tuple[str | None, str]] = []        # (layer, outcome) — never any text
         for claim in claims:  # evaluate ALL before any commit/output (batch)
             res = self._gate.evaluate(claim, sentence)
             item = GateItem(res.back_render or back_render(claim), res.reason, res.cosine,
                             to_narsese(claim))
             if res.decision is Decision.COMMIT:
                 commit_q.append(claim)
+                metric_rows.append((res.layer, "COMMIT_CLEAN"))
             elif res.decision is Decision.REJECT:
                 reject_q.append(item)
+                metric_rows.append(_reject_outcome(res))
             else:  # ESCALATE
                 escalate_q.append((claim, item))
         if reject_q and on_rejects is not None:               # Phase 1
@@ -89,6 +102,9 @@ class Jarvis:
         for claim, item in escalate_q:                        # Phase 2
             if confirm_escalation is not None and confirm_escalation(item):
                 commit_q.append(claim)
+                metric_rows.append(("L1", "ESCALATE_ACCEPTED"))
+            else:
+                metric_rows.append(("L1", "ESCALATE_DECLINED"))
         committed: list[str] = []                             # Phase 3
         output: list[str] = []
         for claim in commit_q:
@@ -96,6 +112,8 @@ class Jarvis:
             if s is not None:
                 committed.append(s)
         observe(self._store, output)
+        if self._metrics is not None:
+            self._metrics.record_batch(metric_rows)           # fire-and-forget telemetry
         return committed
 
     def _learn_ungated(self, sentence: str) -> list[str]:
