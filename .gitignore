@@ -1,0 +1,12 @@
+# Vendored upstream clones — re-clone from their own repos; not this project's source.
+/OpenNARS-for-Applications/
+/NARS-GPT/
+/OmniGlass/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Local runtime artifacts
+*.db
+*.log

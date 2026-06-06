@@ -1,0 +1,15 @@
+# GBNF grammar — physically constrains the local LLM's output to a JSON array of
+# NARS-JARVIS claims. Loaded by language/llm.py via llama.cpp so a quantized local model
+# CANNOT emit invalid-schema output (PRD: "deterministic engineering, not prompt-and-pray").
+
+root        ::= ws "[" ws ( claim ( ws "," ws claim )* )? ws "]" ws
+claim       ::= relation | negrelation | property | negproperty
+
+relation    ::= "{" ws "\"type\"" ws ":" ws "\"RelationClaim\"" ws "," ws "\"subject\"" ws ":" ws string ws "," ws "\"verb\"" ws ":" ws string ws "," ws "\"object\"" ws ":" ws string ws "}"
+negrelation ::= "{" ws "\"type\"" ws ":" ws "\"NegatedRelationClaim\"" ws "," ws "\"subject\"" ws ":" ws string ws "," ws "\"verb\"" ws ":" ws string ws "," ws "\"object\"" ws ":" ws string ws "}"
+property    ::= "{" ws "\"type\"" ws ":" ws "\"PropertyClaim\"" ws "," ws "\"subject\"" ws ":" ws string ws "," ws "\"value\"" ws ":" ws string ws "}"
+negproperty ::= "{" ws "\"type\"" ws ":" ws "\"NegatedPropertyClaim\"" ws "," ws "\"subject\"" ws ":" ws string ws "," ws "\"value\"" ws ":" ws string ws "}"
+
+string      ::= "\"" char* "\""
+char        ::= [a-zA-Z0-9_] | " " | "-"
+ws          ::= [ \t\n]*
