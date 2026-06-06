@@ -6,7 +6,7 @@ Composes domains via their public interfaces only (ADR-001). Imperative Shell (S
 """
 from __future__ import annotations
 
-from brain import Brain, input_accepted
+from brain import Brain, canonical_input, input_accepted
 from contradiction import ContradictionGuard
 from execution import DecisionStats, Executor, decide
 from language import Translator
@@ -74,8 +74,16 @@ class Jarvis:
         output = self._brain.add_belief(statement)  # feed L1 FIRST
         if not input_accepted(output):
             raise InvalidNarseseError(f"ONA rejected the statement on parse; not committed: {statement!r}")
-        term = statement_term(statement)
-        self._store.upsert(term, *statement_truth(statement), english="")  # commit L2 only after L1 OK
+        # Store ONA's NORMALIZED form (from the 'Input:' echo), not the raw typed string, so the L2
+        # system of record is a pristine reflection of L1 (e.g. '< A --> B > .' -> '<A --> B>').
+        echo = canonical_input(output)
+        if echo is not None and echo.term:
+            term = echo.term
+            freq, conf = (echo.truth.frequency, echo.truth.confidence) if echo.truth \
+                else statement_truth(statement)
+        else:  # defensive fallback (input_accepted was True, so this is unexpected)
+            term, (freq, conf) = statement_term(statement), statement_truth(statement)
+        self._store.upsert(term, freq, conf, english="")  # commit L2 only after L1 OK, canonical
         observe(self._store, output)  # persist any truths ONA revised/derived this step
         return True
 

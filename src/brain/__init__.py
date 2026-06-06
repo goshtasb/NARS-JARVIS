@@ -6,6 +6,7 @@ from .ona import Brain
 from .parse import (
     Answer,
     Truth,
+    canonical_input,
     input_accepted,
     parse_answer,
     parse_line,
@@ -13,5 +14,5 @@ from .parse import (
     parse_truth,
 )
 
-__all__ = ["Brain", "Answer", "Truth", "input_accepted", "parse_answer", "parse_line",
-           "parse_stamp", "parse_truth"]
+__all__ = ["Brain", "Answer", "Truth", "canonical_input", "input_accepted", "parse_answer",
+           "parse_line", "parse_stamp", "parse_truth"]

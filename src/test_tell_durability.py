@@ -42,6 +42,21 @@ def test_tell_persists_across_restart() -> None:
         os.path.exists(db) and os.remove(db)
 
 
+def test_tell_stores_onas_canonical_normalized_form() -> None:
+    fd, db = tempfile.mkstemp(suffix=".db"); os.close(fd)
+    try:
+        with Brain(cycles_per_step=20) as brain:
+            store = MemoryStore(db)
+            jarvis = Jarvis(Translator(_NoLLM()), store, brain)
+            assert jarvis.tell("< A  -->  B > .") is True  # erratic-but-valid spacing
+            # L2 must hold ONA's NORMALIZED term, never the raw typed string.
+            assert store.get("<A --> B>") is not None, "canonical term not stored"
+            assert store.get("< A  -->  B > .") is None, "raw un-normalized string leaked into L2"
+            assert store.get("< A  -->  B >") is None
+    finally:
+        os.path.exists(db) and os.remove(db)
+
+
 def test_malformed_tell_never_touches_l2() -> None:
     fd, db = tempfile.mkstemp(suffix=".db"); os.close(fd)
     try:
@@ -62,5 +77,6 @@ def test_malformed_tell_never_touches_l2() -> None:
 if __name__ == "__main__":
     test_validator_accepts_well_formed_and_rejects_garbage()
     test_tell_persists_across_restart()
+    test_tell_stores_onas_canonical_normalized_form()
     test_malformed_tell_never_touches_l2()
     print("test_tell_durability: OK")

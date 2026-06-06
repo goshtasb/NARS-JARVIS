@@ -38,7 +38,10 @@ def parse_stamp(text: str) -> tuple[int, ...]:
 
 def _term_of(body: str) -> str:
     head = body
-    for sep in (" creationTime", " :|:", " occurrenceTime", " Stamp", " Truth"):
+    # Strip every trailing metadata field ONA appends so only the canonical term survives.
+    # NB: " Priority" matters for Input/Derived/Revised/Selected lines (Answer lines lack it);
+    # without it, terms leaked into L2 polluted as e.g. '<a --> c>. Priority=0.407250'.
+    for sep in (" creationTime", " :|:", " occurrenceTime", " Stamp", " Truth", " Priority"):
         head = head.split(sep)[0]
     return head.strip().rstrip(".!?").strip()
 
@@ -91,3 +94,13 @@ def input_accepted(lines: list[str]) -> bool:
     if any("parsing error" in line.lower() for line in lines):
         return False
     return any(line.startswith("Input:") for line in lines)
+
+
+def canonical_input(lines: list[str]) -> Answer | None:
+    """The parsed 'Input:' echo — ONA's NORMALIZED term + truth for the statement it accepted, so
+    the L2 write-through mirrors L1 exactly (e.g. '< A --> B > .' -> term '<A --> B>'). None if no
+    Input echo is present (the statement was not accepted)."""
+    for line in lines:
+        if line.startswith("Input:"):
+            return parse_line(line)
+    return None
