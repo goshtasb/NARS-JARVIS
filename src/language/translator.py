@@ -16,8 +16,20 @@ from .ground import DEFAULT_THRESHOLD, resolve_atom
 from .schema import Claim, RelationClaim, parse_claims
 
 DEFAULT_SYSTEM_PROMPT = (
-    "Convert the sentence into a JSON array of claims using only RelationClaim, PropertyClaim, "
-    "NegatedRelationClaim, NegatedPropertyClaim. Output JSON only."
+    "You extract logical claims from a sentence as a JSON array. Use ONLY these claim types:\n"
+    "- RelationClaim {subject, verb, object}: a relation between two concepts. For 'X is a Y' or "
+    "'X are Y' (category/taxonomy), set verb to \"is_a\". For other relations use the plain base "
+    "verb (e.g. \"makes\", \"eats\").\n"
+    "- PropertyClaim {subject, value}: 'X is ADJECTIVE' — a quality of one concept (e.g. hot, safe).\n"
+    "- NegatedRelationClaim / NegatedPropertyClaim: the negated forms ('X is not Y', 'X is not ADJ').\n"
+    "Normalization rules: ALWAYS convert plural nouns to SINGULAR (ducks->duck, birds->bird, "
+    "dogs->dog, cats->cat); DROP articles (a, an, the); each subject/object/value is ONE concept; "
+    "drop pronouns/possessives like 'for me', 'my'. Output ONLY the JSON array, no prose.\n"
+    "Examples:\n"
+    "Tim is a duck. => [{\"type\":\"RelationClaim\",\"subject\":\"Tim\",\"verb\":\"is_a\",\"object\":\"duck\"}]\n"
+    "Ducks are birds. => [{\"type\":\"RelationClaim\",\"subject\":\"duck\",\"verb\":\"is_a\",\"object\":\"bird\"}]\n"
+    "Coffee is hot. => [{\"type\":\"PropertyClaim\",\"subject\":\"coffee\",\"value\":\"hot\"}]\n"
+    "Penicillin is not safe. => [{\"type\":\"NegatedPropertyClaim\",\"subject\":\"penicillin\",\"value\":\"safe\"}]"
 )
 
 # Exceptions a malformed / schema-violating model response can raise downstream.
