@@ -21,7 +21,7 @@ import sys
 from brain import Brain
 from execution import DecisionStats, build_air_gapped_executor, decide
 from jarvis import Jarvis
-from language import Translator
+from language import IngestionGate, Translator
 from memory import MemoryStore
 from sentinel import SurpriseDetector, SystemSentinel
 from sentinel.narrate import Narrator
@@ -93,8 +93,12 @@ class Console:
         self._store = MemoryStore(db_path)
         self._brain = Brain(cycles_per_step=50)  # boots ONA with *motorbabbling=0.0
         self._executor = build_air_gapped_executor(sink=self._out)  # sync output during `act`
-        self._jarvis = Jarvis(Translator(_make_claim_source(), embedder=_make_embedder()),
-                              self._store, self._brain, executor=self._executor)
+        embedder = _make_embedder()
+        # The ingestion gate (L0 structural + L1 semantic) needs the embedder for L1; with no
+        # embedder it stays None and learn falls back to the ungated write-through.
+        gate = IngestionGate(embedder) if embedder is not None else None
+        self._jarvis = Jarvis(Translator(_make_claim_source(), embedder=embedder),
+                              self._store, self._brain, executor=self._executor, gate=gate)
         narrator = Narrator(_NoNarrationLLM(), on_alert=self._on_alert)
         self._detector = SurpriseDetector(self._brain, threshold=0.5, on_surprise=narrator.narrate)
         self._sentinel = SystemSentinel(sink=self._detector.observe, poll_interval=poll_interval)
@@ -226,9 +230,22 @@ class Console:
     def _do_learn(self, text: str) -> None:
         if not text:
             return self._out("usage: learn <english sentence>")
-        committed = self._jarvis.learn(text)
-        self._out(f"committed: {committed}" if committed
-                  else "nothing committed (no local LLM, or contradiction deferred)")
+        # Batch-and-queue transactional UX: rejects shown first, then escalations [y/n], then a
+        # single summary. The gate evaluates ALL claims before anything is committed or printed.
+        committed = self._jarvis.learn(text, on_rejects=self._present_rejects,
+                                       confirm_escalation=self._confirm_escalation)
+        self._out("✓ saved: " + " · ".join(committed) if committed
+                  else "nothing saved.")
+
+    def _present_rejects(self, items) -> None:  # Phase 1
+        self._out(f"✗ didn't save {len(items)} (I store facts, not cause/effect — and only what I can verify):")
+        for it in items:
+            self._out(f"    • understood as: \"{it.english_mirror}\"  —  {it.reason}")
+
+    def _confirm_escalation(self, item) -> bool:  # Phase 2
+        sim = f" (similarity {item.cosine:.2f})" if item.cosine is not None else ""
+        self._out(f"? unsure{sim}: I understood \"{item.english_mirror}\".")
+        return self._confirm("   save it?")
 
     def _do_tell(self, narsese: str) -> None:
         if not narsese:

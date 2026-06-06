@@ -69,16 +69,24 @@ class Translator:
         self._threshold = threshold
         self._atoms: dict[str, list[float]] = {}  # grounding state: atom -> embedding
 
+    def claims(self, sentence: str, system_prompt: str = DEFAULT_SYSTEM_PROMPT) -> list[Claim]:
+        """English -> GROUNDED typed claims (generate + parse + ground). No compile, no brain write.
+
+        This is the AST the ingestion gate validates BEFORE anything is committed. Raises on
+        malformed model output (one of `_PARSE_ERRORS`); the caller decides how to surface it.
+        """
+        parsed = parse_claims(self._llm.generate(system_prompt, sentence))
+        if self._embedder is not None:
+            parsed = [self._ground(c) for c in parsed]
+        return parsed
+
     def translate(self, sentence: str, system_prompt: str = DEFAULT_SYSTEM_PROMPT) -> TranslationResult:
         try:
-            raw = self._llm.generate(system_prompt, sentence)
-            claims = parse_claims(raw)
+            claims = self.claims(sentence, system_prompt)
         except _PARSE_ERRORS as exc:
             error = f"{type(exc).__name__}: {exc}"
             self._on_reject(sentence, error)  # alert the sentinel; do NOT crash the pipeline
             return TranslationResult(False, [], error)
-        if self._embedder is not None:
-            claims = [self._ground(c) for c in claims]
         narsese = claims_to_narsese(claims)
         if self._brain is not None:
             for statement in narsese:

@@ -6,10 +6,13 @@ Composes domains via their public interfaces only (ADR-001). Imperative Shell (S
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Callable
+
 from brain import Brain, canonical_input, input_accepted
 from contradiction import ContradictionGuard
 from execution import DecisionStats, Executor, decide
-from language import Translator
+from language import Decision, IngestionGate, Translator, back_render, to_narsese
 from memory import (
     MemoryStore,
     is_valid_belief,
@@ -24,39 +27,104 @@ class InvalidNarseseError(ValueError):
     """A `tell` statement is not a well-formed Narsese belief, or ONA rejected it on parse."""
 
 
+@dataclass(frozen=True)
+class GateItem:
+    """One claim's gate outcome, in UX-renderable form (decoupled from console I/O)."""
+    english_mirror: str          # the canonical English round-trip (back_render)
+    reason: str
+    cosine: float | None
+    statement: str               # the compiled Narsese (for reference)
+
+
+# Console-injected I/O hooks (the core never does terminal I/O itself):
+RejectPresenter = Callable[[list[GateItem]], None]      # Phase 1: show what bounced
+EscalationConfirm = Callable[[GateItem], bool]          # Phase 2: ask the human [y/n]
+
+
 class Jarvis:
     def __init__(self, translator: Translator, store: MemoryStore, brain: Brain,
                  guard: ContradictionGuard | None = None,
-                 executor: Executor | None = None) -> None:
+                 executor: Executor | None = None,
+                 gate: IngestionGate | None = None) -> None:
         self._translator = translator
         self._store = store
         self._brain = brain
         self._guard = guard
         self._executor = executor  # None => orchestrator stays learn/ask only (no execution path)
+        self._gate = gate          # None => ungated learn (no semantic gate; e.g. no embedder)
 
-    def learn(self, sentence: str) -> list[str]:
-        """English -> Narsese; for each statement run the C2 pre-commit check, then feed L1 and
-        commit ONA's CANONICAL form to L2 — the SAME normalization path as `tell`, so every
-        ingestion route stores exactly what the engine heard. A contradicting statement is surfaced
-        to the human (via the guard) and DEFERRED — never written. Returns the committed statements.
+    def learn(self, sentence: str, *, on_rejects: RejectPresenter | None = None,
+              confirm_escalation: EscalationConfirm | None = None) -> list[str]:
+        """English -> committed Narsese, via the batch-and-queue ingestion gate (transactional UX).
+
+        With a gate wired, EVERY extracted claim is evaluated FIRST (no commit, no output), then:
+          Phase 1 — present the rejects (educational mirror) via `on_rejects`;
+          Phase 2 — resolve escalations sequentially via `confirm_escalation` ([y/n]);
+          Phase 3 — commit the final set through ONA's canonical check to L2.
+        Returns the committed statements (the caller prints the single clean summary). With no gate,
+        falls back to the ungated write-through (used where there is no embedder). Pure of terminal
+        I/O — all human interaction is via the injected hooks.
         """
+        if self._gate is None:
+            return self._learn_ungated(sentence)
+        try:
+            claims = self._translator.claims(sentence)
+        except Exception:  # noqa: BLE001 — malformed model output must not crash the REPL
+            return []
+        commit_q: list[object] = []
+        reject_q: list[GateItem] = []
+        escalate_q: list[tuple[object, GateItem]] = []
+        for claim in claims:  # evaluate ALL before any commit/output (batch)
+            res = self._gate.evaluate(claim, sentence)
+            item = GateItem(res.back_render or back_render(claim), res.reason, res.cosine,
+                            to_narsese(claim))
+            if res.decision is Decision.COMMIT:
+                commit_q.append(claim)
+            elif res.decision is Decision.REJECT:
+                reject_q.append(item)
+            else:  # ESCALATE
+                escalate_q.append((claim, item))
+        if reject_q and on_rejects is not None:               # Phase 1
+            on_rejects(reject_q)
+        for claim, item in escalate_q:                        # Phase 2
+            if confirm_escalation is not None and confirm_escalation(item):
+                commit_q.append(claim)
+        committed: list[str] = []                             # Phase 3
+        output: list[str] = []
+        for claim in commit_q:
+            s = self._commit(to_narsese(claim), sentence, output)
+            if s is not None:
+                committed.append(s)
+        observe(self._store, output)
+        return committed
+
+    def _learn_ungated(self, sentence: str) -> list[str]:
+        """Original write-through (no semantic gate): translate -> commit each statement."""
         result = self._translator.translate(sentence)
         if not result.ok:
             return []
         committed: list[str] = []
         output: list[str] = []
         for statement in result.narsese:
-            if self._guard is not None and self._guard.check(statement) is not None:
-                continue  # contradiction flagged to human; defer commit, keep L1/L2 protected
-            out = self._brain.add_belief(statement)  # feed L1 FIRST + run inference
-            output += out
-            if not input_accepted(out):
-                continue  # ONA rejected on parse; do not commit (keeps L1/L2 in sync)
-            term, frequency, confidence = self._canonical(out, statement)
-            self._store.upsert(term, frequency, confidence, english=sentence)  # canonical, after L1 OK
-            committed.append(statement)
-        observe(self._store, output)  # persist truths ONA revised/derived this step
+            s = self._commit(statement, sentence, output)
+            if s is not None:
+                committed.append(s)
+        observe(self._store, output)
         return committed
+
+    def _commit(self, statement: str, sentence: str, output: list[str]) -> str | None:
+        """C2 guard -> feed L1 -> confirm ONA accepted -> canonical write-through to L2.
+        Returns the committed statement, or None if deferred (contradiction) or ONA-rejected.
+        """
+        if self._guard is not None and self._guard.check(statement) is not None:
+            return None  # contradiction flagged to human; defer, keep L1/L2 protected
+        out = self._brain.add_belief(statement)  # feed L1 FIRST
+        output += out
+        if not input_accepted(out):
+            return None  # ONA rejected on parse; do not commit (keeps L1/L2 in sync)
+        term, frequency, confidence = self._canonical(out, statement)
+        self._store.upsert(term, frequency, confidence, english=sentence)  # canonical, after L1 OK
+        return statement
 
     def _canonical(self, output: list[str], statement: str) -> tuple[str, float, float]:
         """ONA's normalized (term, freq, conf) from the 'Input:' echo, so L2 mirrors L1 exactly.
