@@ -17,3 +17,6 @@ src/jarvis.db
 
 # local LLM weights (multi-GB, not version-controlled)
 models/
+
+# compiled macOS sensor helper (built on demand)
+src/sentinel/.sensor.bin

@@ -10,6 +10,7 @@ from .narrate import NARRATION_SYSTEM_PROMPT, Narrator, sanitize_narration
 from .narsese import activity_event, signal_event
 from .rollup import RollupState, on_event, on_tick
 from .schmitt import CPU_LADDER, MEM_LADDER, DiscState, Ladder, step
+from .sensor import Sensor, build_sensor, category
 from .sensors import SystemSentinel
 from .surprise import SurpriseDetector, SurpriseEvent, expectation
 
@@ -33,4 +34,7 @@ __all__ = [
     "sanitize_narration",
     "NARRATION_SYSTEM_PROMPT",
     "SystemSentinel",
+    "Sensor",
+    "build_sensor",
+    "category",
 ]

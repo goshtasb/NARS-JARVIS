@@ -24,7 +24,7 @@ from execution import DecisionStats, build_air_gapped_executor, decide
 from jarvis import Jarvis
 from language import IngestionGate, Translator, Voice
 from memory import MemoryStore, MetricsStore, SqliteGroundingStore
-from sentinel import SurpriseDetector, SystemSentinel
+from sentinel import Sensor, SurpriseDetector, SystemSentinel, category
 from sentinel.narrate import Narrator
 
 PROMPT = "jarvis> "
@@ -44,6 +44,7 @@ HELP = (
     "                     e.g.  act run_saved_command disk_usage   |   act open_app slack\n"
     "  status             last CPU/mem poll + memory counts\n"
     "  health             ingestion rejection-rate decay + failure taxonomy (local only)\n"
+    "  sentinel on|off    always-on flow sentinel: isolated brain + unprivileged macOS app-focus sensor\n"
     "  help | quit\n"
 )
 
@@ -120,6 +121,14 @@ class Console:
         self._notify_on = sys.platform == "darwin" and shutil.which("osascript") is not None
         self._notif_procs: list[subprocess.Popen] = []
 
+        # V2 Sentinel: a SECOND, fully isolated ONA instance + the unprivileged macOS sensor.
+        # Opt-in via `sentinel on`. The Knowledge brain (self._brain) and this Sentinel brain share
+        # NOTHING — separate subprocesses => mathematically zero cross-domain contamination.
+        self._sensor: Sensor | None = None
+        self._sentinel_brain: Brain | None = None
+        self._focus_events = 0
+        self._focus_last: str | None = None
+
     # ── terminal writers ──────────────────────────────────────────────
     def _w(self, s: str) -> None:
         sys.stdout.write(s); sys.stdout.flush()
@@ -180,14 +189,24 @@ class Console:
             self._w(BANNER)
             self._redraw()
             while not self._quit:
-                ready, _, _ = select.select([sys.stdin], [], [], self._poll)
-                if ready:
-                    self._read_ready()
-                else:
+                sensor_stream = self._sensor.stream() if (self._sensor and self._sensor.running()) else None
+                watch = [sys.stdin] + ([sensor_stream] if sensor_stream is not None else [])
+                ready, _, _ = select.select(watch, [], [], self._poll)
+                if not ready:
                     self._tick()
+                    continue
+                for r in ready:
+                    if r is sensor_stream:
+                        self._read_sensor()
+                    else:
+                        self._read_ready()
         finally:
             termios.tcsetattr(self._fd, termios.TCSADRAIN, old)
             self._w("\n")
+            if self._sensor is not None:
+                self._sensor.stop()
+            if self._sentinel_brain is not None:
+                self._sentinel_brain.close()
             self._brain.close()
 
     def _read_ready(self) -> None:
@@ -209,6 +228,30 @@ class Console:
             elif ch.isprintable():
                 self._buf += ch; self._w(ch)
 
+    def _read_sensor(self) -> None:
+        line = self._sensor.readline() if self._sensor else ""
+        if not line:  # EOF: the helper exited
+            if self._sensor:
+                self._sensor.stop(); self._sensor = None
+            self._emit("[sentinel] sensor stopped.")
+            return
+        self._handle_sensor(line.strip())
+
+    def _handle_sensor(self, line: str) -> None:
+        """Funnel a raw sensor line into the isolated Sentinel brain. SILENT on normal (scaffold:
+        the discretizer/surprise/templates land in the next increment). Never touches Knowledge."""
+        kind, _, arg = line.partition(" ")
+        if kind == "activate" and arg:
+            cat = category(arg)
+            self._focus_events += 1
+            self._focus_last = cat
+            if self._sentinel_brain is not None:
+                try:  # scaffold belief into the SEPARATE brain; full pattern predicates come next
+                    self._sentinel_brain.add_belief(f"<{cat} --> [foreground]>. :|:")
+                except Exception:  # noqa: BLE001 — a sensor hiccup must not break the loop
+                    pass
+        # 'launch'/'idle'/'ready' are received but not yet acted on (next increment).
+
     def _tick(self) -> None:
         self._reap_notifs()
         try:
@@ -226,6 +269,7 @@ class Console:
             "help": lambda: self._out(HELP), "?": lambda: self._out(HELP),
             "quit": self._do_quit, "exit": self._do_quit,
             "status": self._do_status, "health": self._do_health,
+            "sentinel": lambda: self._do_sentinel(rest),
             "learn": lambda: self._do_learn(rest), "tell": lambda: self._do_tell(rest),
             "ask": lambda: self._do_ask(rest), "act": lambda: self._do_act(rest),
         }.get(cmd)
@@ -239,6 +283,32 @@ class Console:
 
     def _do_status(self) -> None:
         self._out(f"last poll: {self._last} | L2 facts: {self._store.count()}")
+
+    def _do_sentinel(self, rest: str) -> None:
+        arg = rest.strip().lower()
+        on = self._sensor is not None and self._sensor.running()
+        if arg in ("", "status"):
+            self._out(f"sentinel: ON — {self._focus_events} focus events, last category: "
+                      f"{self._focus_last or '-'} (isolated brain)" if on
+                      else "sentinel: OFF   (turn on with: sentinel on)")
+        elif arg == "on":
+            if on:
+                return self._out("sentinel already on.")
+            sensor = Sensor()
+            if not sensor.start():
+                return self._out("sentinel unavailable (needs macOS + swiftc to build the helper).")
+            self._sensor = sensor
+            self._sentinel_brain = Brain(cycles_per_step=20)  # SECOND isolated ONA (boots *babbling=0)
+            self._focus_events, self._focus_last = 0, None
+            self._out("sentinel: ON — watching app-focus in a fully isolated brain (silent on normal).")
+        elif arg == "off":
+            if self._sensor:
+                self._sensor.stop(); self._sensor = None
+            if self._sentinel_brain:
+                self._sentinel_brain.close(); self._sentinel_brain = None
+            self._out("sentinel: OFF.")
+        else:
+            self._out("usage: sentinel on | off | status")
 
     def _do_health(self) -> None:
         s = self._metrics.summary()
