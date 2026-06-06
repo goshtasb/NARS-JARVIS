@@ -1,0 +1,142 @@
+{
+  "_meta": {
+    "artifact": "NARS-JARVIS v1 — Semantic Ingestion Validation Corpus",
+    "status": "foundational architectural artifact (NOT a code unit-test suite)",
+    "purpose": "Ground-truth fixtures to TUNE the L0/L1/L2 ingestion-gate thresholds and VERIFY its fail-closed decisions. The pipeline is graded against this corpus; thresholds that misclassify entries here are wrong.",
+    "gate_semantics": {
+      "L0": "Zero-latency deterministic STRUCTURE guarantee. Hard-reject: non-whitelisted shape, fused multi-concept atoms, causal/temporal/implication copulas (=/> ==> etc). Also a deterministic TRACE fast-accept via an inflectional-only hand-rolled stemmer. L0 rejects are ABSOLUTE and NOT human-overridable.",
+      "L1": "Model-free semantic bridge. Pure-code back-render of the Narsese to canonical English, then cosine(original, back-render) using the resident nomic embedder. High -> accept; low -> reject; middle band -> escalate to L2. L1/L2 rejects ARE human-overridable (heuristic, fail-closed).",
+      "L2": "Single-token GBNF arbiter (SAME|DIFF, temp 0, hard timeout, default DIFF). Only for the ambiguous middle band."
+    },
+    "schema": {
+      "id": "stable identifier",
+      "quadrant": "exact | inflectional | synonym | hallucination | fused_causal",
+      "english": "user input sentence",
+      "narsese": "the compiled term under evaluation (what the translator+compiler produced or is expected to produce)",
+      "expect": "accept | reject",
+      "decided_by": "the gate layer whose behavior this case exercises (L0 | L1 | L2)",
+      "overridable": "true only for probabilistic (L1/L2) rejects; false for L0 structural rejects; null for accepts",
+      "source": "observed = produced by the live Qwen2.5-3B-Instruct + compiler in-session; constructed = hand-authored fixture, MUST be re-verified against the live model at implementation time",
+      "note": "rationale / what is being tested"
+    },
+    "stemmer_boundary": "Inflectional ONLY (-s, -es, -ies->y, -ed, -ing, -er, -est, -ly). Derivational stripping (-ity, -ation, -ize, -ment) is FORBIDDEN. Irregular inflections (mice, are) intentionally fall through to L1.",
+    "health_metric": "rejection-rate decay over a user session is the primary product-health signal; a flat/high rate indicates the 3B model or categorical scope is too narrow.",
+    "model_under_test": "qwen2.5-3b-instruct-q4_k_m + nomic-embed-text-v1.5.f16, threshold tuning baseline only",
+    "version": "0.1.0",
+    "created": "2026-06-06"
+  },
+  "cases": [
+    {
+      "id": "exact-01", "quadrant": "exact",
+      "english": "Tim is a duck.", "narsese": "<tim --> duck>.",
+      "expect": "accept", "decided_by": "L0", "overridable": null, "source": "observed",
+      "note": "Clean inheritance; atoms verbatim in source; canonical shape."
+    },
+    {
+      "id": "exact-02", "quadrant": "exact",
+      "english": "The sky is blue.", "narsese": "<sky --> [blue]>.",
+      "expect": "accept", "decided_by": "L0", "overridable": null, "source": "observed",
+      "note": "Adjective -> property claim; article dropped."
+    },
+    {
+      "id": "exact-03", "quadrant": "exact",
+      "english": "A cat is an animal.", "narsese": "<cat --> animal>.",
+      "expect": "accept", "decided_by": "L0", "overridable": null, "source": "observed",
+      "note": "Articles dropped; clean taxonomy."
+    },
+    {
+      "id": "exact-04", "quadrant": "exact",
+      "english": "Penicillin is unsafe for me.", "narsese": "<penicillin --> [safe]>. {0.0 0.9}",
+      "expect": "accept", "decided_by": "L0", "overridable": null, "source": "observed",
+      "note": "Negated property via frequency 0; possessive 'for me' correctly dropped (PRD safety-case motivator)."
+    },
+
+    {
+      "id": "infl-01", "quadrant": "inflectional",
+      "english": "Ducks are birds.", "narsese": "<duck --> bird>.",
+      "expect": "accept", "decided_by": "L0", "overridable": null, "source": "observed",
+      "note": "Compiled atoms SINGULAR vs PLURAL source; stemmer trace (ducks->duck, birds->bird) must fast-accept. Observed with grounding enabled."
+    },
+    {
+      "id": "infl-02", "quadrant": "inflectional",
+      "english": "Cats are mammals.", "narsese": "<cat --> mammal>.",
+      "expect": "accept", "decided_by": "L0", "overridable": null, "source": "constructed",
+      "note": "Regular plural; stemmer trace cats->cat, mammals->mammal."
+    },
+    {
+      "id": "infl-03", "quadrant": "inflectional",
+      "english": "Computers are machines.", "narsese": "<computer --> machine>.",
+      "expect": "accept", "decided_by": "L0", "overridable": null, "source": "constructed",
+      "note": "Regular plural fast-accept."
+    },
+    {
+      "id": "infl-04", "quadrant": "inflectional",
+      "english": "The server is running.", "narsese": "<server --> [run]>.",
+      "expect": "accept", "decided_by": "L0", "overridable": null, "source": "constructed",
+      "note": "Verb conjugation (running->run); tests -ing stripping in the stemmer trace."
+    },
+
+    {
+      "id": "syn-01", "quadrant": "synonym",
+      "english": "A car is fast.", "narsese": "<automobile --> [fast]>.",
+      "expect": "accept", "decided_by": "L1", "overridable": null, "source": "constructed",
+      "note": "Synonym substitution car->automobile; L0 trace FAILS (lexically absent), L1 cosine of 'automobile is fast' vs original must be high enough to accept. Tests upper L1 band."
+    },
+    {
+      "id": "syn-02", "quadrant": "synonym",
+      "english": "Penicillin is dangerous.", "narsese": "<penicillin --> [unsafe]>.",
+      "expect": "accept", "decided_by": "L1", "overridable": null, "source": "constructed",
+      "note": "dangerous->unsafe; valid semantic substitution should clear L1."
+    },
+    {
+      "id": "syn-03", "quadrant": "synonym",
+      "english": "Sofia is a physician.", "narsese": "<sofia --> doctor>.",
+      "expect": "accept", "decided_by": "L1", "overridable": null, "source": "constructed",
+      "note": "physician->doctor; near-synonym taxonomy term."
+    },
+
+    {
+      "id": "halluc-01", "quadrant": "hallucination",
+      "english": "Penicillin is unsafe.", "narsese": "<penicillin --> [blue]>.",
+      "expect": "reject", "decided_by": "L1", "overridable": true, "source": "constructed",
+      "note": "Injected untraceable concept 'blue'; back-render 'penicillin is blue' has low cosine to original -> reject. Human may override."
+    },
+    {
+      "id": "halluc-02", "quadrant": "hallucination",
+      "english": "Tim is a duck.", "narsese": "<tim --> rocket>.",
+      "expect": "reject", "decided_by": "L1", "overridable": true, "source": "constructed",
+      "note": "Object hallucinated to an unrelated concept; cosine far below band."
+    },
+    {
+      "id": "halluc-03", "quadrant": "hallucination",
+      "english": "The book is heavy.", "narsese": "<book --> [expensive]>.",
+      "expect": "reject", "decided_by": "L1", "overridable": true, "source": "constructed",
+      "note": "'expensive' neither present nor a synonym of 'heavy'; semantic drift -> reject."
+    },
+
+    {
+      "id": "fused-01", "quadrant": "fused_causal",
+      "english": "Coffee makes me alert.", "narsese": "<(coffee * me_alert) --> makes>.",
+      "expect": "reject", "decided_by": "L0", "overridable": false, "source": "observed",
+      "note": "Fused atom 'me_alert' AND non-taxonomic verb 'makes' (causal). Structural reject; NOT overridable. Recovery = reframe ('coffee is a stimulant')."
+    },
+    {
+      "id": "fused-02", "quadrant": "fused_causal",
+      "english": "Studying causes knowledge.", "narsese": "<studying =/> knowledge>.",
+      "expect": "reject", "decided_by": "L0", "overridable": false, "source": "constructed",
+      "note": "Predictive-implication copula =/> is out of v1 scope (temporal/causal). Structural reject."
+    },
+    {
+      "id": "fused-03", "quadrant": "fused_causal",
+      "english": "Rain makes the ground wet.", "narsese": "<(rain * ground_wet) --> makes>.",
+      "expect": "reject", "decided_by": "L0", "overridable": false, "source": "constructed",
+      "note": "Fused atom 'ground_wet' + causal verb; structural reject."
+    },
+    {
+      "id": "fused-04", "quadrant": "fused_causal",
+      "english": "If it rains, the match is cancelled.", "narsese": "<rain ==> [cancelled]>.",
+      "expect": "reject", "decided_by": "L0", "overridable": false, "source": "constructed",
+      "note": "Conditional -> implication copula ==> ; out of scope. Structural reject."
+    }
+  ]
+}
