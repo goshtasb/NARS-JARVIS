@@ -27,8 +27,33 @@
       "exact-04: changed 'unsafe for me' -> 'not safe'. The un- prefix is derivational; atom 'safe' only traces deterministically when 'safe' is literally present. The 'unsafe' variant is an L1 case, not L0.",
       "infl-04: changed to a negated taxonomy with a regular plural (Dogs/reptiles) so it exercises the stemmer; the prior verb-conjugation example traced exactly and tested nothing."
     ],
+    "live_reconciliation_2026-06-06": {
+      "model": "qwen2.5-3b-instruct-q4_k_m, temp 0, DEFAULT_SYSTEM_PROMPT",
+      "summary": "The live 3B is faithful/literal. It does NOT substitute synonyms (car stays car, physician stays physician) nor hallucinate (duck stays duck, book stays heavy). Therefore the synonym and hallucination DEFER cases are SYNTHETIC BOUNDARY PROBES (engineered drifted ASTs), kept to calibrate the L1 band — not observed model behavior.",
+      "real_defer_behavior": "The model DOES paraphrase negation: 'dangerous'/'unsafe' -> PropertyClaim(penicillin, safe, negated). Atom 'safe' is not lexically in the source, so this is genuine L1-accept traffic.",
+      "quality_findings": [
+        "Copula fusion: 'The sky is blue' -> value 'is blue' (-> is_blue), which L0 rejects as fused. Prompt-hardening item, separate from L1.",
+        "Subjects stay plural ('Ducks are birds' -> subject 'ducks'); the L0 inflectional stemmer maps ducks->duck so it still traces/accepts.",
+        "Conditionals ('If it rains, ...') produce no parseable claim (silent no-op), not bad data."
+      ],
+      "defer_cosines": {
+        "synonym_accept": {"syn-03_sofia_doctor": 0.975, "syn-02_dangerous_unsafe": 0.962, "syn-01_car_automobile": 0.946},
+        "hallucination_reject": {"halluc-02_tim_rocket": 0.745, "halluc-03_book_expensive": 0.719, "halluc-01_penicillin_blue": 0.702}
+      },
+      "calibrated_bands": {
+        "threshold_accept": 0.90,
+        "threshold_reject": 0.80,
+        "l2_ambiguous_band": "[0.80, 0.90) — 0 corpus cases land here; clean ~0.20 gap between classes",
+        "note": "Empirical against this corpus + nomic-embed-text-v1.5.f16; re-measure if the embedder or back-render templates change."
+      },
+      "back_render_templates_locked": {
+        "inheritance": "{subject} is a {object}.  (neg: is not a)",
+        "property": "{subject} is {value}.  (neg: is not)",
+        "relation": "{subject} {verb} {object}.  (neg: does not {verb}) — no verb conjugation"
+      }
+    },
     "model_under_test": "qwen2.5-3b-instruct-q4_k_m + nomic-embed-text-v1.5.f16",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "created": "2026-06-06"
   },
   "cases": [
