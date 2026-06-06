@@ -5,9 +5,9 @@
     "purpose": "Ground-truth fixtures to TUNE the L0/L1/L2 ingestion-gate thresholds and VERIFY its fail-closed decisions. The pipeline is graded against this corpus.",
     "validates_on": "the typed Claim AST (the `claim` field), NOT the compiled Narsese string. L0 inspects claims BEFORE to_narsese(); the `narsese` field is the compiled form, shown for human readability and for L1's back-render check.",
     "gate_semantics": {
+      "pipeline": "L0 (structural/lexical, deterministic) -> L1 (semantic embedding). L2 (an LLM arbiter) was REMOVED: the empirical cosine gap is wide/clean and the human is the safest, most-deterministic arbiter of ambiguity. Zero generative-model calls on the ingestion path.",
       "L0": "Zero-latency deterministic STRUCTURE gate over Claim objects. REJECT (absolute, non-overridable): non-whitelisted shape, non-taxonomic relation verb (out-of-scope causal/action), fused multi-concept atom. ACCEPT (fast path): structurally sound AND all content atoms trace to a source token via an inflectional-only stemmer. DEFER: structurally sound but an atom is untraceable -> hand to L1.",
-      "L1": "Model-free semantic bridge. Pure-code back-render + cosine(original, back-render) via the resident nomic embedder. High -> accept; low -> reject; middle -> L2. L1/L2 rejects ARE human-overridable.",
-      "L2": "Single-token GBNF arbiter (SAME|DIFF, temp 0, hard timeout, default DIFF) for the ambiguous middle band."
+      "L1": "Semantic embedding bridge. Pure-code back-render + cosine(original, back-render) via the resident nomic embedder. cosine >= 0.90 -> COMMIT; cosine < 0.80 -> REJECT (hard bounce + educational mirror); 0.80 <= cosine < 0.90 -> ESCALATE to the human ([y/n] on the round-trip). No LLM."
     },
     "schema": {
       "id": "stable identifier",
@@ -53,7 +53,8 @@
       }
     },
     "model_under_test": "qwen2.5-3b-instruct-q4_k_m + nomic-embed-text-v1.5.f16",
-    "version": "0.3.0",
+    "decision_mapping": "expect 'accept' -> Decision.COMMIT; expect 'reject' -> Decision.REJECT. No corpus case lands in the ESCALATE band [0.80,0.90); the human-escalation path is proven via a controlled-vector unit test (test_full_pipeline_and_human_escalation).",
+    "version": "0.4.0",
     "created": "2026-06-06"
   },
   "cases": [

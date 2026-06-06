@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from .compiler import _ISA
+from .ground import cosine_similarity
 from .schema import Claim, PropertyClaim, RelationClaim
 
 # Single source of truth for taxonomic copulas: the compiler's _ISA set, reused so the gate
@@ -94,3 +95,79 @@ def validate_l0(claim: Claim, source: str) -> L0Result:
         if stem(_words(a)[0]) not in source_stems:
             return L0Result(L0.DEFER, f"atom {a!r} not traceable to source (defer to L1)")
     return L0Result(L0.ACCEPT, "structurally sound; all atoms trace to source")
+
+
+# ── L1 — the semantic embedding bridge (empirically calibrated; L2 removed) ──
+# Bands measured against validation_corpus.json DEFER quadrant (synonym floor 0.946,
+# hallucination ceiling 0.745). The ambiguous gap routes to the HUMAN, never to an LLM —
+# the user is the safest, most-deterministic arbiter of ambiguity (see corpus _meta).
+THRESHOLD_ACCEPT = 0.90
+THRESHOLD_REJECT = 0.80
+
+
+class Decision(Enum):
+    COMMIT = "commit"       # write to the L2 system-of-record
+    REJECT = "reject"       # hard bounce (show the educational mirror)
+    ESCALATE = "escalate"   # ambiguous -> show the round-trip, prompt the human [y/n]
+
+
+@dataclass(frozen=True)
+class GateResult:
+    decision: Decision
+    layer: str                       # "L0" (structural) or "L1" (semantic)
+    reason: str
+    cosine: float | None = None      # set for L1
+    back_render: str | None = None   # the canonical English mirror (for L1 reject/escalate UX)
+
+
+def back_render(claim: Claim) -> str:
+    """Deterministic, syntactically-sterile English mirror of a claim (locked templates).
+
+    No verb conjugation by design: 'coffee cause alert' is grammatically wrong but semantically
+    pure — the embedder handles raw tokens better than invented conjugations.
+    """
+    if isinstance(claim, RelationClaim):
+        if claim.verb.strip().lower() in _TAXONOMIC_VERBS:
+            return f"{claim.subject} is not a {claim.object}." if claim.negated \
+                else f"{claim.subject} is a {claim.object}."
+        return f"{claim.subject} does not {claim.verb} {claim.object}." if claim.negated \
+            else f"{claim.subject} {claim.verb} {claim.object}."
+    return f"{claim.subject} is not {claim.value}." if claim.negated \
+        else f"{claim.subject} is {claim.value}."
+
+
+def l1_band(cosine: float) -> Decision:
+    """Pure threshold classifier for the semantic bridge."""
+    if cosine >= THRESHOLD_ACCEPT:
+        return Decision.COMMIT
+    if cosine < THRESHOLD_REJECT:
+        return Decision.REJECT
+    return Decision.ESCALATE
+
+
+class IngestionGate:
+    """The full ingestion gate: L0 (structural, pure) -> L1 (semantic embedding).
+
+    L2 (an LLM arbiter) was removed: the empirical cosine gap is wide and clean, and the human is
+    the safest arbiter of the rare ambiguous case — so the [0.80, 0.90) band ESCALATES to a [y/n],
+    never to a stochastic judge. Zero generative-model calls on the ingestion path.
+    """
+
+    def __init__(self, embedder: object) -> None:
+        self._embedder = embedder  # duck-typed: .embed(text) -> list[float]
+
+    def _embed(self, text: str) -> list[float]:
+        vec = self._embedder.embed(text)  # type: ignore[attr-defined]
+        return vec[0] if vec and isinstance(vec[0], list) else vec
+
+    def evaluate(self, claim: Claim, source: str) -> GateResult:
+        r0 = validate_l0(claim, source)
+        if r0.verdict is L0.ACCEPT:
+            return GateResult(Decision.COMMIT, "L0", r0.reason)
+        if r0.verdict is L0.REJECT:
+            return GateResult(Decision.REJECT, "L0", r0.reason)
+        # L0 DEFER -> L1 semantic check (the only place an embedding is computed).
+        mirror = back_render(claim)
+        cos = cosine_similarity(self._embed(source), self._embed(mirror))
+        return GateResult(l1_band(cos), "L1", f"semantic cosine {cos:.3f}",
+                          cosine=cos, back_render=mirror)
