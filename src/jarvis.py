@@ -35,9 +35,10 @@ class Jarvis:
         self._executor = executor  # None => orchestrator stays learn/ask only (no execution path)
 
     def learn(self, sentence: str) -> list[str]:
-        """English -> Narsese; for each statement run the C2 pre-commit check, then write through
-        to L2 and feed L1. A contradicting statement is surfaced to the human (via the guard's
-        hook) and its commit is DEFERRED — never written. Returns the committed statements.
+        """English -> Narsese; for each statement run the C2 pre-commit check, then feed L1 and
+        commit ONA's CANONICAL form to L2 — the SAME normalization path as `tell`, so every
+        ingestion route stores exactly what the engine heard. A contradicting statement is surfaced
+        to the human (via the guard) and DEFERRED — never written. Returns the committed statements.
         """
         result = self._translator.translate(sentence)
         if not result.ok:
@@ -47,12 +48,26 @@ class Jarvis:
         for statement in result.narsese:
             if self._guard is not None and self._guard.check(statement) is not None:
                 continue  # contradiction flagged to human; defer commit, keep L1/L2 protected
-            term = statement_term(statement)
-            self._store.upsert(term, *statement_truth(statement), english=sentence)  # write-through
-            output += self._brain.add_belief(statement)  # feed L1 + run inference
+            out = self._brain.add_belief(statement)  # feed L1 FIRST + run inference
+            output += out
+            if not input_accepted(out):
+                continue  # ONA rejected on parse; do not commit (keeps L1/L2 in sync)
+            term, frequency, confidence = self._canonical(out, statement)
+            self._store.upsert(term, frequency, confidence, english=sentence)  # canonical, after L1 OK
             committed.append(statement)
         observe(self._store, output)  # persist truths ONA revised/derived this step
         return committed
+
+    def _canonical(self, output: list[str], statement: str) -> tuple[str, float, float]:
+        """ONA's normalized (term, freq, conf) from the 'Input:' echo, so L2 mirrors L1 exactly.
+        Falls back to the raw statement's term/truth only if the echo is unexpectedly absent.
+        """
+        echo = canonical_input(output)
+        if echo is not None and echo.term:
+            if echo.truth is not None:
+                return echo.term, echo.truth.frequency, echo.truth.confidence
+            return echo.term, *statement_truth(statement)
+        return statement_term(statement), *statement_truth(statement)
 
     def tell(self, statement: str) -> bool:
         """Ingest a raw Narsese belief directly (no LLM), durable like `learn` but desync-proof.
@@ -74,16 +89,10 @@ class Jarvis:
         output = self._brain.add_belief(statement)  # feed L1 FIRST
         if not input_accepted(output):
             raise InvalidNarseseError(f"ONA rejected the statement on parse; not committed: {statement!r}")
-        # Store ONA's NORMALIZED form (from the 'Input:' echo), not the raw typed string, so the L2
-        # system of record is a pristine reflection of L1 (e.g. '< A --> B > .' -> '<A --> B>').
-        echo = canonical_input(output)
-        if echo is not None and echo.term:
-            term = echo.term
-            freq, conf = (echo.truth.frequency, echo.truth.confidence) if echo.truth \
-                else statement_truth(statement)
-        else:  # defensive fallback (input_accepted was True, so this is unexpected)
-            term, (freq, conf) = statement_term(statement), statement_truth(statement)
-        self._store.upsert(term, freq, conf, english="")  # commit L2 only after L1 OK, canonical
+        # Store ONA's NORMALIZED form (same canonical capture as learn), not the raw typed string,
+        # so the L2 system of record is a pristine reflection of L1 ('< A --> B > .' -> '<A --> B>').
+        term, frequency, confidence = self._canonical(output, statement)
+        self._store.upsert(term, frequency, confidence, english="")  # commit L2 only after L1 OK
         observe(self._store, output)  # persist any truths ONA revised/derived this step
         return True
 

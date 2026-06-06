@@ -57,6 +57,23 @@ def test_tell_stores_onas_canonical_normalized_form() -> None:
         os.path.exists(db) and os.remove(db)
 
 
+def test_learn_also_stores_onas_canonical_form() -> None:
+    # Alignment: the LLM `learn` path stores ONA's normalization, identical to `tell`.
+    class _Claims:
+        def generate(self, system_prompt: str, sentence: str) -> str:
+            return '[{"type":"RelationClaim","subject":"tim","verb":"IsA","object":"duck"}]'
+
+    fd, db = tempfile.mkstemp(suffix=".db"); os.close(fd)
+    try:
+        with Brain(cycles_per_step=50) as brain:
+            store = MemoryStore(db)
+            committed = Jarvis(Translator(_Claims()), store, brain).learn("Tim is a duck.")
+            assert committed, "learn should commit the statement"
+            assert store.get("<tim --> duck>") is not None, "learn did not store ONA's canonical term"
+    finally:
+        os.path.exists(db) and os.remove(db)
+
+
 def test_malformed_tell_never_touches_l2() -> None:
     fd, db = tempfile.mkstemp(suffix=".db"); os.close(fd)
     try:
@@ -78,5 +95,6 @@ if __name__ == "__main__":
     test_validator_accepts_well_formed_and_rejects_garbage()
     test_tell_persists_across_restart()
     test_tell_stores_onas_canonical_normalized_form()
+    test_learn_also_stores_onas_canonical_form()
     test_malformed_tell_never_touches_l2()
     print("test_tell_durability: OK")
