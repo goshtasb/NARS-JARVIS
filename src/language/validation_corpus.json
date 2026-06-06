@@ -2,141 +2,165 @@
   "_meta": {
     "artifact": "NARS-JARVIS v1 — Semantic Ingestion Validation Corpus",
     "status": "foundational architectural artifact (NOT a code unit-test suite)",
-    "purpose": "Ground-truth fixtures to TUNE the L0/L1/L2 ingestion-gate thresholds and VERIFY its fail-closed decisions. The pipeline is graded against this corpus; thresholds that misclassify entries here are wrong.",
+    "purpose": "Ground-truth fixtures to TUNE the L0/L1/L2 ingestion-gate thresholds and VERIFY its fail-closed decisions. The pipeline is graded against this corpus.",
+    "validates_on": "the typed Claim AST (the `claim` field), NOT the compiled Narsese string. L0 inspects claims BEFORE to_narsese(); the `narsese` field is the compiled form, shown for human readability and for L1's back-render check.",
     "gate_semantics": {
-      "L0": "Zero-latency deterministic STRUCTURE guarantee. Hard-reject: non-whitelisted shape, fused multi-concept atoms, causal/temporal/implication copulas (=/> ==> etc). Also a deterministic TRACE fast-accept via an inflectional-only hand-rolled stemmer. L0 rejects are ABSOLUTE and NOT human-overridable.",
-      "L1": "Model-free semantic bridge. Pure-code back-render of the Narsese to canonical English, then cosine(original, back-render) using the resident nomic embedder. High -> accept; low -> reject; middle band -> escalate to L2. L1/L2 rejects ARE human-overridable (heuristic, fail-closed).",
-      "L2": "Single-token GBNF arbiter (SAME|DIFF, temp 0, hard timeout, default DIFF). Only for the ambiguous middle band."
+      "L0": "Zero-latency deterministic STRUCTURE gate over Claim objects. REJECT (absolute, non-overridable): non-whitelisted shape, non-taxonomic relation verb (out-of-scope causal/action), fused multi-concept atom. ACCEPT (fast path): structurally sound AND all content atoms trace to a source token via an inflectional-only stemmer. DEFER: structurally sound but an atom is untraceable -> hand to L1.",
+      "L1": "Model-free semantic bridge. Pure-code back-render + cosine(original, back-render) via the resident nomic embedder. High -> accept; low -> reject; middle -> L2. L1/L2 rejects ARE human-overridable.",
+      "L2": "Single-token GBNF arbiter (SAME|DIFF, temp 0, hard timeout, default DIFF) for the ambiguous middle band."
     },
     "schema": {
       "id": "stable identifier",
       "quadrant": "exact | inflectional | synonym | hallucination | fused_causal",
       "english": "user input sentence",
-      "narsese": "the compiled term under evaluation (what the translator+compiler produced or is expected to produce)",
-      "expect": "accept | reject",
-      "decided_by": "the gate layer whose behavior this case exercises (L0 | L1 | L2)",
-      "overridable": "true only for probabilistic (L1/L2) rejects; false for L0 structural rejects; null for accepts",
-      "source": "observed = produced by the live Qwen2.5-3B-Instruct + compiler in-session; constructed = hand-authored fixture, MUST be re-verified against the live model at implementation time",
-      "note": "rationale / what is being tested"
+      "claim": "the typed claim the translator produces (GBNF schema: RelationClaim/PropertyClaim/Negated*). THIS is what L0 validates.",
+      "narsese": "the compiled term to_narsese() would emit from `claim` (for L1 / human readability)",
+      "expect": "accept | reject (the FINAL gate decision)",
+      "decided_by": "the layer that makes the final call. L0 cases: L0 returns ACCEPT/REJECT. L1 cases: L0 must return DEFER, L1 decides.",
+      "overridable": "true for probabilistic (L1/L2) rejects; false for L0 structural rejects; null for accepts",
+      "source": "observed = produced by the live Qwen2.5-3B-Instruct + compiler in-session; constructed = hand-authored fixture to be re-verified against the live model",
+      "note": "rationale"
     },
-    "stemmer_boundary": "Inflectional ONLY (-s, -es, -ies->y, -ed, -ing, -er, -est, -ly). Derivational stripping (-ity, -ation, -ize, -ment) is FORBIDDEN. Irregular inflections (mice, are) intentionally fall through to L1.",
-    "health_metric": "rejection-rate decay over a user session is the primary product-health signal; a flat/high rate indicates the 3B model or categorical scope is too narrow.",
-    "model_under_test": "qwen2.5-3b-instruct-q4_k_m + nomic-embed-text-v1.5.f16, threshold tuning baseline only",
-    "version": "0.1.0",
+    "stemmer_boundary": "Inflectional ONLY (plural -s/-es/-ies, verb -ed/-ing/-er/-est/-ly). Derivational stripping (-ity/-ation/-ize/-ment, and prefixes like un-) FORBIDDEN. Irregular/derivational forms intentionally fall through to L1.",
+    "corrections_log": [
+      "fused-02/fused-04: changed from =/> and ==> copulas to the product-relation form (<(a * b) --> verb>) the GBNF grammar can actually emit; implication copulas are unreachable via the learn pipeline.",
+      "exact-04: changed 'unsafe for me' -> 'not safe'. The un- prefix is derivational; atom 'safe' only traces deterministically when 'safe' is literally present. The 'unsafe' variant is an L1 case, not L0.",
+      "infl-04: changed to a negated taxonomy with a regular plural (Dogs/reptiles) so it exercises the stemmer; the prior verb-conjugation example traced exactly and tested nothing."
+    ],
+    "model_under_test": "qwen2.5-3b-instruct-q4_k_m + nomic-embed-text-v1.5.f16",
+    "version": "0.2.0",
     "created": "2026-06-06"
   },
   "cases": [
     {
-      "id": "exact-01", "quadrant": "exact",
-      "english": "Tim is a duck.", "narsese": "<tim --> duck>.",
+      "id": "exact-01", "quadrant": "exact", "english": "Tim is a duck.",
+      "claim": {"type": "RelationClaim", "subject": "Tim", "verb": "is_a", "object": "duck"},
+      "narsese": "<tim --> duck>.",
       "expect": "accept", "decided_by": "L0", "overridable": null, "source": "observed",
-      "note": "Clean inheritance; atoms verbatim in source; canonical shape."
+      "note": "Taxonomic verb; atoms verbatim in source -> L0 accept."
     },
     {
-      "id": "exact-02", "quadrant": "exact",
-      "english": "The sky is blue.", "narsese": "<sky --> [blue]>.",
+      "id": "exact-02", "quadrant": "exact", "english": "The sky is blue.",
+      "claim": {"type": "PropertyClaim", "subject": "sky", "value": "blue"},
+      "narsese": "<sky --> [blue]>.",
       "expect": "accept", "decided_by": "L0", "overridable": null, "source": "observed",
-      "note": "Adjective -> property claim; article dropped."
+      "note": "Adjective -> property; both atoms trace."
     },
     {
-      "id": "exact-03", "quadrant": "exact",
-      "english": "A cat is an animal.", "narsese": "<cat --> animal>.",
+      "id": "exact-03", "quadrant": "exact", "english": "A cat is an animal.",
+      "claim": {"type": "RelationClaim", "subject": "cat", "verb": "is_a", "object": "animal"},
+      "narsese": "<cat --> animal>.",
       "expect": "accept", "decided_by": "L0", "overridable": null, "source": "observed",
       "note": "Articles dropped; clean taxonomy."
     },
     {
-      "id": "exact-04", "quadrant": "exact",
-      "english": "Penicillin is unsafe for me.", "narsese": "<penicillin --> [safe]>. {0.0 0.9}",
+      "id": "exact-04", "quadrant": "exact", "english": "Penicillin is not safe.",
+      "claim": {"type": "NegatedPropertyClaim", "subject": "penicillin", "value": "safe"},
+      "narsese": "<penicillin --> [safe]>. {0.0 0.9}",
+      "expect": "accept", "decided_by": "L0", "overridable": null, "source": "constructed",
+      "note": "Negated property (freq 0); atom 'safe' literally present (explicit 'not'), so it traces at L0. The 'unsafe' phrasing is an L1 case (un- is derivational)."
+    },
+
+    {
+      "id": "infl-01", "quadrant": "inflectional", "english": "Ducks are birds.",
+      "claim": {"type": "RelationClaim", "subject": "duck", "verb": "is_a", "object": "bird"},
+      "narsese": "<duck --> bird>.",
       "expect": "accept", "decided_by": "L0", "overridable": null, "source": "observed",
-      "note": "Negated property via frequency 0; possessive 'for me' correctly dropped (PRD safety-case motivator)."
-    },
-
-    {
-      "id": "infl-01", "quadrant": "inflectional",
-      "english": "Ducks are birds.", "narsese": "<duck --> bird>.",
-      "expect": "accept", "decided_by": "L0", "overridable": null, "source": "observed",
-      "note": "Compiled atoms SINGULAR vs PLURAL source; stemmer trace (ducks->duck, birds->bird) must fast-accept. Observed with grounding enabled."
+      "note": "Singular atoms vs plural source; stemmer trace ducks->duck, birds->bird must fast-accept."
     },
     {
-      "id": "infl-02", "quadrant": "inflectional",
-      "english": "Cats are mammals.", "narsese": "<cat --> mammal>.",
+      "id": "infl-02", "quadrant": "inflectional", "english": "Cats are mammals.",
+      "claim": {"type": "RelationClaim", "subject": "cat", "verb": "is_a", "object": "mammal"},
+      "narsese": "<cat --> mammal>.",
       "expect": "accept", "decided_by": "L0", "overridable": null, "source": "constructed",
-      "note": "Regular plural; stemmer trace cats->cat, mammals->mammal."
+      "note": "Regular plural; cats->cat, mammals->mammal."
     },
     {
-      "id": "infl-03", "quadrant": "inflectional",
-      "english": "Computers are machines.", "narsese": "<computer --> machine>.",
+      "id": "infl-03", "quadrant": "inflectional", "english": "Computers are machines.",
+      "claim": {"type": "RelationClaim", "subject": "computer", "verb": "is_a", "object": "machine"},
+      "narsese": "<computer --> machine>.",
       "expect": "accept", "decided_by": "L0", "overridable": null, "source": "constructed",
-      "note": "Regular plural fast-accept."
+      "note": "Regular plural fast-accept; machines->machine (not 'machin')."
     },
     {
-      "id": "infl-04", "quadrant": "inflectional",
-      "english": "The server is running.", "narsese": "<server --> [run]>.",
+      "id": "infl-04", "quadrant": "inflectional", "english": "Dogs are not reptiles.",
+      "claim": {"type": "NegatedRelationClaim", "subject": "dog", "verb": "is_a", "object": "reptile"},
+      "narsese": "<dog --> reptile>. {0.0 0.9}",
       "expect": "accept", "decided_by": "L0", "overridable": null, "source": "constructed",
-      "note": "Verb conjugation (running->run); tests -ing stripping in the stemmer trace."
+      "note": "Negation + plural; dogs->dog, reptiles->reptile."
     },
 
     {
-      "id": "syn-01", "quadrant": "synonym",
-      "english": "A car is fast.", "narsese": "<automobile --> [fast]>.",
+      "id": "syn-01", "quadrant": "synonym", "english": "A car is fast.",
+      "claim": {"type": "PropertyClaim", "subject": "automobile", "value": "fast"},
+      "narsese": "<automobile --> [fast]>.",
       "expect": "accept", "decided_by": "L1", "overridable": null, "source": "constructed",
-      "note": "Synonym substitution car->automobile; L0 trace FAILS (lexically absent), L1 cosine of 'automobile is fast' vs original must be high enough to accept. Tests upper L1 band."
+      "note": "Synonym car->automobile; 'automobile' is NOT a source token, so L0 must DEFER. L1 cosine accepts."
     },
     {
-      "id": "syn-02", "quadrant": "synonym",
-      "english": "Penicillin is dangerous.", "narsese": "<penicillin --> [unsafe]>.",
+      "id": "syn-02", "quadrant": "synonym", "english": "Penicillin is dangerous.",
+      "claim": {"type": "PropertyClaim", "subject": "penicillin", "value": "unsafe"},
+      "narsese": "<penicillin --> [unsafe]>.",
       "expect": "accept", "decided_by": "L1", "overridable": null, "source": "constructed",
-      "note": "dangerous->unsafe; valid semantic substitution should clear L1."
+      "note": "dangerous->unsafe; 'unsafe' untraceable -> L0 DEFER; L1 accepts on high cosine."
     },
     {
-      "id": "syn-03", "quadrant": "synonym",
-      "english": "Sofia is a physician.", "narsese": "<sofia --> doctor>.",
+      "id": "syn-03", "quadrant": "synonym", "english": "Sofia is a physician.",
+      "claim": {"type": "RelationClaim", "subject": "sofia", "verb": "is_a", "object": "doctor"},
+      "narsese": "<sofia --> doctor>.",
       "expect": "accept", "decided_by": "L1", "overridable": null, "source": "constructed",
-      "note": "physician->doctor; near-synonym taxonomy term."
+      "note": "physician->doctor; taxonomic verb so structurally fine, but 'doctor' untraceable -> L0 DEFER; L1 accepts."
     },
 
     {
-      "id": "halluc-01", "quadrant": "hallucination",
-      "english": "Penicillin is unsafe.", "narsese": "<penicillin --> [blue]>.",
+      "id": "halluc-01", "quadrant": "hallucination", "english": "Penicillin is unsafe.",
+      "claim": {"type": "PropertyClaim", "subject": "penicillin", "value": "blue"},
+      "narsese": "<penicillin --> [blue]>.",
       "expect": "reject", "decided_by": "L1", "overridable": true, "source": "constructed",
-      "note": "Injected untraceable concept 'blue'; back-render 'penicillin is blue' has low cosine to original -> reject. Human may override."
+      "note": "Injected concept 'blue' untraceable -> L0 DEFER; L1 rejects (low cosine). Human may override."
     },
     {
-      "id": "halluc-02", "quadrant": "hallucination",
-      "english": "Tim is a duck.", "narsese": "<tim --> rocket>.",
+      "id": "halluc-02", "quadrant": "hallucination", "english": "Tim is a duck.",
+      "claim": {"type": "RelationClaim", "subject": "tim", "verb": "is_a", "object": "rocket"},
+      "narsese": "<tim --> rocket>.",
       "expect": "reject", "decided_by": "L1", "overridable": true, "source": "constructed",
-      "note": "Object hallucinated to an unrelated concept; cosine far below band."
+      "note": "Object hallucinated; taxonomic verb passes structure, 'rocket' untraceable -> DEFER -> L1 reject."
     },
     {
-      "id": "halluc-03", "quadrant": "hallucination",
-      "english": "The book is heavy.", "narsese": "<book --> [expensive]>.",
+      "id": "halluc-03", "quadrant": "hallucination", "english": "The book is heavy.",
+      "claim": {"type": "PropertyClaim", "subject": "book", "value": "expensive"},
+      "narsese": "<book --> [expensive]>.",
       "expect": "reject", "decided_by": "L1", "overridable": true, "source": "constructed",
-      "note": "'expensive' neither present nor a synonym of 'heavy'; semantic drift -> reject."
+      "note": "'expensive' neither present nor a synonym of 'heavy' -> DEFER -> L1 reject."
     },
 
     {
-      "id": "fused-01", "quadrant": "fused_causal",
-      "english": "Coffee makes me alert.", "narsese": "<(coffee * me_alert) --> makes>.",
+      "id": "fused-01", "quadrant": "fused_causal", "english": "Coffee makes me alert.",
+      "claim": {"type": "RelationClaim", "subject": "coffee", "verb": "makes", "object": "me alert"},
+      "narsese": "<(coffee * me_alert) --> makes>.",
       "expect": "reject", "decided_by": "L0", "overridable": false, "source": "observed",
-      "note": "Fused atom 'me_alert' AND non-taxonomic verb 'makes' (causal). Structural reject; NOT overridable. Recovery = reframe ('coffee is a stimulant')."
+      "note": "Non-taxonomic verb 'makes' (causal) AND fused object 'me alert'. Structural reject; not overridable. Recovery = reframe."
     },
     {
-      "id": "fused-02", "quadrant": "fused_causal",
-      "english": "Studying causes knowledge.", "narsese": "<studying =/> knowledge>.",
+      "id": "fused-02", "quadrant": "fused_causal", "english": "Studying causes knowledge.",
+      "claim": {"type": "RelationClaim", "subject": "studying", "verb": "causes", "object": "knowledge"},
+      "narsese": "<(studying * knowledge) --> causes>.",
       "expect": "reject", "decided_by": "L0", "overridable": false, "source": "constructed",
-      "note": "Predictive-implication copula =/> is out of v1 scope (temporal/causal). Structural reject."
+      "note": "Corrected from <studying =/> knowledge> (unreachable). Non-taxonomic verb 'causes' -> product relation -> structural reject."
     },
     {
-      "id": "fused-03", "quadrant": "fused_causal",
-      "english": "Rain makes the ground wet.", "narsese": "<(rain * ground_wet) --> makes>.",
+      "id": "fused-03", "quadrant": "fused_causal", "english": "Rain makes the ground wet.",
+      "claim": {"type": "RelationClaim", "subject": "rain", "verb": "makes", "object": "ground wet"},
+      "narsese": "<(rain * ground_wet) --> makes>.",
       "expect": "reject", "decided_by": "L0", "overridable": false, "source": "constructed",
-      "note": "Fused atom 'ground_wet' + causal verb; structural reject."
+      "note": "Non-taxonomic verb + fused atom 'ground wet'; structural reject."
     },
     {
-      "id": "fused-04", "quadrant": "fused_causal",
-      "english": "If it rains, the match is cancelled.", "narsese": "<rain ==> [cancelled]>.",
+      "id": "fused-04", "quadrant": "fused_causal", "english": "If it rains, the match is cancelled.",
+      "claim": {"type": "RelationClaim", "subject": "rain", "verb": "cancels", "object": "match"},
+      "narsese": "<(rain * match) --> cancels>.",
       "expect": "reject", "decided_by": "L0", "overridable": false, "source": "constructed",
-      "note": "Conditional -> implication copula ==> ; out of scope. Structural reject."
+      "note": "Corrected from <rain ==> [cancelled]> (unreachable). Conditional collapses; non-taxonomic verb 'cancels' -> product relation -> structural reject."
     }
   ]
 }

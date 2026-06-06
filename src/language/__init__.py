@@ -9,6 +9,7 @@ Public interface (ADR-001: a Python module's surface is its `__init__.py` + `__a
 """
 from .compiler import claims_to_narsese, to_narsese
 from .embed import LocalEmbedder
+from .gate import L0, L0Result, is_fused, stem, validate_l0
 from .ground import DEFAULT_THRESHOLD, cosine_similarity, nearest_atom, resolve_atom
 from .llm import LocalLLM
 from .schema import Claim, PropertyClaim, RelationClaim, parse_claims
@@ -21,6 +22,11 @@ __all__ = [
     "parse_claims",
     "to_narsese",
     "claims_to_narsese",
+    "L0",
+    "L0Result",
+    "validate_l0",
+    "stem",
+    "is_fused",
     "cosine_similarity",
     "nearest_atom",
     "resolve_atom",
