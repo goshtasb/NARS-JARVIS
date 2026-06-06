@@ -92,3 +92,31 @@ class OmniGlassExecutor:
         success = self._client.run_sandboxed(argv)  # the ONLY live seam — air-gapped ops only
         self._sink(f"[EXECUTED]: {argv} -> success={success}")
         self._on_feedback(operation, success)
+
+    def is_live_eligible(self, operation: Operation) -> bool:
+        """True if this operation could ever run autonomously: on the live allowlist and air-gapped."""
+        return operation in self._live_operations and not requires_network(operation)
+
+    def execute_approved(self, proposal: Proposal) -> bool:
+        """Run an operation the human EXPLICITLY approved (e.g. a [y/n] confirmation at the REPL).
+
+        Human approval substitutes for the autonomy FLOORS only — never for a safety gate. Network
+        ops and ops off the live allowlist are still refused: this build has no audited execution
+        path for them, approval or not. So in practice only air-gapped allowlisted ops actually run.
+        """
+        operation = proposal.operation
+        argv = command_for(operation)
+        if requires_network(operation):
+            self._sink(f"[DENIED]: {argv} - network egress cannot be sandboxed; no path even with approval")
+            return False
+        if operation not in self._live_operations:
+            self._sink(f"[DENIED]: {argv} - not on the live allowlist; no audited execution path in this build")
+            return False
+        if not self._authorized or self._client is None:
+            raise ExecutionNotAuthorizedError("approved execution still requires authorization + a wired client")
+        if not self._client.env_filter_verified():
+            raise ExecutionNotAuthorizedError("env_filter not verified active — refusing to spawn")
+        success = self._client.run_sandboxed(argv)
+        self._sink(f"[EXECUTED (approved)]: {argv} -> success={success}")
+        self._on_feedback(operation, success)
+        return success

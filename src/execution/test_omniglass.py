@@ -113,6 +113,21 @@ def test_live_execution_refused_when_env_filter_unverified() -> None:
     raise AssertionError("must refuse to spawn while env_filter is unverified")
 
 
+def test_approved_runs_air_gapped_op_but_denies_others() -> None:
+    disk_usage = Operation(OpName.RUN_SAVED_COMMAND, SavedCommandEnum.DISK_USAGE)
+    sandbox = FakeSandbox()
+    lines: list[str] = []
+    executor = OmniGlassExecutor(client=sandbox, authorized=True,
+                                 live_operations=frozenset({disk_usage}), sink=lines.append)
+    # Approved allowlisted op runs.
+    assert executor.execute_approved(decide("run_saved_command", "disk_usage", DecisionStats(0, 0, 0, 0))) is True
+    assert sandbox.calls == [("df", "-h")]
+    # Approved op OFF the allowlist is still refused — approval can't override a safety gate.
+    assert executor.execute_approved(decide("open_app", "slack", DecisionStats(0, 0, 0, 0))) is False
+    assert sandbox.calls == [("df", "-h")]  # unchanged
+    assert any("[DENIED]" in line for line in lines)
+
+
 if __name__ == "__main__":
     test_templates_cover_every_catalog_member()
     test_unauthorized_autonomous_execution_refused()
@@ -122,4 +137,5 @@ if __name__ == "__main__":
     test_op_not_on_live_allowlist_stays_suggestion()
     test_network_operation_is_never_autonomous()
     test_live_execution_refused_when_env_filter_unverified()
+    test_approved_runs_air_gapped_op_but_denies_others()
     print("execution/test_omniglass: OK")

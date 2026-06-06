@@ -48,6 +48,17 @@ OmniGlass/                  # sandboxed execution engine     — vendored upstre
 cd src && python3 -m brain.test_parse && python3 -m brain.test_ona_integration
 ```
 
+## Run it (interactive console)
+```sh
+cd src && python3 console.py
+```
+A single-threaded console: a `select()` heartbeat multiplexes the REPL and an always-on **sentinel**
+that polls CPU/mem each tick and alerts on surprises — so the ONA L1 cache and the terminal are
+single-owner by construction (no locks, no pipe-desync race). Commands: `learn <english>` (needs a
+local GGUF; set `NARS_JARVIS_LLM_GGUF`), `tell <narsese.>`, `ask <narsese?>`, `act <op> <arg>`
+(Suggestion-Only actions prompt `[y/n]`; only air-gapped `disk_usage` runs live), `status`, `quit`.
+File-watching (watchdog) is intentionally off — its observer thread would break the single-owner model.
+
 ## Architecture
 Domain modules are cohesive and loosely coupled (CLAUDE.md Principle 2; standards/01); each
 exposes one public interface via its `__init__.py`. See per-module READMEs.
