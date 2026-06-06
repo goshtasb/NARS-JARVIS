@@ -71,6 +71,17 @@ def _make_claim_source():
     return _DemoClaims()
 
 
+def _make_embedder():
+    """Optional grounding embedder: maps plural/synonym atoms onto existing ones (PRD R1)."""
+    if os.environ.get("NARS_JARVIS_EMBED_GGUF"):
+        try:
+            from language import LocalEmbedder
+            return LocalEmbedder()
+        except Exception as exc:  # noqa: BLE001 — grounding is optional; degrade to none
+            sys.stderr.write(f"[warn] LocalEmbedder unavailable ({exc}); grounding off\n")
+    return None
+
+
 class Console:
     def __init__(self, db_path: str = "jarvis.db", poll_interval: float = 2.0) -> None:
         self._poll = poll_interval
@@ -82,8 +93,8 @@ class Console:
         self._store = MemoryStore(db_path)
         self._brain = Brain(cycles_per_step=50)  # boots ONA with *motorbabbling=0.0
         self._executor = build_air_gapped_executor(sink=self._out)  # sync output during `act`
-        self._jarvis = Jarvis(Translator(_make_claim_source()), self._store, self._brain,
-                              executor=self._executor)
+        self._jarvis = Jarvis(Translator(_make_claim_source(), embedder=_make_embedder()),
+                              self._store, self._brain, executor=self._executor)
         narrator = Narrator(_NoNarrationLLM(), on_alert=self._on_alert)
         self._detector = SurpriseDetector(self._brain, threshold=0.5, on_surprise=narrator.narrate)
         self._sentinel = SystemSentinel(sink=self._detector.observe, poll_interval=poll_interval)
@@ -271,6 +282,8 @@ class Console:
 
 
 def main() -> None:
+    if os.environ.get("NARS_JARVIS_LLM_GGUF"):
+        print("Loading local models (first start ~10-20s)…", flush=True)
     Console(db_path=os.environ.get("NARS_JARVIS_DB", "jarvis.db")).run()
 
 

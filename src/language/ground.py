@@ -11,7 +11,11 @@ from __future__ import annotations
 
 import math
 
-DEFAULT_THRESHOLD = 0.95
+# Tuned for nomic-embed-text word grounding (PRD R1 dedup tuning). Measured: singular/plural and
+# paraphrase variants cluster at ~0.88-0.92 (duck/ducks=0.92, dog/dogs=0.88), while distinct
+# concepts sit at <=0.745 (bird/animal=0.745, duck/bird=0.69). 0.83 merges the former, keeps the
+# latter apart. Heuristic, not exact — a different embedder or harder word pairs may need re-tuning.
+DEFAULT_THRESHOLD = 0.83
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:
