@@ -23,6 +23,21 @@ Mode** (the proposal is surfaced to the terminal for human approval).
 prints `[EXECUTE PROPOSAL]: open_app(AppEnum.SLACK) - Autonomy: False (Awaiting User)` and feeds a
 simulated success/failure back via `on_feedback`, driving ONA's reinforce/erode habit cycle.
 
+## Phase B — gated, with the crucible constraints enforced in code (`omniglass.py`)
+The local sandbox crucible (2026-06-05, **CONDITIONAL PASS** — see
+[`docs/audits/omniglass-v1.0.0-beta-local-RESULTS-2026-06-05.md`](../../docs/audits/omniglass-v1.0.0-beta-local-RESULTS-2026-06-05.md))
+mapped two gaps that `OmniGlassExecutor` now enforces structurally, independent of config/autonomy:
+1. **Network egress = human-only.** `catalog.requires_network(op)` (default-deny) gates any
+   network-requiring operation to human confirmation; it can never reach the live seam.
+   Rationale: `sandbox-exec` cannot do domain-level egress filtering, so a network grant is an
+   arbitrary-IP exfiltration vector.
+2. **Env-filter must be verified.** The live seam is refused unless `client.env_filter_verified()`
+   is True — secret-env protection is the `env_filter` layer, not the sandbox profile.
+
+**Still NOT live:** the live seam (`client.run_sandboxed`) has no concrete, audited `SandboxClient`,
+the executor is not yet wired into the `Jarvis` orchestrator, and the audited profile *blocks*
+`open -a` (LaunchServices/mach). `authorized=True` remains a dated human decision.
+
 ## Tests
 From `src/`: `python3 -m execution.test_catalog | test_autonomy | test_executor`. They prove an
 unregistered operation is violently rejected (+ logged), a low-confidence coincidence is trapped in

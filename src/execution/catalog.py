@@ -47,6 +47,28 @@ class Operation:
     arg: Enum  # a validated member of the operation's bound enum
 
 
+# ── Per-operation capability manifest (ADR-002; OmniGlass crucible 2026-06-05) ──
+# The local sandbox crucible PROVED sandbox-exec cannot do domain-level egress filtering:
+# any network grant emits a blanket (allow network-outbound) => arbitrary-IP exfiltration.
+# So network-requiring operations are PERMANENTLY ineligible for autonomous live execution
+# (human-confirmation only). Today every catalog operation is air-gapped; this manifest is
+# the structural seam that auto-gates any future network operation.
+# See docs/audits/omniglass-v1.0.0-beta-local-RESULTS-2026-06-05.md.
+_REQUIRES_NETWORK: dict[OpName, bool] = {
+    OpName.OPEN_APP: False,
+    OpName.RUN_SAVED_COMMAND: False,
+}
+
+
+def requires_network(operation: Operation) -> bool:
+    """True if the operation needs network egress => hard-ineligible for autonomy.
+
+    Default-deny: an operation absent from the manifest is treated as network-requiring,
+    so a new operation cannot silently become autonomy-eligible by omission.
+    """
+    return _REQUIRES_NETWORK.get(operation.name, True)
+
+
 def _violation(message: str) -> None:
     _log.critical("SECURITY VIOLATION: %s", message)
 

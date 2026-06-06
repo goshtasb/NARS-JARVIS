@@ -1,15 +1,24 @@
-"""OmniGlass-backed executor — SCAFFOLD ONLY (M3 Phase B, NOT wired to a live engine).
+"""OmniGlass-backed executor — Phase-B scaffold, GATED, with the crucible constraints enforced.
 
 Implements the `Executor` interface so it is a drop-in for `MockExecutor` the moment the OmniGlass
 sandbox passes its adversarial audit. Until BOTH `authorized=True` AND a real `SandboxClient` are
 injected, it refuses to execute — there is no path to a live engine in this file. The single live
 seam is `client.run_sandboxed(argv)`, and the default client is None.
+
+Two constraints proven necessary by the 2026-06-05 local sandbox crucible are enforced HERE, in
+code, so they cannot be bypassed by configuration or autonomy state
+(docs/audits/omniglass-v1.0.0-beta-local-RESULTS-2026-06-05.md):
+  1. NETWORK: an operation that requires network egress is PERMANENTLY ineligible for autonomy —
+     downgraded to human-confirmation, never reaching the live seam. sandbox-exec cannot do
+     domain-level egress filtering, so a network grant = arbitrary-IP exfiltration.
+  2. ENV-FILTER: live execution is refused unless the client confirms the env-filter pipeline is
+     active. Secret-env protection is the env_filter layer, NOT the sandbox profile itself.
 """
 from __future__ import annotations
 
 from typing import Callable, Protocol, runtime_checkable
 
-from .catalog import Operation
+from .catalog import Operation, requires_network
 from .executor import Proposal
 from .templates import command_for
 
@@ -25,8 +34,14 @@ class Executor(Protocol):
 
 @runtime_checkable
 class SandboxClient(Protocol):
-    """The seam a real, audited OmniGlass client must implement: run a fixed argv, sandboxed."""
+    """The seam a real, audited OmniGlass client must implement.
 
+    `env_filter_verified()` MUST return True only when the env-filter pipeline (which strips
+    secrets from the child environment — the sandbox profile does not) is active and verified.
+    The executor calls it before every spawn and refuses if it is False.
+    """
+
+    def env_filter_verified(self) -> bool: ...  # env-filter pipeline active + verified
     def run_sandboxed(self, argv: tuple[str, ...]) -> bool: ...  # returns success
 
 
@@ -42,15 +57,27 @@ class OmniGlassExecutor:
         self._on_feedback = on_feedback or (lambda operation, success: None)
 
     def execute(self, proposal: Proposal, simulate_success: bool = True) -> None:
-        argv = command_for(proposal.operation)  # fixed argv template (no shell string)
-        if not proposal.autonomous:
-            self._sink(f"[SUGGEST]: {argv} - Awaiting User")  # Suggestion-Only: never touches engine
+        operation = proposal.operation
+        argv = command_for(operation)  # fixed argv template (no shell string)
+        # Constraint #1 — network egress can't be sandboxed: such ops are NEVER autonomous,
+        # regardless of the predicate or `authorized`. They fall through to human-confirmation.
+        network = requires_network(operation)
+        if network or not proposal.autonomous:
+            reason = "Awaiting User (network egress — human-only per crucible)" if network else "Awaiting User"
+            self._sink(f"[SUGGEST]: {argv} - {reason}")  # Suggestion-Only: never touches engine
             return
         if not self._authorized or self._client is None:
             raise ExecutionNotAuthorizedError(
                 "OmniGlass live execution is gated: requires a PASSED adversarial sandbox audit "
                 "AND an injected SandboxClient. Phase B is not wired."
             )
-        success = self._client.run_sandboxed(argv)  # the ONLY live seam — un-wired by default
+        # Constraint #2 — refuse to spawn unless env-filter is verified active (the sandbox
+        # profile alone does NOT strip secrets from the environment).
+        if not self._client.env_filter_verified():
+            raise ExecutionNotAuthorizedError(
+                "env_filter pipeline not verified active — refusing to spawn. The sandbox profile "
+                "alone does NOT strip secrets from the environment (see audit 2026-06-05)."
+            )
+        success = self._client.run_sandboxed(argv)  # the ONLY live seam — air-gapped ops only
         self._sink(f"[EXECUTED]: {argv} -> success={success}")
-        self._on_feedback(proposal.operation, success)
+        self._on_feedback(operation, success)

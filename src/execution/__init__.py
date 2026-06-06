@@ -2,8 +2,10 @@
 
 Phase A (built): the closed typed Operation catalog (ADR-002), the autonomy-eligibility predicate
 (overriding ONA's permissive defaults), and a MockExecutor with a feedback loop.
-Phase B (scaffold only, NOT wired): fixed-argv command templates and a gated OmniGlassExecutor,
-drop-in ready but with no path to a live engine until the sandbox audit clears.
+Phase B (scaffold, GATED): fixed-argv command templates and a gated OmniGlassExecutor, drop-in
+ready but with no path to a live engine until a real SandboxClient is wired. The 2026-06-05
+sandbox crucible constraints (network egress = human-only; env-filter must be verified) are
+enforced in code (see `omniglass.py`).
 Public interface (ADR-001).
 """
 from .autonomy import MOTOR_BABBLING_CHANCE, AutonomyPolicy, DecisionStats, is_autonomous
@@ -14,6 +16,7 @@ from .catalog import (
     SavedCommandEnum,
     UnregisteredOperationError,
     parse_operation,
+    requires_network,
 )
 from .executor import MockExecutor, Proposal, render_operation
 from .omniglass import (
@@ -31,6 +34,7 @@ __all__ = [
     "SavedCommandEnum",
     "Operation",
     "parse_operation",
+    "requires_network",
     "UnregisteredOperationError",
     "MOTOR_BABBLING_CHANCE",
     "AutonomyPolicy",

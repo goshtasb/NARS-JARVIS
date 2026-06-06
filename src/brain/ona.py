@@ -23,7 +23,8 @@ class Brain:
     is stepped; questions are answered from current memory with an evidence trail (stamp).
     """
 
-    def __init__(self, nar_bin: str | None = None, cycles_per_step: int = 10) -> None:
+    def __init__(self, nar_bin: str | None = None, cycles_per_step: int = 10,
+                 motor_babbling: float = 0.0) -> None:
         path = nar_bin or os.environ.get("NARS_JARVIS_NAR_BIN") or str(_DEFAULT_NAR)
         if not Path(path).exists():
             raise FileNotFoundError(
@@ -39,6 +40,11 @@ class Brain:
             bufsize=1,
         )
         self._drain()  # clear any startup output
+        # Override ONA's permissive game-agent default (0.2): NO random motor babbling on a live
+        # host. Mirrors execution/autonomy.py MOTOR_BABBLING_CHANCE; kept as a literal default to
+        # avoid a brain->execution cross-domain import (S-01). Verified accepted by the NAR shell.
+        self._write(f"*motorbabbling={motor_babbling}")
+        self._drain()
 
     def _write(self, line: str) -> None:
         assert self._proc.stdin is not None
