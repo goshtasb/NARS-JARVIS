@@ -11,8 +11,11 @@ import json
 from dataclasses import dataclass, replace
 from typing import Callable, Protocol
 
+from shared import atom
+
 from .compiler import claims_to_narsese
-from .ground import DEFAULT_THRESHOLD, resolve_atom
+from .gate import stem
+from .ground import DEFAULT_THRESHOLD
 from .schema import Claim, RelationClaim, parse_claims
 
 DEFAULT_SYSTEM_PROMPT = (
@@ -44,6 +47,14 @@ class Embedder(Protocol):
     def embed(self, text: str) -> list[float]: ...
 
 
+class GroundingCache(Protocol):
+    """Persistent entity-resolution cache (impl: memory.SqliteGroundingStore). Structural."""
+    def resolve_surface(self, surface: str) -> str | None: ...
+    def nearest(self, query_vec: list[float], threshold: float) -> str | None: ...
+    def add_atom(self, name: str, raw_vec: list[float]) -> None: ...
+    def add_alias(self, surface: str, canonical: str) -> None: ...
+
+
 @dataclass(frozen=True)
 class TranslationResult:
     ok: bool
@@ -61,13 +72,16 @@ class Translator:
         brain: object | None = None,
         on_reject: Callable[[str, str], None] | None = None,
         threshold: float = DEFAULT_THRESHOLD,
+        cache: GroundingCache | None = None,
     ) -> None:
         self._llm = llm
         self._embedder = embedder
         self._brain = brain
         self._on_reject = on_reject or (lambda sentence, error: None)
         self._threshold = threshold
-        self._atoms: dict[str, list[float]] = {}  # grounding state: atom -> embedding
+        # Persistent grounding requires BOTH an embedder and a cache; otherwise atoms pass through
+        # un-grounded (the compiler still sanitizes them at to_narsese).
+        self._cache = cache
 
     def claims(self, sentence: str, system_prompt: str = DEFAULT_SYSTEM_PROMPT) -> list[Claim]:
         """English -> GROUNDED typed claims (generate + parse + ground). No compile, no brain write.
@@ -76,7 +90,7 @@ class Translator:
         malformed model output (one of `_PARSE_ERRORS`); the caller decides how to surface it.
         """
         parsed = parse_claims(self._llm.generate(system_prompt, sentence))
-        if self._embedder is not None:
+        if self._embedder is not None and self._cache is not None:
             parsed = [self._ground(c) for c in parsed]
         return parsed
 
@@ -94,11 +108,28 @@ class Translator:
         return TranslationResult(True, narsese)
 
     def _ground_atom(self, name: str) -> str:
-        vec = self._embedder.embed(name)  # type: ignore[union-attr]
-        atom, created = resolve_atom(name, vec, self._atoms, self._threshold)
-        if created:
-            self._atoms[atom] = vec
-        return atom
+        """Resolve a raw token to its canonical atom, cheapest-first; the embedder is the LAST
+        resort, invoked at most once per novel surface form, ever (then memoized as an alias).
+        """
+        surface = atom(name)                                  # 1. sanitize -> surface key
+        hit = self._cache.resolve_surface(surface)            # 2/3. alias OR canonical exact hit
+        if hit is not None:
+            return hit
+        stemmed = stem(surface)                               # 4. inflectional stemmer fast-path
+        if stemmed != surface:
+            hit = self._cache.resolve_surface(stemmed)
+            if hit is not None:
+                self._cache.add_alias(surface, hit)           # memoize -> free next time
+                return hit
+        vec = self._embedder.embed(surface)                   # 5. the ONLY paid step
+        vec = vec[0] if vec and isinstance(vec[0], list) else vec
+        canonical = self._cache.nearest(vec, self._threshold)
+        if canonical is not None:
+            if canonical != surface:
+                self._cache.add_alias(surface, canonical)     # persist surface -> canonical
+            return canonical
+        self._cache.add_atom(surface, vec)                    # a brand-new canonical concept
+        return surface
 
     def _ground(self, claim: Claim) -> Claim:
         if isinstance(claim, RelationClaim):

@@ -22,7 +22,7 @@ from brain import Brain
 from execution import DecisionStats, build_air_gapped_executor, decide
 from jarvis import Jarvis
 from language import IngestionGate, Translator
-from memory import MemoryStore
+from memory import MemoryStore, SqliteGroundingStore
 from sentinel import SurpriseDetector, SystemSentinel
 from sentinel.narrate import Narrator
 
@@ -97,7 +97,10 @@ class Console:
         # The ingestion gate (L0 structural + L1 semantic) needs the embedder for L1; with no
         # embedder it stays None and learn falls back to the ungated write-through.
         gate = IngestionGate(embedder) if embedder is not None else None
-        self._jarvis = Jarvis(Translator(_make_claim_source(), embedder=embedder),
+        # Persistent grounding lives in the SAME db file (atoms/aliases tables) so "ducks"->"duck"
+        # survives a restart. Requires the embedder; without it, grounding is off.
+        grounding = SqliteGroundingStore(db_path) if embedder is not None else None
+        self._jarvis = Jarvis(Translator(_make_claim_source(), embedder=embedder, cache=grounding),
                               self._store, self._brain, executor=self._executor, gate=gate)
         narrator = Narrator(_NoNarrationLLM(), on_alert=self._on_alert)
         self._detector = SurpriseDetector(self._brain, threshold=0.5, on_surprise=narrator.narrate)
