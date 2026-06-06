@@ -1,0 +1,75 @@
+(version 1)
+(deny default)
+
+;; System-wide reads (runtimes need hundreds of OS paths)
+(allow file-read* (subpath "/"))
+
+;; WALL OFF user data (LLM stdout = exfiltration vector)
+(deny file-read* (subpath "/Users"))
+
+;; Allow stat/lstat under /Users (Node.js realpathSync path resolution)
+(allow file-read-metadata (subpath "/Users"))
+
+;; Re-allow: runtime prefix
+(allow file-read* (subpath "/Users/localuser/.nvm/versions/node/v24.8.0"))
+
+;; Re-allow: plugin directory
+(allow file-read* (subpath "/private/tmp/og-audit/plugin"))
+
+;; Re-allow: plugin config directory
+(allow file-read* (subpath "/Users/localuser/Library/Application Support/omni-glass/plugin-config"))
+
+;; Runtime binary
+(allow process-exec (literal "/Users/localuser/.nvm/versions/node/v24.8.0/bin/node"))
+
+;; stdio writes
+(allow file-write* (literal "/dev/stdout"))
+(allow file-write* (literal "/dev/stderr"))
+(allow file-write* (literal "/dev/null"))
+
+;; Plugin temp directory
+(allow file-read* (subpath "/private/tmp/omni-glass-com.audit.crucible"))
+(allow file-write* (subpath "/private/tmp/omni-glass-com.audit.crucible"))
+
+(allow sysctl-read)
+
+;; Declared filesystem access
+(allow file-read* (subpath "/private/tmp/omni-glass-approved"))
+(allow file-write* (subpath "/private/tmp/omni-glass-approved"))
+
+;; Declared shell commands
+(allow process-fork)
+(allow process-exec (literal "/bin/sh"))
+(allow process-exec (literal "/bin/bash"))
+(allow file-write* (subpath "/private/tmp/omni-glass-com.audit.crucible"))
+(allow process-exec (literal "/bin/cat"))
+(allow process-exec (literal "/bin/ls"))
+(allow process-exec (literal "/bin/echo"))
+(allow process-exec (literal "/bin/cp"))
+(allow process-exec (literal "/bin/ln"))
+(allow process-exec (literal "/usr/bin/env"))
+(allow process-exec (literal "/usr/bin/grep"))
+(allow process-exec (literal "/usr/bin/nc"))
+(allow process-exec (literal "/usr/bin/sqlite3"))
+(allow process-exec (literal "/usr/bin/security"))
+(allow process-exec (literal "/usr/bin/lldb"))
+(allow process-exec (literal "/usr/bin/osascript"))
+(allow process-exec (literal "/usr/bin/sudo"))
+(allow process-exec (literal "/bin/launchctl"))
+(allow process-exec (literal "/sbin/kextload"))
+(allow process-exec (literal "/bin/chmod"))
+(allow process-exec (literal "/usr/sbin/screencapture"))
+(allow process-exec (literal "/bin/kill"))
+(allow process-exec (literal "/bin/df"))
+(allow process-exec (literal "/usr/bin/curl"))
+(allow process-exec (literal "/usr/bin/printf"))
+(allow process-exec (literal "/usr/bin/tee"))
+(allow process-exec (literal "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3"))
+(allow process-exec (literal "/bin/bash"))
+(allow process-exec (literal "/bin/sh"))
+(allow process-exec (literal "/usr/bin/head"))
+(allow process-exec (literal "/usr/bin/pgrep"))
+(allow process-exec (literal "/usr/bin/whoami"))
+(allow process-exec (literal "/usr/bin/open"))
+(allow process-exec (literal "/bin/mkdir"))
+
