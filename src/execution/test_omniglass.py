@@ -36,8 +36,10 @@ def test_templates_cover_every_catalog_member() -> None:
 
 
 def test_unauthorized_autonomous_execution_refused() -> None:
-    executor = OmniGlassExecutor()  # authorized=False, client=None
-    proposal = decide("open_app", "slack", DecisionStats(0.9, 0.95, 20, 8))  # autonomous=True
+    # A live-ELIGIBLE, autonomous op with no authorization/client must raise (gated).
+    disk_usage = Operation(OpName.RUN_SAVED_COMMAND, SavedCommandEnum.DISK_USAGE)
+    executor = OmniGlassExecutor(live_operations=frozenset({disk_usage}))  # authorized=False, client=None
+    proposal = decide("run_saved_command", "disk_usage", DecisionStats(0.9, 0.95, 20, 8))  # autonomous
     try:
         executor.execute(proposal)
     except ExecutionNotAuthorizedError:
@@ -60,11 +62,24 @@ def test_both_executors_satisfy_the_interface() -> None:
 
 def test_authorized_path_submits_fixed_argv_via_fake_client() -> None:
     # Proves the seam works with a FAKE client — still no real OmniGlass engine involved.
+    disk_usage = Operation(OpName.RUN_SAVED_COMMAND, SavedCommandEnum.DISK_USAGE)
     sandbox = FakeSandbox()
-    executor = OmniGlassExecutor(client=sandbox, authorized=True, sink=lambda line: None)
+    executor = OmniGlassExecutor(client=sandbox, authorized=True,
+                                 live_operations=frozenset({disk_usage}), sink=lambda line: None)
     proposal = decide("run_saved_command", "disk_usage", DecisionStats(0.9, 0.95, 20, 8))
     executor.execute(proposal)
     assert sandbox.calls == [("df", "-h")]  # fixed argv template, never a generated string
+
+
+def test_op_not_on_live_allowlist_stays_suggestion() -> None:
+    # An authorized, autonomous op that is NOT on the live allowlist must never reach the seam.
+    sandbox = FakeSandbox()
+    lines: list[str] = []
+    executor = OmniGlassExecutor(client=sandbox, authorized=True, sink=lines.append)  # empty allowlist
+    proposal = decide("run_saved_command", "disk_usage", DecisionStats(0.99, 1.0, 50, 30))
+    executor.execute(proposal)
+    assert sandbox.calls == []
+    assert any("not cleared for live autonomy" in line for line in lines)
 
 
 def test_network_operation_is_never_autonomous() -> None:
@@ -87,8 +102,9 @@ def test_network_operation_is_never_autonomous() -> None:
 
 def test_live_execution_refused_when_env_filter_unverified() -> None:
     # Crucible constraint #2: refuse to spawn an air-gapped op if env-filter isn't verified.
+    disk_usage = Operation(OpName.RUN_SAVED_COMMAND, SavedCommandEnum.DISK_USAGE)
     executor = OmniGlassExecutor(client=FakeSandbox(env_ok=False), authorized=True,
-                                 sink=lambda line: None)
+                                 live_operations=frozenset({disk_usage}), sink=lambda line: None)
     proposal = decide("run_saved_command", "disk_usage", DecisionStats(0.9, 0.95, 20, 8))
     try:
         executor.execute(proposal)
@@ -103,6 +119,7 @@ if __name__ == "__main__":
     test_suggestion_mode_never_touches_engine()
     test_both_executors_satisfy_the_interface()
     test_authorized_path_submits_fixed_argv_via_fake_client()
+    test_op_not_on_live_allowlist_stays_suggestion()
     test_network_operation_is_never_autonomous()
     test_live_execution_refused_when_env_filter_unverified()
     print("execution/test_omniglass: OK")

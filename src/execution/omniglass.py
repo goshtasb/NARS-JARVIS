@@ -49,10 +49,14 @@ class OmniGlassExecutor:
     """Phase-B scaffold. GATED: refuses until the sandbox audit is signed off AND a client is wired."""
 
     def __init__(self, client: SandboxClient | None = None, authorized: bool = False,
+                 live_operations: frozenset[Operation] = frozenset(),
                  sink: Callable[[str], object] = print,
                  on_feedback: Callable[[Operation, bool], object] | None = None) -> None:
         self._client = client
         self._authorized = authorized
+        # The closed allowlist of operations cleared for LIVE autonomous execution. Default empty:
+        # nothing is live unless explicitly authorized. Anything not here stays Suggestion-Only.
+        self._live_operations = live_operations
         self._sink = sink
         self._on_feedback = on_feedback or (lambda operation, success: None)
 
@@ -61,9 +65,16 @@ class OmniGlassExecutor:
         argv = command_for(operation)  # fixed argv template (no shell string)
         # Constraint #1 — network egress can't be sandboxed: such ops are NEVER autonomous,
         # regardless of the predicate or `authorized`. They fall through to human-confirmation.
+        # Constraint #1b — only operations on the explicit live allowlist may reach the engine.
         network = requires_network(operation)
-        if network or not proposal.autonomous:
-            reason = "Awaiting User (network egress — human-only per crucible)" if network else "Awaiting User"
+        live_eligible = operation in self._live_operations
+        if network or not live_eligible or not proposal.autonomous:
+            if network:
+                reason = "Awaiting User (network egress — human-only per crucible)"
+            elif not live_eligible:
+                reason = "Awaiting User (not cleared for live autonomy)"
+            else:
+                reason = "Awaiting User"
             self._sink(f"[SUGGEST]: {argv} - {reason}")  # Suggestion-Only: never touches engine
             return
         if not self._authorized or self._client is None:

@@ -19,6 +19,7 @@ from .catalog import (
     requires_network,
 )
 from .executor import MockExecutor, Proposal, render_operation
+from .live import LIVE_OPERATIONS, build_air_gapped_executor
 from .omniglass import (
     Executor,
     ExecutionNotAuthorizedError,
@@ -26,6 +27,7 @@ from .omniglass import (
     SandboxClient,
 )
 from .pipeline import decide
+from .sandbox_client import AirGappedSandboxClient
 from .templates import command_for
 
 __all__ = [
@@ -49,4 +51,7 @@ __all__ = [
     "SandboxClient",
     "OmniGlassExecutor",
     "ExecutionNotAuthorizedError",
+    "AirGappedSandboxClient",
+    "build_air_gapped_executor",
+    "LIVE_OPERATIONS",
 ]

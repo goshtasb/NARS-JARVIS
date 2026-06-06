@@ -1,0 +1,23 @@
+(version 1)
+(deny default)
+
+;; NARS-JARVIS air-gapped saved-command profile.
+;; A strict SUBSET of the audited v1.0.0-beta OmniGlass plugin profile (deny-default,
+;; broad system reads, wall off /Users, NO network, NO shell). Because every allow here is
+;; also present in the audited profile, the crucible's denials hold a fortiori (fewer allows
+;; => strictly smaller attack surface). Only the vetted saved-command binary may exec.
+;; See docs/audits/omniglass-v1.0.0-beta-local-RESULTS-2026-06-05.md.
+(allow file-read* (subpath "/"))
+(deny file-read* (subpath "/Users"))
+(allow file-read-metadata (subpath "/Users"))
+
+;; stdio only
+(allow file-write* (literal "/dev/stdout"))
+(allow file-write* (literal "/dev/stderr"))
+(allow file-write* (literal "/dev/null"))
+
+;; df/ps read system info via sysctl
+(allow sysctl-read)
+
+;; VETTED binary allowlist — disk_usage only. No /bin/sh, no /bin/bash, no network.
+(allow process-exec (literal "/bin/df"))

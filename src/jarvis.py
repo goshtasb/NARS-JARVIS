@@ -8,17 +8,20 @@ from __future__ import annotations
 
 from brain import Brain
 from contradiction import ContradictionGuard
+from execution import DecisionStats, Executor, decide
 from language import Translator
 from memory import MemoryStore, observe, reload_into_brain, statement_term, statement_truth
 
 
 class Jarvis:
     def __init__(self, translator: Translator, store: MemoryStore, brain: Brain,
-                 guard: ContradictionGuard | None = None) -> None:
+                 guard: ContradictionGuard | None = None,
+                 executor: Executor | None = None) -> None:
         self._translator = translator
         self._store = store
         self._brain = brain
         self._guard = guard
+        self._executor = executor  # None => orchestrator stays learn/ask only (no execution path)
 
     def learn(self, sentence: str) -> list[str]:
         """English -> Narsese; for each statement run the C2 pre-commit check, then write through
@@ -47,3 +50,16 @@ class Jarvis:
             reload_into_brain(self._store, self._brain)
             answer = self._brain.ask(question)
         return answer
+
+    def act(self, op_name: str, arg_name: str, stats: DecisionStats):
+        """Route a proposed action through the C4 decision gate to the wired executor.
+
+        Returns the `Proposal` (so the caller sees the autonomy decision), or None if no executor
+        is wired. The executor enforces every safety constraint — closed catalog, autonomy floors,
+        network gate, live allowlist, env-filter — before anything reaches the engine.
+        """
+        if self._executor is None:
+            return None
+        proposal = decide(op_name, arg_name, stats)  # raises on an unregistered operation
+        self._executor.execute(proposal)
+        return proposal

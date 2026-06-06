@@ -34,9 +34,18 @@ mapped two gaps that `OmniGlassExecutor` now enforces structurally, independent 
 2. **Env-filter must be verified.** The live seam is refused unless `client.env_filter_verified()`
    is True — secret-env protection is the `env_filter` layer, not the sandbox profile.
 
-**Still NOT live:** the live seam (`client.run_sandboxed`) has no concrete, audited `SandboxClient`,
-the executor is not yet wired into the `Jarvis` orchestrator, and the audited profile *blocks*
-`open -a` (LaunchServices/mach). `authorized=True` remains a dated human decision.
+## Live, air-gapped (`disk_usage` only) — `sandbox_client.py`, `live.py`
+`AirGappedSandboxClient` runs a **fixed argv tuple** under `sandbox-exec` with the
+[`profiles/air_gapped.sb`](profiles/air_gapped.sb) profile (a strict subset of the audited profile:
+deny-default, `/Users` walled off, **no network, no shell**, only `/bin/df` may exec) and a filtered
+env. `build_air_gapped_executor()` is the **single** place `authorized=True` is set, with a hardcoded
+`LIVE_OPERATIONS = {disk_usage}` allowlist — the one operation the crucible proved runs under the
+sandbox with every attack still denied. `Jarvis.act(op, arg, stats)` routes a proposal through
+`decide()` to the executor. Proof: `test_live_airgapped.py` runs real `df -h` under the sandbox.
+
+**Still human-only (by design):** `OPEN_APP` (the audited profile blocks `open -a` — OmniGlass
+issue #13), any future network operation (issue #12), and any op below the autonomy floors.
+`authorized=True` for anything beyond `disk_usage` remains a dated human decision behind a new audit.
 
 ## Tests
 From `src/`: `python3 -m execution.test_catalog | test_autonomy | test_executor`. They prove an
