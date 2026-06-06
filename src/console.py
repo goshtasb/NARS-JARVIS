@@ -14,13 +14,15 @@ from __future__ import annotations
 
 import os
 import select
+import shutil
+import subprocess
 import sys
 
 from brain import Brain
 from execution import DecisionStats, build_air_gapped_executor, decide
 from jarvis import Jarvis
 from language import Translator
-from memory import MemoryStore, observe
+from memory import MemoryStore
 from sentinel import SurpriseDetector, SystemSentinel
 from sentinel.narrate import Narrator
 
@@ -82,9 +84,13 @@ class Console:
         self._executor = build_air_gapped_executor(sink=self._out)  # sync output during `act`
         self._jarvis = Jarvis(Translator(_make_claim_source()), self._store, self._brain,
                               executor=self._executor)
-        narrator = Narrator(_NoNarrationLLM(), on_alert=lambda text: self._emit("⚠  " + text))
+        narrator = Narrator(_NoNarrationLLM(), on_alert=self._on_alert)
         self._detector = SurpriseDetector(self._brain, threshold=0.5, on_surprise=narrator.narrate)
         self._sentinel = SystemSentinel(sink=self._detector.observe, poll_interval=poll_interval)
+
+        # macOS Notification Center channel (fire-and-forget; jarvis runs OUTSIDE the sandbox).
+        self._notify_on = sys.platform == "darwin" and shutil.which("osascript") is not None
+        self._notif_procs: list[subprocess.Popen] = []
 
     # ── terminal writers ──────────────────────────────────────────────
     def _w(self, s: str) -> None:
@@ -104,6 +110,36 @@ class Console:
 
     def _redraw(self) -> None:
         self._w("\r\x1b[K" + PROMPT + self._buf)
+
+    # ── surprise alert: terminal redraw + concurrent OS banner ────────
+    def _on_alert(self, text: str) -> None:
+        self._emit("⚠  " + text)  # terminal: clear line, print, redraw prompt+buffer (instant)
+        self._notify(text)        # macOS banner: fire-and-forget, runs off-thread (instant return)
+
+    def _notify(self, body: str, title: str = "NARS-JARVIS sentinel") -> None:
+        """Spawn osascript WITHOUT waiting — a sluggish Notification Center can't stall the loop.
+
+        Popen does only fork+exec and returns immediately; the banner is rendered by an independent
+        OS process. stdio -> DEVNULL (no pipe backpressure), start_new_session (detached). Args are
+        passed to AppleScript via `argv`, never interpolated, so the alert text can't inject script.
+        """
+        if not self._notify_on:
+            return
+        try:
+            proc = subprocess.Popen(
+                ["osascript",
+                 "-e", "on run argv",
+                 "-e", "display notification (item 1 of argv) with title (item 2 of argv)",
+                 "-e", "end run", "--", body[:240], title],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                start_new_session=True)
+            self._notif_procs.append(proc)
+        except Exception:  # noqa: BLE001 — notifications are best-effort; never break the loop
+            pass
+
+    def _reap_notifs(self) -> None:
+        """Drop finished banner processes (poll() reaps them) so no zombies accumulate."""
+        self._notif_procs = [p for p in self._notif_procs if p.poll() is None]
 
     # ── main loop ─────────────────────────────────────────────────────
     def run(self) -> None:
@@ -146,8 +182,9 @@ class Console:
                 self._buf += ch; self._w(ch)
 
     def _tick(self) -> None:
+        self._reap_notifs()
         try:
-            self._sentinel.run_once()  # poll CPU/mem -> ONA; surprises -> narrator -> self._emit
+            self._sentinel.run_once()  # poll CPU/mem -> ONA; surprises -> narrator -> self._on_alert
             import psutil
             self._last = f"cpu={psutil.cpu_percent():.0f}% mem={psutil.virtual_memory().percent:.0f}%"
         except Exception as exc:  # noqa: BLE001 — a flaky poll must never kill the loop
@@ -185,9 +222,11 @@ class Console:
     def _do_tell(self, narsese: str) -> None:
         if not narsese:
             return self._out("usage: tell <narsese statement.>  e.g.  tell <a --> b>.")
-        out = self._brain.add_belief(narsese)
-        observe(self._store, out)
-        self._out(f"ona: {out}" if out else "added.")
+        try:
+            committed = self._jarvis.tell(narsese)  # durable: write-through to L2 + feed L1
+        except Exception as exc:  # noqa: BLE001 — malformed Narsese -> report, don't crash
+            return self._out(f"invalid narsese: {exc}")
+        self._out("committed to L2+L1 (durable)." if committed else "deferred (contradiction flagged).")
 
     def _do_ask(self, narsese: str) -> None:
         if not narsese:

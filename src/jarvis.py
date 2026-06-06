@@ -43,6 +43,19 @@ class Jarvis:
         observe(self._store, output)  # persist truths ONA revised/derived this step
         return committed
 
+    def tell(self, statement: str) -> bool:
+        """Ingest a raw Narsese belief directly (no LLM), with the SAME two-tier durability as
+        `learn`: run the C2 contradiction check, write through to L2 (english=""), then feed L1.
+        Returns True if committed, False if deferred by the guard. The L2 row survives a restart.
+        """
+        if self._guard is not None and self._guard.check(statement) is not None:
+            return False  # contradiction flagged to human; defer commit, keep L1/L2 protected
+        term = statement_term(statement)
+        self._store.upsert(term, *statement_truth(statement), english="")  # durable write-through
+        output = self._brain.add_belief(statement)  # feed L1 + run inference
+        observe(self._store, output)  # persist any truths ONA revised/derived this step
+        return True
+
     def ask(self, question: str):
         """Answer from L1; on a cache miss, repopulate L1 from L2 and retry once."""
         answer = self._brain.ask(question)
