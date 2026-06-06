@@ -6,11 +6,22 @@ Composes domains via their public interfaces only (ADR-001). Imperative Shell (S
 """
 from __future__ import annotations
 
-from brain import Brain
+from brain import Brain, input_accepted
 from contradiction import ContradictionGuard
 from execution import DecisionStats, Executor, decide
 from language import Translator
-from memory import MemoryStore, observe, reload_into_brain, statement_term, statement_truth
+from memory import (
+    MemoryStore,
+    is_valid_belief,
+    observe,
+    reload_into_brain,
+    statement_term,
+    statement_truth,
+)
+
+
+class InvalidNarseseError(ValueError):
+    """A `tell` statement is not a well-formed Narsese belief, or ONA rejected it on parse."""
 
 
 class Jarvis:
@@ -44,15 +55,27 @@ class Jarvis:
         return committed
 
     def tell(self, statement: str) -> bool:
-        """Ingest a raw Narsese belief directly (no LLM), with the SAME two-tier durability as
-        `learn`: run the C2 contradiction check, write through to L2 (english=""), then feed L1.
-        Returns True if committed, False if deferred by the guard. The L2 row survives a restart.
+        """Ingest a raw Narsese belief directly (no LLM), durable like `learn` but desync-proof.
+
+        Ingress order matters: (1) reject malformed syntax BEFORE any side effect; (2) C2 guard;
+        (3) feed L1 and CONFIRM ONA accepted it (echoed 'Input:', no parse error); (4) only THEN
+        write through to L2 (english=""). So a parse-rejected string never reaches the L2 system of
+        record, and L1/L2 cannot desync. Returns True if committed, False if deferred by the guard.
+        Raises InvalidNarseseError on malformed syntax or an ONA parse rejection.
         """
+        statement = statement.strip()
+        if not is_valid_belief(statement):
+            raise InvalidNarseseError(
+                f"not a well-formed Narsese belief: {statement!r} "
+                "(expected a term + '.'  e.g.  <a --> b>.  or  <cpu --> [pegged]>. {0.0 0.9})"
+            )
         if self._guard is not None and self._guard.check(statement) is not None:
             return False  # contradiction flagged to human; defer commit, keep L1/L2 protected
+        output = self._brain.add_belief(statement)  # feed L1 FIRST
+        if not input_accepted(output):
+            raise InvalidNarseseError(f"ONA rejected the statement on parse; not committed: {statement!r}")
         term = statement_term(statement)
-        self._store.upsert(term, *statement_truth(statement), english="")  # durable write-through
-        output = self._brain.add_belief(statement)  # feed L1 + run inference
+        self._store.upsert(term, *statement_truth(statement), english="")  # commit L2 only after L1 OK
         observe(self._store, output)  # persist any truths ONA revised/derived this step
         return True
 

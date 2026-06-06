@@ -1,8 +1,54 @@
 """Fact model + pure helpers for the system-of-record. Functional Core (S-02) — no I/O."""
 from __future__ import annotations
 
+import re
 import struct
 from dataclasses import dataclass
+
+_TRUTH_RE = re.compile(r"\{\s*([0-9.]+)\s+([0-9.]+)\s*\}\s*$")
+_ATOM_RE = re.compile(r"[\w$#^+\-]+")
+_TENSES = (":|:", ":/:", ":\\:")
+
+
+def is_valid_belief(statement: str) -> bool:
+    """True if `statement` is a syntactically well-formed Narsese BELIEF (an L2 ingress gate).
+
+    Structural — NOT a full NAL grammar (ONA stays the authority): requires balanced <> () [] {}
+    delimiters, a non-empty term, '.' belief punctuation (rejects '!' goals and '?' questions), and
+    a valid optional '{freq conf}' truth with both values in [0,1]. Pure. Rejects e.g. 'garbage((('.
+    """
+    s = statement.strip()
+    if not s:
+        return False
+    # Balance only ( ) [ ] { } — NOT < >, which appear inside Narsese copulas (-->, <->, ==>).
+    pairs = {"(": ")", "[": "]", "{": "}"}
+    closers = set(pairs.values())
+    stack: list[str] = []
+    for ch in s:
+        if ch in pairs:
+            stack.append(pairs[ch])
+        elif ch in closers and (not stack or stack.pop() != ch):
+            return False
+    if stack:
+        return False
+    body = s
+    truth = _TRUTH_RE.search(s)
+    if truth:
+        freq, conf = float(truth.group(1)), float(truth.group(2))
+        if not (0.0 <= freq <= 1.0 and 0.0 <= conf <= 1.0):
+            return False
+        body = s[: truth.start()].strip()
+    for tense in _TENSES:
+        if body.endswith(tense):
+            body = body[: -len(tense)].strip()
+    if body.endswith(("!", "?")) or not body.endswith("."):
+        return False
+    term = body[:-1].strip()
+    if not term:
+        return False
+    # A statement/compound must be bracket-closed; otherwise it must be a bare atom.
+    shape = {"<": ">", "(": ")", "[": "]"}.get(term[0])
+    return term.endswith(shape) if shape else bool(_ATOM_RE.fullmatch(term))
 
 
 @dataclass(frozen=True)

@@ -2,13 +2,14 @@
 
 ONA is the bounded L1 cache; this is the permanent L2 store. Public interface (ADR-001).
 """
-from .fact import Fact, statement_term, statement_truth, to_statement
+from .fact import Fact, is_valid_belief, statement_term, statement_truth, to_statement
 from .store import MemoryStore
 from .sync import observe, parse_concepts, reconcile, reload_into_brain
 
 __all__ = [
     "MemoryStore",
     "Fact",
+    "is_valid_belief",
     "statement_term",
     "statement_truth",
     "to_statement",

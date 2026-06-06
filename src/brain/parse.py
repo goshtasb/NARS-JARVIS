@@ -82,3 +82,12 @@ def parse_line(line: str) -> Answer | None:
         if line.startswith(prefix):
             return _parse_body(line[len(prefix):].strip())
     return None
+
+
+def input_accepted(lines: list[str]) -> bool:
+    """True iff ONA accepted an input belief: it echoes 'Input: <belief>' on success and emits
+    'Parsing error:' (no Input echo) on a malformed statement. Used to gate the L2 commit on a
+    CONFIRMED L1 ingestion, so a parse-rejected `tell` cannot desync the two tiers."""
+    if any("parsing error" in line.lower() for line in lines):
+        return False
+    return any(line.startswith("Input:") for line in lines)
