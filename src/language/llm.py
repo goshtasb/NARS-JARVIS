@@ -45,3 +45,16 @@ class LocalLLM:
     def to_claims(self, system_prompt: str, sentence: str) -> list[Claim]:
         """Convenience: generate + parse into typed claims."""
         return parse_claims(self.generate(system_prompt, sentence))
+
+    def generate_text(self, system_prompt: str, user: str, max_tokens: int = 64) -> str:
+        """Free-text generation (NO grammar) for the outbound voice formatter. Temp 0, bounded.
+        Output is treated as untrusted prose and validated by language.voice.sanitize_voice."""
+        out = self._llm.create_chat_completion(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user},
+            ],
+            temperature=0.0,
+            max_tokens=max_tokens,
+        )
+        return out["choices"][0]["message"]["content"]

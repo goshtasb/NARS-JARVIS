@@ -22,7 +22,7 @@ import uuid
 from brain import Brain
 from execution import DecisionStats, build_air_gapped_executor, decide
 from jarvis import Jarvis
-from language import IngestionGate, Translator
+from language import IngestionGate, Translator, Voice
 from memory import MemoryStore, MetricsStore, SqliteGroundingStore
 from sentinel import SurpriseDetector, SystemSentinel
 from sentinel.narrate import Narrator
@@ -31,14 +31,15 @@ PROMPT = "jarvis> "
 _STRONG = DecisionStats(0.95, 0.97, 30, 12)  # a REPL `act` is an explicit, high-confidence request
 BANNER = (
     "NARS-JARVIS console — single-thread sentinel + REPL.\n"
-    "  learn <english>   tell <narsese.>   ask <narsese?>   act <op> <arg>   status   health   help   quit\n"
+    "  learn <english>   tell <narsese.>   ask <english?>   act <op> <arg>   status   health   help   quit\n"
     "  (the sentinel polls CPU/mem every tick and alerts on surprises)\n"
 )
 HELP = (
     "commands:\n"
     "  learn <english>    translate English -> Narsese, commit to L2+L1 (needs a local LLM)\n"
     "  tell  <narsese.>   add a belief directly, e.g.  tell <cpu --> [pegged]>. {0.0 0.9}\n"
-    "  ask   <narsese?>   query L1 (reloads from L2 on a miss), e.g.  ask <tim --> bird>?\n"
+    "  ask   <english?>   ask in plain English, e.g.  ask Is Tim a bird?  (answered + cited, no hallucination)\n"
+    "                     (expert: `ask <tim --> bird>?` runs a raw Narsese query)\n"
     "  act   <op> <arg>   propose an action; Suggestion-Only ones prompt [y/n]\n"
     "                     e.g.  act run_saved_command disk_usage   |   act open_app slack\n"
     "  status             last CPU/mem poll + memory counts\n"
@@ -95,6 +96,7 @@ class Console:
         self._store = MemoryStore(db_path)
         self._brain = Brain(cycles_per_step=50)  # boots ONA with *motorbabbling=0.0
         self._executor = build_air_gapped_executor(sink=self._out)  # sync output during `act`
+        llm = _make_claim_source()  # ONE model instance — shared as claim source AND voice formatter
         embedder = _make_embedder()
         # The ingestion gate (L0 structural + L1 semantic) needs the embedder for L1; with no
         # embedder it stays None and learn falls back to the ungated write-through.
@@ -104,9 +106,12 @@ class Console:
         grounding = SqliteGroundingStore(db_path) if embedder is not None else None
         # Local, privacy-absolute ingestion telemetry (outcome categories only, never text).
         self._metrics = MetricsStore(db_path, session_id=uuid.uuid4().hex[:8])
-        self._jarvis = Jarvis(Translator(_make_claim_source(), embedder=embedder, cache=grounding),
+        # Outbound voice: the formatter is the SAME local model (free-text mode); only a real
+        # LocalLLM can voice — the offline demo source can't, so answers stay template-only.
+        voice = Voice(formatter=llm if hasattr(llm, "generate_text") else None)
+        self._jarvis = Jarvis(Translator(llm, embedder=embedder, cache=grounding),
                               self._store, self._brain, executor=self._executor, gate=gate,
-                              metrics=self._metrics)
+                              metrics=self._metrics, voice=voice)
         narrator = Narrator(_NoNarrationLLM(), on_alert=self._on_alert)
         self._detector = SurpriseDetector(self._brain, threshold=0.5, on_surprise=narrator.narrate)
         self._sentinel = SystemSentinel(sink=self._detector.observe, poll_interval=poll_interval)
@@ -288,11 +293,15 @@ class Console:
             return self._out(f"invalid narsese: {exc}")
         self._out("committed to L2+L1 (durable)." if committed else "deferred (contradiction flagged).")
 
-    def _do_ask(self, narsese: str) -> None:
-        if not narsese:
-            return self._out("usage: ask <narsese question?>  e.g.  ask <tim --> bird>?")
-        answer = self._jarvis.ask(narsese)
-        self._out(f"answer: {answer}" if answer is not None else "no answer in memory.")
+    def _do_ask(self, text: str) -> None:
+        if not text:
+            return self._out("usage: ask <english question>   or   ask <narsese?> (expert)")
+        raw = text.lstrip()
+        if "-->" in raw or raw.startswith(("<", "(")):   # expert raw-Narsese query path
+            answer = self._jarvis.ask(text)
+            self._out(f"answer: {answer}" if answer is not None else "no answer in memory.")
+        else:                                            # English -> conversational (grounded, voiced)
+            self._out(self._jarvis.converse(text))
 
     def _do_act(self, rest: str) -> None:
         parts = rest.split()

@@ -35,6 +35,15 @@ DEFAULT_SYSTEM_PROMPT = (
     "Penicillin is not safe. => [{\"type\":\"NegatedPropertyClaim\",\"subject\":\"penicillin\",\"value\":\"safe\"}]"
 )
 
+QUESTION_SYSTEM_PROMPT = (
+    "Extract the SINGLE claim a question is asking about, as a JSON array with exactly one claim. "
+    "Same types and rules as for statements (use \"is_a\" for category/taxonomy, PropertyClaim for "
+    "adjectives, SINGULAR nouns, drop articles). Ignore the interrogative framing. JSON only.\n"
+    "Is Tim a duck? => [{\"type\":\"RelationClaim\",\"subject\":\"Tim\",\"verb\":\"is_a\",\"object\":\"duck\"}]\n"
+    "Are ducks birds? => [{\"type\":\"RelationClaim\",\"subject\":\"duck\",\"verb\":\"is_a\",\"object\":\"bird\"}]\n"
+    "Is the sky blue? => [{\"type\":\"PropertyClaim\",\"subject\":\"sky\",\"value\":\"blue\"}]"
+)
+
 # Exceptions a malformed / schema-violating model response can raise downstream.
 _PARSE_ERRORS = (ValueError, KeyError, TypeError, json.JSONDecodeError)
 

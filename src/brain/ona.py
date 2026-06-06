@@ -9,7 +9,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from .parse import Answer, parse_answer
+from .parse import Answer, parse_answer, parse_line
 
 # OpenNARS-for-Applications/NAR, relative to the repo root (two levels up from src/brain/).
 _DEFAULT_NAR = Path(__file__).resolve().parents[2] / "OpenNARS-for-Applications" / "NAR"
@@ -39,6 +39,7 @@ class Brain:
             text=True,
             bufsize=1,
         )
+        self._evidence: dict[int, str] = {}  # stamp id -> term (session-scoped evidence trace)
         self._drain()  # clear any startup output
         # Override ONA's permissive game-agent default (0.2): NO random motor babbling on a live
         # host. Mirrors execution/autonomy.py MOTOR_BABBLING_CHANCE; kept as a literal default to
@@ -69,10 +70,27 @@ class Brain:
         return lines
 
     def add_belief(self, narsese: str, cycles: int | None = None) -> list[str]:
-        """Add a belief (e.g. '<a --> b>.') and run inference cycles. Returns ONA output lines."""
+        """Add a belief (e.g. '<a --> b>.') and run inference cycles. Returns ONA output lines.
+
+        Records each accepted input's evidence-stamp id -> term (from the 'Input:' echo) so a later
+        answer's stamp can be unrolled back to the real premises. Session-scoped: ONA reassigns
+        stamp ids on reload, and this is repopulated wherever beliefs (re)enter L1.
+        """
         self._write(narsese)
         self._write(str(self._cycles if cycles is None else cycles))
-        return self._drain()
+        out = self._drain()
+        for line in out:
+            if line.startswith("Input:"):
+                ev = parse_line(line)
+                if ev is not None and ev.term:
+                    for stamp_id in ev.stamp:
+                        self._evidence[stamp_id] = ev.term
+        return out
+
+    def evidence_terms(self, stamp: tuple[int, ...]) -> list[str]:
+        """Map an answer's evidence stamp back to the premise TERMS that produced it (real ones
+        only; an unmapped id — evicted or internal — is skipped, never fabricated)."""
+        return [self._evidence[s] for s in stamp if s in self._evidence]
 
     def ask(self, narsese: str) -> Answer | None:
         """Ask a question (e.g. '<a --> c>?') and return the best Answer from memory, or None."""

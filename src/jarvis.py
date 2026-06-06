@@ -6,13 +6,24 @@ Composes domains via their public interfaces only (ADR-001). Imperative Shell (S
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable
 
 from brain import Brain, canonical_input, input_accepted
 from contradiction import ContradictionGuard
 from execution import DecisionStats, Executor, decide
-from language import Decision, IngestionGate, Translator, back_render, to_narsese
+from language import (
+    QUESTION_SYSTEM_PROMPT,
+    Decision,
+    IngestionGate,
+    Polarity,
+    Translator,
+    Verdict,
+    Voice,
+    assess,
+    back_render,
+    to_narsese,
+)
 from memory import (
     MemoryStore,
     MetricsStore,
@@ -54,7 +65,8 @@ class Jarvis:
                  guard: ContradictionGuard | None = None,
                  executor: Executor | None = None,
                  gate: IngestionGate | None = None,
-                 metrics: MetricsStore | None = None) -> None:
+                 metrics: MetricsStore | None = None,
+                 voice: Voice | None = None) -> None:
         self._translator = translator
         self._store = store
         self._brain = brain
@@ -62,6 +74,7 @@ class Jarvis:
         self._executor = executor  # None => orchestrator stays learn/ask only (no execution path)
         self._gate = gate          # None => ungated learn (no semantic gate; e.g. no embedder)
         self._metrics = metrics    # None => no telemetry; gate-friction outcomes only, never text
+        self._voice = voice or Voice()  # template-only by default; formatter LLM is optional
 
     def learn(self, sentence: str, *, on_rejects: RejectPresenter | None = None,
               confirm_escalation: EscalationConfirm | None = None) -> list[str]:
@@ -189,6 +202,37 @@ class Jarvis:
             reload_into_brain(self._store, self._brain)
             answer = self._brain.ask(question)
         return answer
+
+    def converse(self, question: str) -> str:
+        """English question in -> grounded ONA query -> English answer out, hallucination-proof.
+
+        Inbound reuses the translator+grounding (question -> a Narsese query term). Outbound maps
+        ONA's (frequency, confidence) to certainty bands and unrolls the evidence stamp to the real
+        premises — all in code — then the Voice renders it (formatter LLM optional + sanitized,
+        template-authoritative). If ONA has no answer, the user is told so; the LLM is never asked.
+        """
+        try:
+            claims = self._translator.claims(question, QUESTION_SYSTEM_PROMPT)
+        except Exception:  # noqa: BLE001 — unreadable question must not crash the REPL
+            claims = []
+        if not claims:
+            return self._voice.say_unknown("I couldn't read that as a question I can answer.")
+        claim = claims[0]
+        term = statement_term(to_narsese(claim))
+        answer = self.ask(term + "?")  # existing path: query L1, reload from L2 on a miss
+        if answer is None or answer.truth is None:
+            return self._voice.say_unknown()
+        polarity, band = assess(answer.truth.frequency, answer.truth.confidence)
+        # Polarity-correct statement: flip the claim's negation when ONA says it's false.
+        shown = claim if polarity is not Polarity.NO else replace(claim, negated=not claim.negated)
+        statement = back_render(shown).rstrip(".")
+        evidence = []
+        for premise_term in self._brain.evidence_terms(answer.stamp):
+            fact = self._store.get(premise_term)
+            evidence.append(fact.english if (fact and fact.english) else premise_term)
+        verdict = Verdict(polarity, band, statement, answer.truth.confidence,
+                          answer.truth.frequency, evidence)
+        return self._voice.say(verdict)
 
     def act(self, op_name: str, arg_name: str, stats: DecisionStats):
         """Route a proposed action through the C4 decision gate to the wired executor.
