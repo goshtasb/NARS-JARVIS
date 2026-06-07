@@ -226,8 +226,15 @@ class Jarvis:
         # Polarity-correct statement: flip the claim's negation when ONA says it's false.
         shown = claim if polarity is not Polarity.NO else replace(claim, negated=not claim.negated)
         statement = back_render(shown).rstrip(".")
-        evidence = []
+        # The audit trail is the product: dedup identical canonical premises (ONA may cite the same
+        # belief via several evidence ids) and render each through one fallback — English alias if the
+        # L2 store has one, else the clean canonical Narsese term (expert `tell` path).
+        evidence: list[str] = []
+        seen: set[str] = set()
         for premise_term in self._brain.evidence_terms(answer.stamp):
+            if premise_term in seen:
+                continue
+            seen.add(premise_term)
             fact = self._store.get(premise_term)
             evidence.append(fact.english if (fact and fact.english) else premise_term)
         verdict = Verdict(polarity, band, statement, answer.truth.confidence,

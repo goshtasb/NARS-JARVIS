@@ -32,6 +32,22 @@ def test_converse_yes_with_cited_evidence() -> None:
         assert "duck" in out, out                                # cites the real premise chain
 
 
+def test_converse_trace_dedups_and_renders_uniformly() -> None:
+    # The audit trail must collapse a premise ONA cites via multiple evidence ids, and render each
+    # via the fallback hierarchy: English alias if the L2 store has one, else clean canonical Narsese.
+    with Brain(cycles_per_step=200) as brain:
+        st = MemoryStore()
+        j = Jarvis(Translator(_QLLM()), st, brain)
+        j.tell("<tim --> duck>.")
+        j.tell("<tim --> duck>.")                                # committed twice -> 2 evidence ids
+        j.tell("<duck --> bird>.")
+        st.upsert("<duck --> bird>", 1.0, 0.9, english="ducks are birds")  # give it an English alias
+        out = j.converse("Is Tim a bird?")
+        assert out.count("<tim --> duck>") == 1, out             # deduped to a single citation
+        assert "ducks are birds" in out, out                    # English alias preferred where present
+        assert "Tim is a bird" in out, out
+
+
 def test_converse_unknown_is_admitted_not_invented() -> None:
     with Brain(cycles_per_step=50) as brain:
         j = Jarvis(Translator(_QLLM()), MemoryStore(), brain)
@@ -63,6 +79,7 @@ def test_converse_formatter_hallucination_is_suppressed() -> None:
 
 if __name__ == "__main__":
     test_converse_yes_with_cited_evidence()
+    test_converse_trace_dedups_and_renders_uniformly()
     test_converse_unknown_is_admitted_not_invented()
     test_converse_unreadable_question()
     test_converse_formatter_hallucination_is_suppressed()
