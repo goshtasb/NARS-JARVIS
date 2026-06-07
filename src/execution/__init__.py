@@ -15,6 +15,7 @@ from .catalog import (
     OpName,
     SavedCommandEnum,
     UnregisteredOperationError,
+    is_state_changing,
     parse_operation,
     requires_network,
 )
@@ -37,6 +38,7 @@ __all__ = [
     "Operation",
     "parse_operation",
     "requires_network",
+    "is_state_changing",
     "UnregisteredOperationError",
     "MOTOR_BABBLING_CHANCE",
     "AutonomyPolicy",

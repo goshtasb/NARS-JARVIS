@@ -37,6 +37,12 @@ then multiplexes the keyboard and the socket.
 - **`voice.py`** — push-to-talk STT/TTS: whisper.cpp as a `select()`-multiplexed child (`WhisperJob`,
   never blocks the loop) + offline `say` (`speak`). Only a WAV *path* crosses the socket; the daemon
   routes the transcript through the normal command pipeline and speaks the reply. See ADR-005.
+- **`autonomy.py`** — NARS-gated autonomy (pure): the procedural appropriateness belief, asymmetric
+  consent weights (yes `{1.0 0.5}`, no `{0.0 0.9}`), and the two-condition gate (confidence ≥ 0.85
+  AND favorable expectation). `SentinelLoop` queries it before acting and feeds consent back on each
+  y/n; ~6 approvals earn autonomy, one decline revokes it. See ADR-006.
+- **Kill switch** — the `shutdown` command stops the whole daemon cleanly (both brains, sensor,
+  actuator); surfaced as the UI's Emergency Stop and the console's `shutdown`.
 
 ## Dependencies
 `brain`, `jarvis`, `language`, `memory`, `execution`, `sentinel` (all via their public interfaces).

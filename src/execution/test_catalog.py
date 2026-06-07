@@ -6,6 +6,7 @@ from execution.catalog import (
     Operation,
     OpName,
     UnregisteredOperationError,
+    is_state_changing,
     parse_operation,
 )
 
@@ -46,9 +47,16 @@ def test_rejection_logs_security_violation() -> None:
     assert any(r.levelno == logging.CRITICAL for r in records), "must log a CRITICAL security violation"
 
 
+def test_tiered_trust_classification() -> None:
+    # Read-only inspections vs state-changing actions (Phase 4 tiered trust).
+    assert is_state_changing(parse_operation("open_app", "slack")) is True          # mutates UI state
+    assert is_state_changing(parse_operation("run_saved_command", "disk_usage")) is False  # read-only query
+
+
 if __name__ == "__main__":
     test_valid_operation_parses_to_typed()
     test_unregistered_operation_rejected()
     test_unregistered_argument_rejected()
     test_rejection_logs_security_violation()
+    test_tiered_trust_classification()
     print("execution/test_catalog: OK")

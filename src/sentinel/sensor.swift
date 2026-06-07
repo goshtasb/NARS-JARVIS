@@ -66,9 +66,9 @@ Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { _ in
 // to main. NSRunningApplication.hide() is permissionless (no TCC, no root) — reversible by the user.
 func handleCommand(_ line: String) {
     let parts = line.split(separator: " ", maxSplits: 1).map(String.init)
-    guard parts.count == 2, parts[0] == "hide" else { return }
+    guard parts.count == 2, parts[0] == "hide" || parts[0] == "unhide" else { return }
     for running in NSRunningApplication.runningApplications(withBundleIdentifier: parts[1]) {
-        running.hide()
+        if parts[0] == "hide" { running.hide() } else { running.unhide() }  // unhide = undo an autonomous hide
     }
 }
 

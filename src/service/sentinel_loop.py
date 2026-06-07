@@ -29,6 +29,8 @@ from sentinel import (
 from sentinel.focusblock import close as block_close
 from sentinel.schmitt import DiscState, step
 
+from .autonomy import approved_term, evidence_belief, gate_passes
+
 _DISTRACTION_BUCKETS = frozenset({"comms", "media"})
 _BURNIN_FLOOR = 0.85  # ONA confidence the steady baseline must reach before the sentinel may act
 
@@ -132,29 +134,73 @@ class SentinelLoop:
             self._emit("alert", {"text": f"[sentinel] baseline reached the {_BURNIN_FLOOR:.2f} floor "
                                          f"after {self._obs} observations ({elapsed / 60:.1f}m) — now armed."})
 
+    # ── NARS-gated autonomy: query / feed the procedural appropriateness beliefs ──
+    def _autonomous_ok(self, cats: list[str]) -> bool:
+        """True iff EVERY involved category has earned autonomy (conf≥0.85 AND favorable)."""
+        if not cats or self._brain is None:
+            return False
+        for cat in cats:
+            ans = self._brain.ask(approved_term(cat) + "?")
+            if ans is None or ans.truth is None:
+                return False
+            if not gate_passes(ans.truth.frequency, ans.truth.confidence):
+                return False
+        return True
+
+    def _feed_consent(self, cats: list[str], approved: bool) -> None:
+        """Feed the human's decision back as NAL evidence (asymmetric weights) — the learning loop."""
+        if self._brain is None:
+            return
+        for cat in cats:
+            try:
+                self._brain.add_belief(evidence_belief(cat, approved))
+            except Exception:  # noqa: BLE001
+                pass
+
     def _on_surprise(self, ev) -> None:
         if ev.actual_expectation >= 0.5 or self._pending is not None:
             return
         bundles = list(dict.fromkeys(b for b, _ in self._recent))
         cats = sorted({k for _, k in self._recent})
         iid, self._next_id = self._next_id, self._next_id + 1
-        self._pending = {"id": iid, "bundles": bundles, "ts": time.time()}
-        self._emit("intervention", {"id": iid, "prompt": intervention_prompt(self._level or "fragmented", cats)})
+        if self._autonomous_ok(cats):
+            # Earned autonomy: act now, transparently, with an undo path that revokes trust.
+            if self._sensor is not None:
+                for bundle in bundles:
+                    self._sensor.hide(bundle)
+            if self._store is not None:
+                self._store.record_intervention(time.time(), True)
+            self._pending = {"id": iid, "bundles": bundles, "cats": cats, "ts": time.time(), "mode": "auto"}
+            self._emit("acted", {"id": iid, "text": f"Hid {', '.join(cats)} apps — you were fragmenting. (Undo?)"})
+        else:
+            self._pending = {"id": iid, "bundles": bundles, "cats": cats, "ts": time.time(), "mode": "ask"}
+            self._emit("intervention", {"id": iid, "prompt": intervention_prompt(self._level or "fragmented", cats)})
 
     def resolve_intervention(self, iid: int, accepted: bool) -> str:
         if self._pending is None or self._pending["id"] != iid:
             return "no pending intervention."
         pend, self._pending = self._pending, None
+        cats, bundles = pend["cats"], pend["bundles"]
+        if pend["mode"] == "auto":
+            # The action already happened; here `accepted` means "keep it", not-accepted means "undo".
+            if accepted:
+                return "ok, kept."
+            if self._sensor is not None:
+                for bundle in bundles:
+                    self._sensor.unhide(bundle)
+            self._feed_consent(cats, approved=False)         # heavy negative -> revoke autonomy
+            if self._store is not None:
+                self._store.record_intervention(time.time(), False)
+            return "↩ undone — I won't do that automatically anymore."
+        # ask mode: this is the explicit consent that trains the gate.
         if accepted and self._sensor is not None:
-            for bundle in pend["bundles"]:
+            for bundle in bundles:
                 self._sensor.hide(bundle)
-            shown = ", ".join(pend["bundles"]) or "(none currently running)"
-            msg = f"✓ hidden: {shown}"
-        else:
-            msg = "ok — staying out of your way."
+        self._feed_consent(cats, approved=accepted)          # YES -> +evidence, NO -> heavy -evidence
         if self._store is not None:
             self._store.record_intervention(pend["ts"], accepted)
-        return msg
+        return (f"✓ hidden: {', '.join(bundles) or '(none running)'}" if accepted
+                else "ok — staying out of your way.")
 
     # ── KPI for the health readout ────────────────────────────────────
     def focus_health_lines(self) -> list[str]:

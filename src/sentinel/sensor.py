@@ -88,9 +88,16 @@ class Sensor:
 
     def hide(self, bundle_id: str) -> None:
         """Actuate: ask the helper to hide a running app (permissionless NSRunningApplication.hide)."""
+        self._send(f"hide {bundle_id}")
+
+    def unhide(self, bundle_id: str) -> None:
+        """Undo an (autonomous) hide — un-hides the app via NSRunningApplication.unhide()."""
+        self._send(f"unhide {bundle_id}")
+
+    def _send(self, line: str) -> None:
         if self._proc and self._proc.stdin and not self._proc.stdin.closed:
             try:
-                self._proc.stdin.write(f"hide {bundle_id}\n")
+                self._proc.stdin.write(line + "\n")
                 self._proc.stdin.flush()
             except (BrokenPipeError, ValueError):
                 pass

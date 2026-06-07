@@ -120,6 +120,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             let prompt = body["prompt"] as? String ?? "Focus intervention"
             chat.append("⚠ " + prompt)
             notifyIntervention(id: id, prompt: prompt)
+        case "acted":                                        // the Sentinel acted autonomously (earned trust)
+            let id = body["id"] as? Int ?? -1
+            let text = body["text"] as? String ?? "Acted autonomously."
+            chat.append("🤖 " + text)
+            notifyActed(id: id, text: text)
         case "transcript":                                   // what whisper heard (the daemon speaks the reply)
             chat.append("🎙 " + (body["text"] as? String ?? ""))
         case "answer":
@@ -137,8 +142,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         center.delegate = self
         let hide = UNNotificationAction(identifier: "HIDE", title: "Hide apps", options: [])
         let dismiss = UNNotificationAction(identifier: "DISMISS", title: "Not now", options: [.destructive])
-        center.setNotificationCategories([UNNotificationCategory(
-            identifier: "INTERVENTION", actions: [hide, dismiss], intentIdentifiers: [], options: [])])
+        let intervention = UNNotificationCategory(
+            identifier: "INTERVENTION", actions: [hide, dismiss], intentIdentifiers: [], options: [])
+        // Autonomous action already happened -> offer Undo (revokes trust) / Keep.
+        let undo = UNNotificationAction(identifier: "UNDO", title: "Undo", options: [.destructive])
+        let keep = UNNotificationAction(identifier: "KEEP", title: "Keep", options: [])
+        let acted = UNNotificationCategory(
+            identifier: "ACTED", actions: [undo, keep], intentIdentifiers: [], options: [])
+        center.setNotificationCategories([intervention, acted])
         center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
 
@@ -152,21 +163,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     private func notifyIntervention(id: Int, prompt: String) {
-        let content = UNMutableNotificationContent()
-        content.title = "Focus"
-        content.body = prompt
-        content.categoryIdentifier = "INTERVENTION"
-        content.userInfo = ["id": id]
-        UNUserNotificationCenter.current().add(
-            UNNotificationRequest(identifier: "intv-\(id)", content: content, trigger: nil))
+        postNotification(id: id, identifier: "intv-\(id)", title: "Focus",
+                         body: prompt, category: "INTERVENTION")
     }
 
-    // Tapping a notification action replies to the daemon's pending intervention.
+    private func notifyActed(id: Int, text: String) {
+        postNotification(id: id, identifier: "acted-\(id)", title: "JARVIS acted",
+                         body: text, category: "ACTED")
+    }
+
+    private func postNotification(id: Int, identifier: String, title: String, body: String, category: String) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.categoryIdentifier = category
+        content.userInfo = ["id": id]
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: identifier, content: content, trigger: nil))
+    }
+
+    // Tapping a notification action replies to the daemon. HIDE/KEEP -> accepted; DISMISS/UNDO -> not.
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 didReceive response: UNNotificationResponse,
                                 withCompletionHandler completion: @escaping () -> Void) {
         let id = response.notification.request.content.userInfo["id"] as? Int ?? -1
-        let accepted = response.actionIdentifier == "HIDE"
+        let accepted = ["HIDE", "KEEP"].contains(response.actionIdentifier)
         client?.call("intervene", ["id": id, "accepted": accepted]) { [weak self] _, body in
             DispatchQueue.main.async { self?.chat.append(body["text"] as? String ?? "") }
         }

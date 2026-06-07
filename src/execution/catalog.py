@@ -69,6 +69,22 @@ def requires_network(operation: Operation) -> bool:
     return _REQUIRES_NETWORK.get(operation.name, True)
 
 
+# ── Tiered trust (M3 Phase 4): read-only vs state-changing ──
+# Read-only operations (queries that don't mutate the world) are low-risk and may run when
+# contextually relevant; state-changing operations must clear the NARS-gated autonomy loop.
+# The saved commands (disk_usage, list_processes) are read-only inspections; opening an app
+# changes UI state. Default-deny: anything unlisted is treated as state-changing (the safe side).
+_STATE_CHANGING: dict[OpName, bool] = {
+    OpName.OPEN_APP: True,
+    OpName.RUN_SAVED_COMMAND: False,
+}
+
+
+def is_state_changing(operation: Operation) -> bool:
+    """True if the operation mutates state => must earn autonomy. Default-deny (unlisted => True)."""
+    return _STATE_CHANGING.get(operation.name, True)
+
+
 def _violation(message: str) -> None:
     _log.critical("SECURITY VIOLATION: %s", message)
 
