@@ -1,8 +1,10 @@
-"""V2 Sentinel scaffold: dual-brain isolation, app->category mapping, and the sensor build."""
+"""V2 Sentinel: dual-brain isolation, UTI-driven dynamic categorization, and the memoizer."""
+import os
 import shutil
+import tempfile
 
 from brain import Brain
-from sentinel import build_sensor, category
+from sentinel import SentinelStore, bucket_for_uti, build_sensor, classify
 
 
 def test_dual_brain_isolation() -> None:
@@ -11,17 +13,34 @@ def test_dual_brain_isolation() -> None:
         knowledge.add_belief("<tim --> duck>.")
         assert knowledge.ask("<tim --> duck>?") is not None          # knowledge has it
         assert sentinel.ask("<tim --> duck>?") is None               # sentinel never saw it
-        sentinel.add_belief("<editor --> [foreground]>. :|:")        # a behavioral event
-        assert knowledge.ask("<editor --> [foreground]>?") is None   # knowledge stays pristine
+        sentinel.add_belief("<attention --> [thrashing]>. :|:")      # a behavioral event
+        assert knowledge.ask("<attention --> [thrashing]>?") is None  # knowledge stays pristine
 
 
-def test_category_map_is_coarse_and_closed() -> None:
-    assert category("com.microsoft.VSCode") == "editor"
-    assert category("com.todesktop.230313mzl4w4u92") == "editor"     # Cursor (verified live)
-    assert category("com.google.Chrome") == "browser"
-    assert category("com.tinyspeck.slackmacgap") == "comms"
-    assert category("com.apple.Terminal") == "terminal"
-    assert category("com.some.unknown.app") == "other"               # default, low-cardinality
+def test_classify_via_uti_then_override() -> None:
+    # A novel app self-classifies from its own declared UTI — no static list, no LLM.
+    assert classify("com.acme.brandnewtool", "public.app-category.developer-tools") == "dev"
+    assert bucket_for_uti("public.app-category.social-networking") == "comms"
+    # Override beats UTI where Apple has no/ambiguous category (browsers, comms apps).
+    assert classify("com.google.Chrome", "public.app-category.productivity") == "web"
+    assert classify("com.tinyspeck.slackmacgap", "public.app-category.business") == "comms"
+    # No UTI + no override -> visible 'other' (residual, not dominant).
+    assert classify("com.unknown.app", "") == "other"
+
+
+def test_memoizer_caches_and_persists() -> None:
+    fd, db = tempfile.mkstemp(suffix=".db"); os.close(fd)
+    try:
+        s1 = SentinelStore(db)
+        assert s1.resolve("com.acme.tool", "public.app-category.developer-tools") == "dev"
+        s1.set_override("com.unknown.app", "comms")
+        s1.close()
+        s2 = SentinelStore(db)                                   # reload from disk
+        assert s2.resolve("com.acme.tool", "ignored-because-cached") == "dev"   # memoized
+        assert s2.resolve("com.unknown.app") == "comms"          # override survived restart
+        s2.close()
+    finally:
+        os.path.exists(db) and os.remove(db)
 
 
 def test_sensor_compiles_when_swiftc_present() -> None:
@@ -33,6 +52,7 @@ def test_sensor_compiles_when_swiftc_present() -> None:
 
 if __name__ == "__main__":
     test_dual_brain_isolation()
-    test_category_map_is_coarse_and_closed()
+    test_classify_via_uti_then_override()
+    test_memoizer_caches_and_persists()
     test_sensor_compiles_when_swiftc_present()
     print("test_sentinel_v2: OK")

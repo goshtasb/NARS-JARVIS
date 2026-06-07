@@ -14,25 +14,50 @@ from pathlib import Path
 _SRC = Path(__file__).resolve().parent / "sensor.swift"
 _BIN = Path(__file__).resolve().parent / ".sensor.bin"  # gitignored build artifact
 
-# Bundle id (exact or prefix) -> coarse category. Low-cardinality by design.
-_CATEGORIES: dict[str, tuple[str, ...]] = {
-    "editor": ("com.microsoft.vscode", "com.todesktop", "com.apple.dt.xcode",
-               "com.sublimetext", "com.jetbrains", "dev.zed"),
-    "browser": ("com.apple.safari", "com.google.chrome", "org.mozilla.firefox",
-                "com.brave.browser", "company.thebrowser.browser"),
-    "comms": ("com.tinyspeck.slackmacgap", "com.microsoft.teams", "com.apple.mobilesms",
-              "com.hnc.discord", "us.zoom.xos", "com.apple.mail"),
-    "terminal": ("com.apple.terminal", "com.googlecode.iterm2", "dev.warp.warp-stable"),
+# Our closed, coarse taxonomy — aligned to Apple's own UTI app categories so novel apps self-classify.
+BUCKETS = ("dev", "web", "comms", "media", "productivity", "utility", "other")
+
+# Apple's fixed LSApplicationCategoryType UTIs -> our buckets. The taxonomy is Apple's, not ours,
+# so a never-before-seen app inherits a sensible bucket from its own Info.plist for free.
+_UTI_BUCKET: dict[str, str] = {
+    "public.app-category.developer-tools": "dev",
+    "public.app-category.social-networking": "comms",
+    "public.app-category.productivity": "productivity",
+    "public.app-category.business": "productivity",
+    "public.app-category.utilities": "utility",
+    "public.app-category.education": "productivity",
+    "public.app-category.music": "media",
+    "public.app-category.video": "media",
+    "public.app-category.photography": "media",
+    "public.app-category.entertainment": "media",
+    "public.app-category.graphics-design": "media",
+    "public.app-category.news": "web",
+}
+
+# Override ONLY where Apple's metadata is missing or wrong. Browsers have no "web" UTI; terminals
+# and some comms apps mis-declare. A small, stable list — not the primary mechanism.
+_OVERRIDE: dict[str, str] = {  # bundle-id prefix -> bucket
+    "com.apple.safari": "web", "com.google.chrome": "web", "org.mozilla.firefox": "web",
+    "com.brave.browser": "web", "company.thebrowser": "web",  # Arc
+    "com.apple.terminal": "dev", "com.googlecode.iterm2": "dev", "dev.warp": "dev",
+    "com.tinyspeck.slackmacgap": "comms", "com.microsoft.teams": "comms",
+    "com.hnc.discord": "comms", "us.zoom.xos": "comms", "com.apple.mail": "comms",
 }
 
 
-def category(bundle_id: str) -> str:
-    """Map a bundle id to a coarse category (the only app attribute we ever read). Pure."""
-    b = bundle_id.lower()
-    for cat, ids in _CATEGORIES.items():
-        if any(b == i or b.startswith(i) for i in ids):
-            return cat
-    return "other"
+def bucket_for_uti(ls_category: str) -> str:
+    """Map an Apple LSApplicationCategoryType UTI to our bucket; 'other' if unknown/missing. Pure."""
+    return _UTI_BUCKET.get(ls_category.strip().lower(), "other")
+
+
+def classify(bundle_id: str, ls_category: str = "") -> str:
+    """Resolve a bundle to a bucket: explicit override first, else the app's self-declared UTI,
+    else 'other'. Pure; the SQLite memoizer caches this so the work happens once per novel app."""
+    b = bundle_id.strip().lower()
+    for prefix, bucket in _OVERRIDE.items():
+        if b == prefix or b.startswith(prefix):
+            return bucket
+    return bucket_for_uti(ls_category)
 
 
 def build_sensor() -> Path | None:

@@ -14,6 +14,18 @@ setbuf(stdout, nil)  // unbuffered: the parent's select() sees each line immedia
 
 func emit(_ s: String) { print(s) }
 
+// The app's SELF-DECLARED category from its Info.plist (Apple's fixed UTI taxonomy). A plain
+// world-readable file -> no TCC. "-" when the app omits the key (rogue dev tools); the Python
+// side then falls back to its override table / "other" bucket.
+func categoryOf(_ app: NSRunningApplication) -> String {
+    if let url = app.bundleURL, let bundle = Bundle(url: url),
+       let cat = bundle.object(forInfoDictionaryKey: "LSApplicationCategoryType") as? String,
+       !cat.isEmpty {
+        return cat
+    }
+    return "-"
+}
+
 func idleSeconds() -> Double {
     guard let anyInput = CGEventType(rawValue: ~0) else { return -1 }  // kCGAnyInputEventType
     return CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: anyInput)
@@ -26,17 +38,17 @@ let ws = NSWorkspace.shared
 let nc = ws.notificationCenter
 
 // Initial frontmost so the parent has a starting context.
-if let b = ws.frontmostApplication?.bundleIdentifier { emit("activate \(b)") }
+if let fa = ws.frontmostApplication, let b = fa.bundleIdentifier { emit("activate \(b) \(categoryOf(fa))") }
 
 // Push: the OS notifies us only when the frontmost app CHANGES (human-paced -> ~0 CPU).
 nc.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: nil) { note in
     if let a = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
-       let b = a.bundleIdentifier { emit("activate \(b)") }
+       let b = a.bundleIdentifier { emit("activate \(b) \(categoryOf(a))") }
 }
 // Push: a GUI app launched (novelty signal; headless processes need Endpoint Security — out of scope).
 nc.addObserver(forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: nil) { note in
     if let a = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
-       let b = a.bundleIdentifier { emit("launch \(b)") }
+       let b = a.bundleIdentifier { emit("launch \(b) \(categoryOf(a))") }
 }
 
 // Coarse idle, low frequency (active/idle + breaks). Not an event tap -> no Accessibility prompt.

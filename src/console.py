@@ -17,6 +17,7 @@ import select
 import shutil
 import subprocess
 import sys
+import time
 import uuid
 
 from brain import Brain
@@ -24,8 +25,18 @@ from execution import DecisionStats, build_air_gapped_executor, decide
 from jarvis import Jarvis
 from language import IngestionGate, Translator, Voice
 from memory import MemoryStore, MetricsStore, SqliteGroundingStore
-from sentinel import Sensor, SurpriseDetector, SystemSentinel, category
+from sentinel import (
+    FRAGMENTATION_LADDER,
+    RingState,
+    Sensor,
+    SentinelStore,
+    SurpriseDetector,
+    SystemSentinel,
+    rate,
+    record,
+)
 from sentinel.narrate import Narrator
+from sentinel.schmitt import DiscState, step
 
 PROMPT = "jarvis> "
 _STRONG = DecisionStats(0.95, 0.97, 30, 12)  # a REPL `act` is an explicit, high-confidence request
@@ -126,8 +137,14 @@ class Console:
         # NOTHING — separate subprocesses => mathematically zero cross-domain contamination.
         self._sensor: Sensor | None = None
         self._sentinel_brain: Brain | None = None
+        self._sentinel_store: SentinelStore | None = None
+        self._db_path = db_path
         self._focus_events = 0
         self._focus_last: str | None = None
+        # Dual-plane fragmentation funnel: raw ring (measurement) + Schmitt (ingestion).
+        self._ring = RingState()
+        self._frag = DiscState()
+        self._frag_level: str | None = None
 
     # ── terminal writers ──────────────────────────────────────────────
     def _w(self, s: str) -> None:
@@ -207,6 +224,8 @@ class Console:
                 self._sensor.stop()
             if self._sentinel_brain is not None:
                 self._sentinel_brain.close()
+            if self._sentinel_store is not None:
+                self._sentinel_store.close()
             self._brain.close()
 
     def _read_ready(self) -> None:
@@ -238,19 +257,26 @@ class Console:
         self._handle_sensor(line.strip())
 
     def _handle_sensor(self, line: str) -> None:
-        """Funnel a raw sensor line into the isolated Sentinel brain. SILENT on normal (scaffold:
-        the discretizer/surprise/templates land in the next increment). Never touches Knowledge."""
-        kind, _, arg = line.partition(" ")
-        if kind == "activate" and arg:
-            cat = category(arg)
+        """Dual-plane funnel. Measurement plane (raw ring) sees EVERY switch; ingestion plane
+        (Schmitt) feeds the isolated Sentinel brain ONLY on a rate-level transition. Silent on
+        normal; never touches the Knowledge brain. (Surprise/templates/KPI = next increment.)"""
+        kind, _, rest = line.partition(" ")
+        if kind == "activate" and rest:
+            bundle, _, ls_cat = rest.partition(" ")
+            self._focus_last = (self._sentinel_store.resolve(bundle, ls_cat)
+                                if self._sentinel_store else "?")
             self._focus_events += 1
-            self._focus_last = cat
-            if self._sentinel_brain is not None:
-                try:  # scaffold belief into the SEPARATE brain; full pattern predicates come next
-                    self._sentinel_brain.add_belief(f"<{cat} --> [foreground]>. :|:")
-                except Exception:  # noqa: BLE001 — a sensor hiccup must not break the loop
-                    pass
-        # 'launch'/'idle'/'ready' are received but not yet acted on (next increment).
+            now = time.monotonic()
+            self._ring = record(self._ring, now)              # measurement: capture every micro-switch
+            self._frag, emitted = step(FRAGMENTATION_LADDER, self._frag, rate(self._ring, now))
+            if emitted is not None:                            # ingestion: only a level CROSSING
+                self._frag_level = emitted
+                if self._sentinel_brain is not None:
+                    try:  # one bounded state-transition belief into the SEPARATE brain
+                        self._sentinel_brain.add_belief(f"<attention --> [{emitted}]>. :|:")
+                    except Exception:  # noqa: BLE001 — a sensor hiccup must not break the loop
+                        pass
+        # 'launch'/'idle'/'ready' are received but not acted on yet (next increment).
 
     def _tick(self) -> None:
         self._reap_notifs()
@@ -288,8 +314,9 @@ class Console:
         arg = rest.strip().lower()
         on = self._sensor is not None and self._sensor.running()
         if arg in ("", "status"):
-            self._out(f"sentinel: ON — {self._focus_events} focus events, last category: "
-                      f"{self._focus_last or '-'} (isolated brain)" if on
+            self._out(f"sentinel: ON — {self._focus_events} switches, last context: "
+                      f"{self._focus_last or '-'}, attention: {self._frag_level or 'focused'} "
+                      f"(isolated brain)" if on
                       else "sentinel: OFF   (turn on with: sentinel on)")
         elif arg == "on":
             if on:
@@ -299,6 +326,8 @@ class Console:
                 return self._out("sentinel unavailable (needs macOS + swiftc to build the helper).")
             self._sensor = sensor
             self._sentinel_brain = Brain(cycles_per_step=20)  # SECOND isolated ONA (boots *babbling=0)
+            self._sentinel_store = SentinelStore(self._db_path)  # app->bucket memoizer (persisted)
+            self._ring, self._frag, self._frag_level = RingState(), DiscState(), None
             self._focus_events, self._focus_last = 0, None
             self._out("sentinel: ON — watching app-focus in a fully isolated brain (silent on normal).")
         elif arg == "off":
@@ -306,6 +335,8 @@ class Console:
                 self._sensor.stop(); self._sensor = None
             if self._sentinel_brain:
                 self._sentinel_brain.close(); self._sentinel_brain = None
+            if self._sentinel_store:
+                self._sentinel_store.close(); self._sentinel_store = None
             self._out("sentinel: OFF.")
         else:
             self._out("usage: sentinel on | off | status")

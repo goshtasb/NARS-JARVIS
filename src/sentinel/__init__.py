@@ -10,8 +10,10 @@ from .narrate import NARRATION_SYSTEM_PROMPT, Narrator, sanitize_narration
 from .narsese import activity_event, signal_event
 from .rollup import RollupState, on_event, on_tick
 from .schmitt import CPU_LADDER, MEM_LADDER, DiscState, Ladder, step
-from .sensor import Sensor, build_sensor, category
+from .fragmentation import FRAGMENTATION_LADDER, WINDOW, RingState, rate, record
+from .sensor import BUCKETS, Sensor, bucket_for_uti, build_sensor, classify
 from .sensors import SystemSentinel
+from .store import SentinelStore
 from .surprise import SurpriseDetector, SurpriseEvent, expectation
 
 __all__ = [
@@ -36,5 +38,13 @@ __all__ = [
     "SystemSentinel",
     "Sensor",
     "build_sensor",
-    "category",
+    "classify",
+    "bucket_for_uti",
+    "BUCKETS",
+    "SentinelStore",
+    "RingState",
+    "record",
+    "rate",
+    "FRAGMENTATION_LADDER",
+    "WINDOW",
 ]
