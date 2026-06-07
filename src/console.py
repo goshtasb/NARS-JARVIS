@@ -1,183 +1,81 @@
-"""NARS-JARVIS interactive console — the single-threaded interaction surface (run: `python3 console.py`).
+"""NARS-JARVIS terminal console — a THIN CLIENT of the headless daemon (`service/`).
 
-Concurrency model (deliberate): ONE thread multiplexes the REPL and the sentinel via
-`select(stdin, timeout=poll_interval)`. stdin-ready -> handle a command; timeout -> one sentinel
-tick. So the ONA subprocess (L1 cache) and the terminal are single-owner BY CONSTRUCTION — no
-locks, no `_drain()` desync race, no torn output. A cbreak line editor owns the input buffer, so an
-async alert clears the line, prints, and redraws `prompt + your un-submitted text` (no mangling).
-
-Imperative Shell (S-02): all I/O lives here; it composes domain modules via their public APIs only.
-Watchdog file-watching is intentionally NOT enabled — its Observer runs on its own thread and would
-touch the Brain off-loop, breaking the single-owner invariant (that needs the queue pattern).
+All reasoning, the two brains, and the actuator live in the daemon; this file is presentation only.
+It spawns the daemon (or attaches to a running one), then multiplexes the keyboard and the daemon
+socket via select(): keystrokes become requests; the daemon's async events (sentinel alerts,
+intervention prompts) clear the input line, print, and redraw. The same daemon surface will back the
+SwiftUI app (Phase 2), so the brain is never duplicated in or polluted by a UI. See service/README.
 """
 from __future__ import annotations
 
 import os
 import select
-import shutil
 import subprocess
 import sys
+import tempfile
 import time
-import uuid
 
-from brain import Brain
-from execution import DecisionStats, build_air_gapped_executor, decide
-from jarvis import Jarvis
-from language import IngestionGate, Translator, Voice
-from memory import MemoryStore, MetricsStore, SqliteGroundingStore
-from sentinel import (
-    FRAGMENTATION_LADDER,
-    BlockState,
-    RingState,
-    Sensor,
-    SentinelStore,
-    SurpriseDetector,
-    SystemSentinel,
-    block_update,
-    intervention_prompt,
-    is_steady,
-    rate,
-    record,
-    steadiness_belief,
-)
-from sentinel.focusblock import close as block_close
-from sentinel.intervention import DEFAULT_MINUTES
-from sentinel.narrate import Narrator
-from sentinel.schmitt import DiscState, step
-
-_DISTRACTION_BUCKETS = frozenset({"comms", "media"})  # the categories an intervention will hide
-_BURNIN_FLOOR = 0.85  # ONA confidence the steady baseline must reach before the sentinel may interrupt
+from service import Client, socket_path
 
 PROMPT = "jarvis> "
-_STRONG = DecisionStats(0.95, 0.97, 30, 12)  # a REPL `act` is an explicit, high-confidence request
 BANNER = (
-    "NARS-JARVIS console — single-thread sentinel + REPL.\n"
+    "NARS-JARVIS console — thin client of the headless daemon.\n"
     "  learn <english>   tell <narsese.>   ask <english?>   act <op> <arg>   status   health   help   quit\n"
-    "  (the sentinel polls CPU/mem every tick and alerts on surprises)\n"
+    "  (the sentinel runs in the daemon and pushes alerts here)\n"
 )
 HELP = (
     "commands:\n"
     "  learn <english>    translate English -> Narsese, commit to L2+L1 (needs a local LLM)\n"
     "  tell  <narsese.>   add a belief directly, e.g.  tell <cpu --> [pegged]>. {0.0 0.9}\n"
-    "  ask   <english?>   ask in plain English, e.g.  ask Is Tim a bird?  (answered + cited, no hallucination)\n"
+    "  ask   <english?>   ask in plain English  (answered + cited, no hallucination)\n"
     "                     (expert: `ask <tim --> bird>?` runs a raw Narsese query)\n"
     "  act   <op> <arg>   propose an action; Suggestion-Only ones prompt [y/n]\n"
-    "                     e.g.  act run_saved_command disk_usage   |   act open_app slack\n"
     "  status             last CPU/mem poll + memory counts\n"
-    "  health             ingestion rejection-rate decay + failure taxonomy (local only)\n"
-    "  sentinel on|off    always-on flow sentinel: isolated brain + unprivileged macOS app-focus sensor\n"
+    "  health             ingestion rejection-rate decay + focus-sentinel KPI\n"
+    "  sentinel on|off    always-on flow sentinel (runs in the daemon)\n"
     "  help | quit\n"
 )
 
 
-class _NoNarrationLLM:
-    """No GGUF wired -> the Narrator's deterministic, action-forbidden fallback is used."""
-    def generate(self, system_prompt: str, user: str) -> str:
-        raise RuntimeError("no narration model")
-
-
-class _DemoClaims:
-    """Tiny offline claim source so `learn` works without a model for a couple of demo sentences."""
-    _T = {
-        "Tim is a duck.": '[{"type":"RelationClaim","subject":"Tim","verb":"IsA","object":"duck"}]',
-        "Ducks are birds.": '[{"type":"RelationClaim","subject":"duck","verb":"IsA","object":"bird"}]',
-    }
-    def generate(self, system_prompt: str, sentence: str) -> str:
-        return self._T.get(sentence, "[]")
-
-
-def _make_claim_source():
-    if os.environ.get("NARS_JARVIS_LLM_GGUF"):
-        try:
-            from language import LocalLLM
-            return LocalLLM()
-        except Exception as exc:  # noqa: BLE001 — degrade gracefully to offline demo source
-            sys.stderr.write(f"[warn] LocalLLM unavailable ({exc}); NL learning limited\n")
-    return _DemoClaims()
-
-
-def _make_embedder():
-    """Optional grounding embedder: maps plural/synonym atoms onto existing ones (PRD R1)."""
-    if os.environ.get("NARS_JARVIS_EMBED_GGUF"):
-        try:
-            from language import LocalEmbedder
-            return LocalEmbedder()
-        except Exception as exc:  # noqa: BLE001 — grounding is optional; degrade to none
-            sys.stderr.write(f"[warn] LocalEmbedder unavailable ({exc}); grounding off\n")
-    return None
-
-
 class Console:
-    def __init__(self, db_path: str = "jarvis.db", poll_interval: float = 2.0) -> None:
-        self._poll = poll_interval
+    def __init__(self) -> None:
         self._buf = ""
         self._quit = False
         self._fd = sys.stdin.fileno()
-        self._last = "no poll yet"
+        self._pending: dict | None = None      # an intervention awaiting [y/n]
+        self._client = Client()
+        self._daemon: subprocess.Popen | None = None
 
-        self._store = MemoryStore(db_path)
-        self._brain = Brain(cycles_per_step=50)  # boots ONA with *motorbabbling=0.0
-        self._executor = build_air_gapped_executor(sink=self._out)  # sync output during `act`
-        llm = _make_claim_source()  # ONE model instance — shared as claim source AND voice formatter
-        embedder = _make_embedder()
-        # The ingestion gate (L0 structural + L1 semantic) needs the embedder for L1; with no
-        # embedder it stays None and learn falls back to the ungated write-through.
-        gate = IngestionGate(embedder) if embedder is not None else None
-        # Persistent grounding lives in the SAME db file (atoms/aliases tables) so "ducks"->"duck"
-        # survives a restart. Requires the embedder; without it, grounding is off.
-        grounding = SqliteGroundingStore(db_path) if embedder is not None else None
-        # Local, privacy-absolute ingestion telemetry (outcome categories only, never text).
-        self._metrics = MetricsStore(db_path, session_id=uuid.uuid4().hex[:8])
-        # Outbound voice: the formatter is the SAME local model (free-text mode); only a real
-        # LocalLLM can voice — the offline demo source can't, so answers stay template-only.
-        voice = Voice(formatter=llm if hasattr(llm, "generate_text") else None)
-        self._jarvis = Jarvis(Translator(llm, embedder=embedder, cache=grounding),
-                              self._store, self._brain, executor=self._executor, gate=gate,
-                              metrics=self._metrics, voice=voice)
-        narrator = Narrator(_NoNarrationLLM(), on_alert=self._on_alert)
-        self._detector = SurpriseDetector(self._brain, threshold=0.5, on_surprise=narrator.narrate)
-        self._sentinel = SystemSentinel(sink=self._detector.observe, poll_interval=poll_interval)
-
-        # macOS Notification Center channel (fire-and-forget; jarvis runs OUTSIDE the sandbox).
-        self._notify_on = sys.platform == "darwin" and shutil.which("osascript") is not None
-        self._notif_procs: list[subprocess.Popen] = []
-
-        # V2 Sentinel: a SECOND, fully isolated ONA instance + the unprivileged macOS sensor.
-        # Opt-in via `sentinel on`. The Knowledge brain (self._brain) and this Sentinel brain share
-        # NOTHING — separate subprocesses => mathematically zero cross-domain contamination.
-        self._sensor: Sensor | None = None
-        self._sentinel_brain: Brain | None = None
-        self._sentinel_store: SentinelStore | None = None
-        self._sentinel_detector: SurpriseDetector | None = None  # 0.85-gated flow surprise
-        self._db_path = db_path
-        self._focus_events = 0
-        self._focus_last: str | None = None
-        # Dual-plane fragmentation funnel: raw ring (measurement) + Schmitt (ingestion).
-        self._ring = RingState()
-        self._frag = DiscState()
-        self._frag_level: str | None = None
-        # Intervention tier: focus-block tracker (KPI), recent distraction apps (what to hide),
-        # and a single non-blocking pending [y/n] (the helper's stdin actuates the hide on 'y').
-        self._block = BlockState()
-        self._recent: list[tuple[str, str]] = []   # (bundle, bucket), capped — never raw titles
-        self._pending: dict | None = None
-        # Calibration (numeric only): when did the baseline cross the 0.85 floor, and after how many
-        # observations? Recorded once per fresh baseline — the empirical burn-in we tune against.
-        self._sentinel_started = 0.0
-        self._obs_count = 0
-        self._burnin_recorded = False
+    # ── daemon lifecycle ──────────────────────────────────────────────
+    def _attach(self) -> None:
+        """Connect to a running daemon, else spawn one and wait for it to come up."""
+        try:
+            self._client.connect(); return
+        except (FileNotFoundError, ConnectionRefusedError):
+            pass
+        log = open(os.path.join(tempfile.gettempdir(), "nars-jarvisd.log"), "w")
+        self._daemon = subprocess.Popen([sys.executable, "-m", "service"],
+                                        stdout=log, stderr=subprocess.STDOUT)
+        self._w("Starting JARVIS daemon (first start loads local models ~10-20s)…\n")
+        for _ in range(600):                   # up to ~60s for model load + bind
+            if self._daemon.poll() is not None:
+                raise RuntimeError(f"daemon exited early; see {log.name}")
+            try:
+                self._client.connect(); return
+            except (FileNotFoundError, ConnectionRefusedError):
+                time.sleep(0.1)
+        raise RuntimeError(f"daemon did not come up; see {log.name}")
 
     # ── terminal writers ──────────────────────────────────────────────
     def _w(self, s: str) -> None:
         sys.stdout.write(s); sys.stdout.flush()
 
     def _out(self, text: object) -> None:
-        """Synchronous output (we're already on a fresh line after Enter)."""
         for line in str(text).splitlines() or [""]:
             self._w(line + "\n")
 
     def _emit(self, text: object) -> None:
-        """Asynchronous output: clear the live input line, print, redraw prompt + un-submitted buffer."""
+        """Async output: clear the live input line, print, redraw prompt + un-submitted buffer."""
         self._w("\r\x1b[K")
         for line in str(text).splitlines() or [""]:
             self._w(line + "\n")
@@ -186,70 +84,49 @@ class Console:
     def _redraw(self) -> None:
         self._w("\r\x1b[K" + PROMPT + self._buf)
 
-    # ── surprise alert: terminal redraw + concurrent OS banner ────────
-    def _on_alert(self, text: str) -> None:
-        self._emit("⚠  " + text)  # terminal: clear line, print, redraw prompt+buffer (instant)
-        self._notify(text)        # macOS banner: fire-and-forget, runs off-thread (instant return)
-
-    def _notify(self, body: str, title: str = "NARS-JARVIS sentinel") -> None:
-        """Spawn osascript WITHOUT waiting — a sluggish Notification Center can't stall the loop.
-
-        Popen does only fork+exec and returns immediately; the banner is rendered by an independent
-        OS process. stdio -> DEVNULL (no pipe backpressure), start_new_session (detached). Args are
-        passed to AppleScript via `argv`, never interpolated, so the alert text can't inject script.
-        """
-        if not self._notify_on:
-            return
-        try:
-            proc = subprocess.Popen(
-                ["osascript",
-                 "-e", "on run argv",
-                 "-e", "display notification (item 1 of argv) with title (item 2 of argv)",
-                 "-e", "end run", "--", body[:240], title],
-                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                start_new_session=True)
-            self._notif_procs.append(proc)
-        except Exception:  # noqa: BLE001 — notifications are best-effort; never break the loop
-            pass
-
-    def _reap_notifs(self) -> None:
-        """Drop finished banner processes (poll() reaps them) so no zombies accumulate."""
-        self._notif_procs = [p for p in self._notif_procs if p.poll() is None]
+    def _on_event(self, kind: str, body: dict) -> None:
+        if kind == "intervention":
+            self._pending = {"id": body.get("id")}
+            self._emit(body.get("prompt", ""))
+        else:                                  # "alert"
+            self._emit(body.get("text", ""))
 
     # ── main loop ─────────────────────────────────────────────────────
     def run(self) -> None:
         if not sys.stdin.isatty():
             return self._run_plain()
-        import termios, tty
+        import termios
+        import tty
+        self._attach()
+        self._client.set_event_handler(self._on_event)
         old = termios.tcgetattr(self._fd)
         try:
             tty.setcbreak(self._fd)
             self._w(BANNER)
             self._redraw()
             while not self._quit:
-                sensor_stream = self._sensor.stream() if (self._sensor and self._sensor.running()) else None
-                watch = [sys.stdin] + ([sensor_stream] if sensor_stream is not None else [])
-                ready, _, _ = select.select(watch, [], [], self._poll)
-                if not ready:
-                    self._tick()
-                    continue
+                ready, _, _ = select.select([sys.stdin, self._client], [], [], None)
                 for r in ready:
-                    if r is sensor_stream:
-                        self._read_sensor()
+                    if r is self._client:
+                        try:
+                            self._client.pump()    # async events -> _on_event
+                        except ConnectionError:
+                            self._quit = True
                     else:
                         self._read_ready()
         finally:
             termios.tcsetattr(self._fd, termios.TCSADRAIN, old)
             self._w("\n")
-            self._teardown_sentinel()
-            self._brain.close()
+            self._client.close()
+            if self._daemon is not None:
+                self._daemon.terminate()
 
     def _read_ready(self) -> None:
         for ch in os.read(self._fd, 1024).decode(errors="ignore"):
             if ch in ("\r", "\n"):
                 self._w("\n")
                 line, self._buf = self._buf.strip(), ""
-                if self._pending is not None:       # an intervention [y/n] takes priority over commands
+                if self._pending is not None:      # an intervention [y/n] takes priority over commands
                     self._resolve_intervention(line)
                 elif line:
                     self._dispatch(line)
@@ -258,283 +135,73 @@ class Console:
             elif ch in ("\x7f", "\b"):
                 if self._buf:
                     self._buf = self._buf[:-1]; self._w("\b \b")
-            elif ch == "\x03":  # Ctrl-C clears the line
+            elif ch == "\x03":                     # Ctrl-C clears the line
                 self._buf = ""; self._w("^C\n"); self._redraw()
-            elif ch == "\x04":  # Ctrl-D quits
+            elif ch == "\x04":                     # Ctrl-D quits
                 self._quit = True
             elif ch.isprintable():
                 self._buf += ch; self._w(ch)
 
-    def _read_sensor(self) -> None:
-        line = self._sensor.readline() if self._sensor else ""
-        if not line:  # EOF: the helper exited
-            if self._sensor:
-                self._sensor.stop(); self._sensor = None
-            self._emit("[sentinel] sensor stopped.")
-            return
-        self._handle_sensor(line.strip())
-
-    def _handle_sensor(self, line: str) -> None:
-        """Dual-plane funnel + intervention tier. Measurement plane (raw ring) sees EVERY switch;
-        ingestion plane (Schmitt) fires only on a rate-level CROSSING, which (a) feeds the isolated
-        Sentinel brain a steadiness baseline through the 0.85-gated detector, and (b) advances the
-        focus-block KPI. Silent on Day 1 (low confidence) and on normal flow; never touches the
-        Knowledge brain."""
-        kind, _, rest = line.partition(" ")
-        if kind == "activate" and rest:
-            bundle, _, ls_cat = rest.partition(" ")
-            bucket = self._sentinel_store.resolve(bundle, ls_cat) if self._sentinel_store else "?"
-            self._focus_last = bucket
-            self._focus_events += 1
-            if bucket in _DISTRACTION_BUCKETS:                 # remember what to hide (capped, no titles)
-                self._recent = ([(b, k) for (b, k) in self._recent if b != bundle]
-                                + [(bundle, bucket)])[-12:]
-            now_mono, now_wall = time.monotonic(), time.time()
-            self._ring = record(self._ring, now_mono)         # measurement: capture every micro-switch
-            self._frag, emitted = step(FRAGMENTATION_LADDER, self._frag, rate(self._ring, now_mono))
-            if emitted is not None:                            # ingestion: only a level CROSSING
-                self._frag_level = emitted
-                steady = is_steady(emitted)
-                self._block, done = block_update(self._block, now_wall, steady)  # focus-block KPI
-                if done is not None and self._sentinel_store is not None:
-                    self._sentinel_store.record_focus_block(done.start, done.duration)
-                if self._sentinel_detector is not None:
-                    try:  # baseline observation -> 0.85-gated surprise (on_surprise = _on_flow_surprise)
-                        self._sentinel_detector.observe(steadiness_belief(emitted))
-                        self._obs_count += 1
-                        self._record_burnin_if_crossed(now_wall, now_mono)
-                    except Exception:  # noqa: BLE001 — a sensor hiccup must not break the loop
-                        pass
-        # 'launch'/'idle' are received but not acted on yet.
-
-    def _record_burnin_if_crossed(self, now_wall: float, now_mono: float) -> None:
-        """The instant the steady baseline first reaches the floor, record (elapsed, observations).
-        Numeric only — this is what makes the empirical burn-in extractable without raw telemetry."""
-        if (not self._burnin_recorded and self._sentinel_detector is not None
-                and self._sentinel_detector.last_prior_confidence >= _BURNIN_FLOOR):
-            elapsed = now_mono - self._sentinel_started
-            if self._sentinel_store is not None:
-                self._sentinel_store.record_burnin(now_wall, elapsed, self._obs_count)
-            self._burnin_recorded = True
-            self._emit(f"[sentinel] baseline reached the {_BURNIN_FLOOR:.2f} floor after "
-                       f"{self._obs_count} observations ({elapsed / 60:.1f}m) — now armed.")
-
-    def _on_flow_surprise(self, event) -> None:
-        """A confident baseline diverged. Intervene ONLY on the BAD direction (became unsteady),
-        never on recovery, and never stack a second prompt while one is pending."""
-        if event.actual_expectation >= 0.5 or self._pending is not None:
-            return
-        distraction = list(dict.fromkeys(b for b, _ in self._recent))   # unique bundles, recency order
-        cats = sorted({k for _, k in self._recent})
-        self._pending = {"bundles": distraction, "ts": time.time()}
-        self._emit(intervention_prompt(self._frag_level or "fragmented", cats))
-
-    def _resolve_intervention(self, line: str) -> None:
-        """Non-blocking [y/n]: 'y' actuates the permissionless hide via the helper's stdin."""
-        pend, self._pending = self._pending, None
-        accepted = line.strip().lower() in ("y", "yes")
-        if accepted and self._sensor is not None:
-            for bundle in pend["bundles"]:
-                self._sensor.hide(bundle)
-            shown = ", ".join(pend["bundles"]) if pend["bundles"] else "(none currently running)"
-            self._out(f"✓ hidden for {DEFAULT_MINUTES}m: {shown}")
-        else:
-            self._out("ok — staying out of your way.")
-        if self._sentinel_store is not None:
-            self._sentinel_store.record_intervention(pend["ts"], accepted)
-
-    def _tick(self) -> None:
-        self._reap_notifs()
-        try:
-            self._sentinel.run_once()  # poll CPU/mem -> ONA; surprises -> narrator -> self._on_alert
-            import psutil
-            self._last = f"cpu={psutil.cpu_percent():.0f}% mem={psutil.virtual_memory().percent:.0f}%"
-        except Exception as exc:  # noqa: BLE001 — a flaky poll must never kill the loop
-            self._emit(f"[sentinel error] {exc}")
-
-    # ── commands ──────────────────────────────────────────────────────
+    # ── command dispatch (all reasoning happens in the daemon) ────────
     def _dispatch(self, line: str) -> None:
         cmd, _, rest = line.partition(" ")
         rest = rest.strip()
-        handler = {
-            "help": lambda: self._out(HELP), "?": lambda: self._out(HELP),
-            "quit": self._do_quit, "exit": self._do_quit,
-            "status": self._do_status, "health": self._do_health,
-            "sentinel": lambda: self._do_sentinel(rest),
-            "learn": lambda: self._do_learn(rest), "tell": lambda: self._do_tell(rest),
-            "ask": lambda: self._do_ask(rest), "act": lambda: self._do_act(rest),
-        }.get(cmd)
-        if handler is None:
-            self._out(f"unknown command: {cmd!r} (try 'help')")
-        else:
-            handler()
+        if cmd in ("help", "?"):
+            return self._out(HELP)
+        if cmd in ("quit", "exit"):
+            self._quit = True; return
+        if cmd == "learn":
+            return self._do_learn(rest)
+        if cmd == "act":
+            return self._do_act(rest)
+        if cmd in ("ask", "tell", "status", "health", "sentinel"):
+            _, body = self._client.call(cmd, rest)
+            return self._render(body)
+        self._out(f"unknown command: {cmd!r} (try 'help')")
 
-    def _do_quit(self) -> None:
-        self._quit = True
+    def _render(self, body: object) -> None:
+        if isinstance(body, dict):
+            if body.get("text") is not None:
+                self._out(body["text"])
+            for line in body.get("lines", []):
+                self._out(line)
 
-    def _do_status(self) -> None:
-        self._out(f"last poll: {self._last} | L2 facts: {self._store.count()}")
-
-    def _do_sentinel(self, rest: str) -> None:
-        arg = rest.strip().lower()
-        on = self._sensor is not None and self._sensor.running()
-        if arg in ("", "status"):
-            self._out(f"sentinel: ON — {self._focus_events} switches, last context: "
-                      f"{self._focus_last or '-'}, attention: {self._frag_level or 'focused'} "
-                      f"(isolated brain)" if on
-                      else "sentinel: OFF   (turn on with: sentinel on)")
-        elif arg == "on":
-            if on:
-                return self._out("sentinel already on.")
-            sensor = Sensor()
-            if not sensor.start():
-                return self._out("sentinel unavailable (needs macOS + swiftc to build the helper).")
-            self._sensor = sensor
-            self._sentinel_brain = Brain(cycles_per_step=20)  # SECOND isolated ONA (boots *babbling=0)
-            self._sentinel_store = SentinelStore(self._db_path)  # app->bucket memoizer (persisted)
-            # 0.85 floor = the epistemic burn-in: stays silent until the 'usually steady' baseline
-            # has accumulated enough evidence (ONA c=w/(w+k); 0.85 ~ 6 confirmations). Never cry wolf.
-            self._sentinel_detector = SurpriseDetector(
-                self._sentinel_brain, threshold=0.5,
-                on_surprise=self._on_flow_surprise, min_confidence=_BURNIN_FLOOR)
-            self._ring, self._frag, self._frag_level = RingState(), DiscState(), None
-            self._block, self._recent, self._pending = BlockState(), [], None
-            self._focus_events, self._focus_last = 0, None
-            self._sentinel_started, self._obs_count, self._burnin_recorded = time.monotonic(), 0, False
-            self._out("sentinel: ON — watching app-focus in a fully isolated brain "
-                      "(silent during burn-in; intervenes only on a confident spike).")
-        elif arg == "off":
-            self._teardown_sentinel()
-            self._out("sentinel: OFF.")
-        else:
-            self._out("usage: sentinel on | off | status")
-
-    def _teardown_sentinel(self) -> None:
-        """Stop the sensor + flush an open focus block so its time isn't lost, then close brain/store."""
-        if self._sentinel_store is not None:
-            done = block_close(self._block, time.time())
-            if done is not None:
-                self._sentinel_store.record_focus_block(done.start, done.duration)
-        if self._sensor:
-            self._sensor.stop(); self._sensor = None
-        if self._sentinel_brain:
-            self._sentinel_brain.close(); self._sentinel_brain = None
-        if self._sentinel_store:
-            self._sentinel_store.close(); self._sentinel_store = None
-        self._block, self._pending, self._sentinel_detector = BlockState(), None, None
-
-    def _focus_health(self) -> list[str]:
-        """Value KPI: focus-block lift around accepted interventions ('minutes of focus protected')."""
-        store = self._sentinel_store or SentinelStore(self._db_path)
-        try:
-            k, c = store.kpi(), store.calib()
-        finally:
-            if store is not self._sentinel_store:
-                store.close()
-        out: list[str] = []
-        # Calibration line (the scalars to relay for tuning the floor — all local, no content).
-        if c["burnin_observations"] is not None:
-            out.append(f"focus sentinel — burn-in: floor reached after "
-                       f"{c['burnin_observations']} obs ({(c['burnin_elapsed_s'] or 0) / 60:.1f}m).")
-        else:
-            out.append("focus sentinel — burn-in: floor not yet reached (still building baseline).")
-        if c["fired"]:
-            rate = (c["decline_rate"] or 0.0) * 100
-            out.append(f"  interventions: {c['fired']} fired, {c['declined']} declined "
-                       f"(decline rate {rate:.0f}% — false-positive proxy).")
-        # Lift line.
-        if k["accepted"] == 0:
-            out.append("  lift: no accepted interventions yet.")
-        elif k["pre_median_s"] is None or k["post_median_s"] is None:
-            out.append(f"  lift: {k['accepted']} accepted; pending (need blocks before & after a nudge).")
-        else:
-            pre, post = k["pre_median_s"] / 60, k["post_median_s"] / 60
-            delta = (k["delta_s"] or 0.0) / 60
-            sign = "+" if delta >= 0 else ""
-            out.append(f"  lift: median focus block {pre:.0f}m → {post:.0f}m after "
-                       f"({sign}{delta:.0f}m protected).")
-        return out
-
-    def _do_health(self) -> None:
-        s = self._metrics.summary()
-        if s["total"] == 0:
-            self._out("no ingestion telemetry yet — teach me something with `learn`.")
-            return self._out("\n".join(self._focus_health()))
-        glob = (s["global_rate"] or 0.0) * 100
-        out = [f"ingestion health — {s['total']} attempts ({s['session_total']} this session)"]
-        sr, pr = s["session_rate"], s["prior_rate"]
-        if sr is None:
-            out.append(f"  rejection rate: {glob:.0f}% all-time (nothing learned this session yet)")
-        elif pr is None:
-            out.append(f"  rejection rate: {sr * 100:.0f}% this session (first session — no history to compare)")
-        else:
-            srp, prp = sr * 100, pr * 100
-            trend = ("trending healthy ↓ (learning the dialect)" if srp < prp - 1 else
-                     "friction rising ↑ (scope may be too narrow)" if srp > prp + 1 else "steady →")
-            small = "  [n small — not yet significant]" if s["session_total"] < 5 else ""
-            out.append(f"  rejection rate: {srp:.0f}% this session vs {prp:.0f}% prior -> {trend}{small}")
-        fails = {k: v for k, v in s["taxonomy"].items() if k != "COMMIT_CLEAN" and k != "ESCALATE_ACCEPTED"}
-        if fails:
-            label = {"REJECT_STRUCTURAL": "structural", "REJECT_FUSED": "fused",
-                     "REJECT_SEMANTIC": "semantic", "ESCALATE_DECLINED": "esc-declined"}
-            out.append("  failures: " + " · ".join(f"{label.get(k, k)} {v}" for k, v in sorted(fails.items())))
-        out += self._focus_health()
-        self._out("\n".join(out))
-
-    def _do_learn(self, text: str) -> None:
-        if not text:
+    def _do_learn(self, rest: str) -> None:
+        if not rest:
             return self._out("usage: learn <english sentence>")
-        # Batch-and-queue transactional UX: rejects shown first, then escalations [y/n], then a
-        # single summary. The gate evaluates ALL claims before anything is committed or printed.
-        committed = self._jarvis.learn(text, on_rejects=self._present_rejects,
-                                       confirm_escalation=self._confirm_escalation)
-        self._out("✓ saved: " + " · ".join(committed) if committed
-                  else "nothing saved.")
-
-    def _present_rejects(self, items) -> None:  # Phase 1
-        self._out(f"✗ didn't save {len(items)} (I store facts, not cause/effect — and only what I can verify):")
-        for it in items:
-            self._out(f"    • understood as: \"{it.english_mirror}\"  —  {it.reason}")
-
-    def _confirm_escalation(self, item) -> bool:  # Phase 2
-        sim = f" (similarity {item.cosine:.2f})" if item.cosine is not None else ""
-        self._out(f"? unsure{sim}: I understood \"{item.english_mirror}\".")
-        return self._confirm("   save it?")
-
-    def _do_tell(self, narsese: str) -> None:
-        if not narsese:
-            return self._out("usage: tell <narsese statement.>  e.g.  tell <a --> b>.")
-        try:
-            committed = self._jarvis.tell(narsese)  # durable: write-through to L2 + feed L1
-        except Exception as exc:  # noqa: BLE001 — malformed Narsese -> report, don't crash
-            return self._out(f"invalid narsese: {exc}")
-        self._out("committed to L2+L1 (durable)." if committed else "deferred (contradiction flagged).")
-
-    def _do_ask(self, text: str) -> None:
-        if not text:
-            return self._out("usage: ask <english question>   or   ask <narsese?> (expert)")
-        raw = text.lstrip()
-        if "-->" in raw or raw.startswith(("<", "(")):   # expert raw-Narsese query path
-            answer = self._jarvis.ask(text)
-            self._out(f"answer: {answer}" if answer is not None else "no answer in memory.")
-        else:                                            # English -> conversational (grounded, voiced)
-            self._out(self._jarvis.converse(text))
+        _, body = self._client.call("learn", rest)
+        rejects = body.get("rejects", [])
+        if rejects:
+            self._out(f"✗ didn't save {len(rejects)} (I store facts, not cause/effect — and only what I can verify):")
+            for it in rejects:
+                self._out(f"    • understood as: \"{it['mirror']}\"  —  {it['reason']}")
+        accept: list[int] = []
+        for e in body.get("escalations", []):       # Phase 2: ask the human locally, [y/n]
+            sim = f" (similarity {e['cosine']:.2f})" if e.get("cosine") is not None else ""
+            self._out(f"? unsure{sim}: I understood \"{e['mirror']}\".")
+            if self._confirm("   save it?"):
+                accept.append(e["eid"])
+        committed = list(body.get("committed", []))
+        if accept and body.get("token"):
+            _, more = self._client.call("learn_resolve", {"token": body["token"], "accept": accept})
+            committed += more.get("committed", [])
+        self._out("✓ saved: " + " · ".join(committed) if committed else "nothing saved.")
 
     def _do_act(self, rest: str) -> None:
-        parts = rest.split()
-        if len(parts) != 2:
-            return self._out("usage: act <op_name> <arg_name>  e.g.  act run_saved_command disk_usage")
-        try:
-            proposal = decide(parts[0], parts[1], _STRONG)  # closed catalog; raises if unregistered
-        except Exception as exc:  # noqa: BLE001 — surface the security rejection, don't crash
-            return self._out(f"rejected: {exc}")
-        try:
-            self._executor.execute(proposal)  # prints [EXECUTED] or [SUGGEST] via self._out
-            if not (proposal.autonomous and self._executor.is_live_eligible(proposal.operation)):
-                if self._confirm("approve and run now?"):
-                    self._executor.execute_approved(proposal)  # enforces the same safety gates
-        except Exception as exc:  # noqa: BLE001 — never let one action kill the loop
-            self._out(f"execution error: {exc}")
+        ok, body = self._client.call("act", rest)
+        if not ok:
+            return self._render(body)
+        self._render(body)
+        if body.get("needs_confirm") and body.get("token"):
+            if self._confirm("approve and run now?"):
+                _, more = self._client.call("act_confirm", {"token": body["token"]})
+                self._render(more)
+
+    def _resolve_intervention(self, line: str) -> None:
+        pend, self._pending = self._pending, None
+        accepted = line.strip().lower() in ("y", "yes")
+        _, body = self._client.call("intervene", {"id": pend["id"], "accepted": accepted})
+        self._render(body)
 
     def _confirm(self, question: str) -> bool:
         self._w(f"{question} [y/N] ")
@@ -542,8 +209,9 @@ class Console:
         self._w(("y" if ch in ("y", "Y") else "n") + "\n")
         return ch in ("y", "Y")
 
-    # ── non-tty fallback (piped stdin): line loop, no async alerts ─────
+    # ── non-tty fallback (piped stdin): line loop, no async events ─────
     def _run_plain(self) -> None:
+        self._attach()
         self._w(BANNER)
         try:
             for raw in sys.stdin:
@@ -553,13 +221,13 @@ class Console:
                 if self._quit:
                     break
         finally:
-            self._brain.close()
+            self._client.close()
+            if self._daemon is not None:
+                self._daemon.terminate()
 
 
 def main() -> None:
-    if os.environ.get("NARS_JARVIS_LLM_GGUF"):
-        print("Loading local models (first start ~10-20s)…", flush=True)
-    Console(db_path=os.environ.get("NARS_JARVIS_DB", "jarvis.db")).run()
+    Console().run()
 
 
 if __name__ == "__main__":

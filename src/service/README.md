@@ -1,0 +1,44 @@
+# service
+
+## Overview
+The headless JARVIS daemon and its IPC contract (Phase 1 of the companion build). The reasoning
+core runs as a **single-threaded daemon** behind a line-delimited JSON protocol over a
+**unix-domain socket**; every UI is a thin client. This decouples reasoning from presentation: the
+terminal console (today) and the SwiftUI menu-bar app (Phase 2) are both dumb clients of the same
+surface, so brain logic is never duplicated in — or polluted by — a UI, and the whole brain is
+**testable headlessly** with no GUI event loop. See [ADR-003](../../docs/adrs/ADR-003-headless-daemon-ipc.md).
+
+## Usage
+```bash
+python3 -m service          # run the daemon (binds the unix socket; loads local models if wired)
+```
+```python
+from service import Client
+c = Client(); c.connect()
+ok, body = c.call("tell", "<tim --> duck>.")     # request/response, correlated by id
+ok, body = c.call("ask", "Is Tim a bird?")       # English -> grounded, cited answer
+c.set_event_handler(lambda kind, body: ...)      # async push: "alert", "intervention"
+c.pump()                                          # drain events when your select() says readable
+```
+The console (`src/console.py`) is the reference client: it spawns the daemon if one isn't running,
+then multiplexes the keyboard and the socket.
+
+## Key Components
+- **`protocol.py`** — pure codec. Three frame kinds: `request`/`response` (id-correlated) and
+  unsolicited `event` (server→client push). `LineBuffer` reassembles frames across partial reads.
+- **`session.py`** — `Session`: the headless command plane. Builds the core and exposes
+  `dispatch(cmd, arg) -> (ok, body)` returning plain JSON-able data; emits async work via `on_event`.
+- **`sentinel_loop.py`** — `SentinelLoop`: the flow sentinel (second isolated brain, sensor, funnel,
+  0.85 burn-in gate, interventions, focus/calibration KPI), driven by the daemon's select loop.
+- **`server.py`** — `Daemon`: single-threaded select() over the listen socket + clients + sensor
+  pipe; ticks the M2 system sentinel on timeout; broadcasts events to all clients.
+- **`client.py`** — `Client`: blocking `call()` (dispatches events seen while waiting) + `pump()`.
+- **`wiring.py`** — optional local LLM/embedder sourcing with offline fallbacks.
+
+## Dependencies
+`brain`, `jarvis`, `language`, `memory`, `execution`, `sentinel` (all via their public interfaces).
+Standard library only for transport (`socket`, `select`, `json`) — no network, no extra packages.
+
+## Related ADRs
+[ADR-001](../../docs/adrs/ADR-001-adopt-and-adapt-engineering-standards.md),
+[ADR-003](../../docs/adrs/ADR-003-headless-daemon-ipc.md).

@@ -129,6 +129,16 @@ class Jarvis:
             self._metrics.record_batch(metric_rows)           # fire-and-forget telemetry
         return committed
 
+    def commit_approved(self, statement: str, sentence: str) -> str | None:
+        """Commit a claim the human explicitly approved (an accepted L1 escalation). Bypasses the
+        gate — the human is the arbiter (L2 design) — but still goes through the C2 guard, ONA's
+        canonical check, and the L2 write-through. Returns the committed statement, or None.
+        """
+        output: list[str] = []
+        s = self._commit(statement, sentence, output)
+        observe(self._store, output)
+        return s
+
     def _learn_ungated(self, sentence: str) -> list[str]:
         """Original write-through (no semantic gate): translate -> commit each statement."""
         result = self._translator.translate(sentence)
