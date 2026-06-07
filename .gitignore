@@ -20,3 +20,6 @@ models/
 
 # compiled macOS sensor helper (built on demand)
 src/sentinel/.sensor.bin
+
+# compiled menu-bar app bundle (built on demand via ui/build.sh)
+src/ui/build/
