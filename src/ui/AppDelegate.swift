@@ -11,6 +11,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private let popover = NSPopover()
     private let chat = ChatViewController()
     private var client: JarvisClient?
+    private let recorder = AudioRecorder()
+    private var failsafe: Timer?                 // force-stops a runaway recording
+    private static let maxRecordSeconds = 30.0
 
     func applicationDidFinishLaunching(_ note: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -36,6 +39,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         chat.client = c
         _log("UI: connected to daemon at \(path)")
         setupNotifications()
+        setupVoice()
+    }
+
+    // ── push-to-talk: ⌥Space (hold) -> record -> send WAV path on release ──
+    private func setupVoice() {
+        AudioRecorder.requestPermission()
+        HotKey.shared.onPressed = { [weak self] in self?.startRecording() }
+        HotKey.shared.onReleased = { [weak self] in self?.stopAndSend() }
+        if HotKey.shared.register() {
+            chat.append("🎙 push-to-talk ready — hold ⌥Space to speak.")
+        } else {
+            chat.append("⚠ could not register the ⌥Space hotkey.")
+        }
+    }
+
+    private func startRecording() {
+        guard !recorder.isRecording else { return }
+        recorder.start()
+        statusItem.button?.title = "🔴 JARVIS"
+        // Failsafe: if the release event is swallowed (cmd-tab, interrupt), never run away.
+        failsafe = Timer.scheduledTimer(withTimeInterval: Self.maxRecordSeconds, repeats: false) {
+            [weak self] _ in self?.stopAndSend()
+        }
+    }
+
+    private func stopAndSend() {
+        failsafe?.invalidate(); failsafe = nil
+        guard let path = recorder.stop() else { return }
+        statusItem.button?.title = "🔵 JARVIS"
+        client?.call("voice", ["path": path]) { _, _ in }   // transcript/answer arrive as events
     }
 
     @objc private func togglePopover() {
@@ -49,12 +82,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     private func handleEvent(_ kind: String, _ body: [String: Any]) {
-        if kind == "intervention" {
+        switch kind {
+        case "intervention":
             let id = body["id"] as? Int ?? -1
             let prompt = body["prompt"] as? String ?? "Focus intervention"
             chat.append("⚠ " + prompt)
             notifyIntervention(id: id, prompt: prompt)
-        } else {
+        case "transcript":                                   // what whisper heard (the daemon speaks the reply)
+            chat.append("🎙 " + (body["text"] as? String ?? ""))
+        case "answer":
+            chat.append((body["text"] as? String ?? ""))
+        default:                                             // "alert" (sentinel / system)
             let text = body["text"] as? String ?? ""
             chat.append(text)
             notify(title: "NARS-JARVIS", text: text)

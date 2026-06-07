@@ -19,6 +19,7 @@ from sentinel import SurpriseDetector, SystemSentinel
 from sentinel.narrate import Narrator
 
 from .sentinel_loop import SentinelLoop
+from .voice import WhisperJob, speak, whisper_available
 from .wiring import NoNarrationLLM, make_claim_source, make_embedder
 
 _STRONG = DecisionStats(0.95, 0.97, 30, 12)  # an explicit REPL `act` is a high-confidence request
@@ -49,6 +50,7 @@ class Session:
         self._flow = SentinelLoop(db_path, self._emit)
         self._pending_learn: dict[str, dict] = {}
         self._pending_act: dict[str, object] = {}
+        self._voice_jobs: dict[int, WhisperJob] = {}   # fd -> in-flight transcription
         self._token = 0
 
     # ── command plane ─────────────────────────────────────────────────
@@ -57,7 +59,7 @@ class Session:
             "ask": self._ask, "tell": self._tell, "learn": self._learn,
             "learn_resolve": self._learn_resolve, "act": self._act, "act_confirm": self._act_confirm,
             "status": self._status, "health": self._health, "sentinel": self._sentinel,
-            "intervene": self._intervene,
+            "intervene": self._intervene, "voice": self._voice,
         }.get(cmd)
         if handler is None:
             return False, {"text": f"unknown command: {cmd!r}"}
@@ -174,12 +176,65 @@ class Session:
         return True, {"text": self._flow.resolve_intervention(int(arg.get("id", -1)),
                                                               bool(arg.get("accepted")))}
 
-    # ── select-loop hooks for the daemon ──────────────────────────────
-    def sensor_fileno(self) -> int | None:
-        return self._flow.fileno()
+    def _voice(self, arg: object) -> tuple[bool, object]:
+        """Push-to-talk: the client wrote a WAV; transcribe it off-loop, then reason + speak. Only a
+        path crosses the socket — the audio is a temp file on the shared filesystem."""
+        path = arg.get("path", "") if isinstance(arg, dict) else ""
+        if not path:
+            return False, {"text": "voice expects {path}"}
+        if not whisper_available():
+            return False, {"text": "voice unavailable — install whisper.cpp (ui/setup-whisper.sh)."}
+        try:
+            job = WhisperJob(path)
+        except Exception as exc:  # noqa: BLE001
+            return False, {"text": f"transcription failed to start: {exc}"}
+        self._voice_jobs[job.fileno()] = job          # daemon select() now watches its stdout
+        return True, {"status": "transcribing"}
 
-    def read_sensor(self) -> None:
-        self._flow.read()
+    def _read_voice(self, fd: int) -> None:
+        job = self._voice_jobs.get(fd)
+        if job is None:
+            return
+        transcript = job.read()
+        if transcript is None:
+            return                                     # more stdout to come
+        del self._voice_jobs[fd]
+        job.cleanup()
+        self._route_voice(transcript)
+
+    def _route_voice(self, transcript: str) -> None:
+        """Speak what we heard, run it through the normal command pipeline, speak the reply."""
+        self._emit("transcript", {"text": transcript})
+        if not transcript:
+            speak("I didn't catch that."); return
+        first = transcript.split(" ", 1)[0].lower()
+        if first in ("learn", "tell") and " " in transcript:
+            cmd, arg = first, transcript.split(" ", 1)[1]
+        else:
+            cmd, arg = "ask", transcript            # default: treat the utterance as a question
+        ok, body = self.dispatch(cmd, arg)
+        spoken = body.get("text") if isinstance(body, dict) else None
+        if cmd == "learn" and isinstance(body, dict):
+            committed = body.get("committed", [])
+            spoken = ("saved " + ", ".join(committed)) if committed else "I couldn't save that."
+        spoken = spoken or "done."
+        self._emit("answer", {"text": spoken})
+        speak(spoken)
+
+    # ── select-loop hooks for the daemon (sensor pipe + voice jobs) ────
+    def extra_fds(self) -> list[int]:
+        fds: list[int] = []
+        sfd = self._flow.fileno()
+        if sfd is not None:
+            fds.append(sfd)
+        fds += list(self._voice_jobs)
+        return fds
+
+    def handle_fd(self, fd: int) -> None:
+        if fd in self._voice_jobs:
+            self._read_voice(fd)
+        elif fd == self._flow.fileno():
+            self._flow.read()
 
     def tick(self) -> None:
         """Periodic M2 system-sentinel poll (CPU/mem -> surprise -> alert event)."""

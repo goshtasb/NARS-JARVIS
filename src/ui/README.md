@@ -11,7 +11,10 @@ native notifications. The brain lives entirely in the daemon (ADR-003); this is 
 ```bash
 ui/build.sh            # compile -> build/JARVIS.app (swiftc, no Xcode), ad-hoc signed
 ui/run-ui.sh           # ensure the daemon is up (with models), build if needed, open the app
+ui/setup-whisper.sh    # one-time: install whisper.cpp + download the model -> enables push-to-talk
 ```
+Voice (Phase 3): hold **⌥Space** to talk; release to send. The mic is owned by this app (one clean
+Microphone permission); whisper.cpp STT + `say` TTS run in the daemon. See ADR-005.
 Headless verification (no GUI needed):
 ```bash
 ui/build/JARVIS.app/Contents/MacOS/JARVIS --check   # connect to the daemon, round-trip, exit
@@ -27,6 +30,8 @@ In the popover, type `learn …`, `ask …`, `tell …` (a bare line is treated 
   (alerts → banners; intervention → a notification with **Hide apps / Not now** actions that reply to
   the daemon's pending intervention — the native replacement for the dropped osascript hack).
 - **`ChatView.swift`** — the popover view: transcript + input. Sends the typed command, renders the reply.
+- **`AudioRecorder.swift`** — push-to-talk mic capture (`AVAudioRecorder`) → 16 kHz WAV in `$TMPDIR`.
+- **`HotKey.swift`** — global ⌥Space via Carbon `RegisterEventHotKey` (no TCC dialog; hold-to-talk).
 - **`main.swift`** — `.accessory` entry (menu-bar only); `--check` runs a headless IPC self-test.
 - **`probe_main.swift`** — standalone headless bridge verifier (`jarvis-probe`).
 - **`build.sh` / `run-ui.sh`** — bundle build and convenience launcher.

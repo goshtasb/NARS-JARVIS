@@ -10,7 +10,9 @@ macos="$app/Contents/MacOS"
 rm -rf "$app"
 mkdir -p "$macos"
 
-swiftc -O "$here/JarvisClient.swift" "$here/ChatView.swift" "$here/AppDelegate.swift" "$here/main.swift" \
+swiftc -O \
+  "$here/JarvisClient.swift" "$here/AudioRecorder.swift" "$here/HotKey.swift" \
+  "$here/ChatView.swift" "$here/AppDelegate.swift" "$here/main.swift" \
   -o "$macos/JARVIS"
 
 cat > "$app/Contents/Info.plist" <<'PLIST'
@@ -25,6 +27,7 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
   <key>CFBundleShortVersionString</key><string>0.2.0</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
+  <key>NSMicrophoneUsageDescription</key><string>NARS-JARVIS uses the microphone for push-to-talk voice input (⌥Space).</string>
 </dict></plist>
 PLIST
 

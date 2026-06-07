@@ -42,8 +42,9 @@ class Daemon:
         self._srv.listen(8)
         try:
             while True:
-                sfd = self._session.sensor_fileno()
-                watch: list = [self._srv, *self._clients] + ([sfd] if sfd is not None else [])
+                # The session contributes child-process fds (sensor pipe + any in-flight whisper
+                # jobs); we multiplex them alongside clients so ML never blocks the loop.
+                watch: list = [self._srv, *self._clients, *self._session.extra_fds()]
                 ready, _, _ = select.select(watch, [], [], self._poll)
                 if not ready:
                     self._session.tick()
@@ -51,8 +52,8 @@ class Daemon:
                 for obj in ready:
                     if obj is self._srv:
                         self._accept()
-                    elif isinstance(obj, int):          # the sensor pipe fd
-                        self._session.read_sensor()
+                    elif isinstance(obj, int):          # a session-owned fd (sensor / whisper stdout)
+                        self._session.handle_fd(obj)
                     else:
                         self._handle(obj)
         finally:

@@ -34,6 +34,9 @@ then multiplexes the keyboard and the socket.
   pipe; ticks the M2 system sentinel on timeout; broadcasts events to all clients.
 - **`client.py`** — `Client`: blocking `call()` (dispatches events seen while waiting) + `pump()`.
 - **`wiring.py`** — optional local LLM/embedder sourcing with offline fallbacks.
+- **`voice.py`** — push-to-talk STT/TTS: whisper.cpp as a `select()`-multiplexed child (`WhisperJob`,
+  never blocks the loop) + offline `say` (`speak`). Only a WAV *path* crosses the socket; the daemon
+  routes the transcript through the normal command pipeline and speaks the reply. See ADR-005.
 
 ## Dependencies
 `brain`, `jarvis`, `language`, `memory`, `execution`, `sentinel` (all via their public interfaces).
