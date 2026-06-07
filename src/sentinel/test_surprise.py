@@ -35,9 +35,32 @@ def test_no_prior_is_not_surprising_by_default() -> None:
     assert s == 0.0 and surprises == []
 
 
+def test_confidence_floor_blocks_weak_baseline() -> None:
+    # Epistemic burn-in: a large divergence against a LOW-confidence baseline must NOT fire.
+    fired: list = []
+    with Brain(cycles_per_step=50) as brain:
+        brain.add_belief("<cpu --> [pegged]>. {0.0 0.30}")  # weak baseline (little evidence)
+        det = SurpriseDetector(brain, threshold=0.5, on_surprise=fired.append, min_confidence=0.85)
+        s = det.observe("<cpu --> [pegged]>. :|:")
+    assert s > 0.5, s          # divergence is large...
+    assert fired == []          # ...but baseline isn't trusted yet -> silent (never cry wolf on Day 1)
+
+
+def test_confidence_floor_allows_confident_baseline() -> None:
+    # Same divergence, but a high-confidence baseline (>= 0.85 floor) -> the gate opens.
+    fired: list = []
+    with Brain(cycles_per_step=50) as brain:
+        brain.add_belief("<cpu --> [pegged]>. {0.0 0.90}")
+        det = SurpriseDetector(brain, threshold=0.5, on_surprise=fired.append, min_confidence=0.85)
+        s = det.observe("<cpu --> [pegged]>. :|:")
+    assert s > 0.5 and len(fired) == 1
+
+
 if __name__ == "__main__":
     test_expectation_formula()
     test_strong_prior_then_anomaly_trips()
     test_expected_event_no_surprise()
     test_no_prior_is_not_surprising_by_default()
+    test_confidence_floor_blocks_weak_baseline()
+    test_confidence_floor_allows_confident_baseline()
     print("sentinel/test_surprise: OK")

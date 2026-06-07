@@ -1,11 +1,14 @@
 # sentinel
 
 ## Overview
-The local observation pipeline (C3 / M2). **Observe-only** — it watches the OS and emits
-discretized Narsese events; it never acts. All flooding-prevention math lives in the pure
-functional core; psutil/watchdog are a thin shell. If this pipeline leaked, ONA's 40-slot
-attention buffer would flood and the reasoner would collapse — so the cores are designed so
-that **an idle machine emits zero events** and floods are mathematically unreachable.
+The local observation pipeline (C3 / M2). It watches the OS and emits discretized Narsese events;
+all flooding-prevention math lives in the pure functional core; psutil/watchdog are a thin shell. If
+this pipeline leaked, ONA's 40-slot attention buffer would flood and the reasoner would collapse — so
+the cores are designed so that **an idle machine emits zero events** and floods are mathematically
+unreachable.
+
+> **M2 was observe-only. The V2 Flow Sentinel (below) acts — but only on explicit human consent,
+> and only through one permissionless, reversible operation (hide an app).** See "V2 Flow Sentinel".
 
 ## The four mechanisms (pure cores)
 - **`schmitt.py`** — multi-level Schmitt discretizer. Asymmetric enter/exit thresholds
@@ -29,5 +32,35 @@ overflow; `watch()` starts a watchdog observer. Requires `pip install psutil wat
 ## Tests
 From `src/`: `python3 -m sentinel.test_schmitt | test_rollup | test_limiter | test_narsese` (all pure).
 
+## V2 Flow Sentinel (protect un-self-observable focus)
+A SECOND, fully isolated ONA instance (separate subprocess ⇒ mathematically zero cross-contamination
+with the Knowledge brain) plus an unprivileged macOS sensor. It learns your *normal* attention,
+detects a fragmentation spike, and offers ONE reversible action.
+
+- **`sensor.swift` / `sensor.py`** — unprivileged macOS telemetry: NSWorkspace push notifications for
+  frontmost-app changes (reads only the app's coarse **category**, never window titles ⇒ no TCC
+  dialog, no root, no polling). `sensor.py` maps bundle→bucket via Apple's `LSApplicationCategoryType`
+  UTI taxonomy + a small override table, memoized in `store.py`. The Swift helper is now
+  **bidirectional**: stdout = events, stdin = `hide <bundle>` commands actuated via
+  `NSRunningApplication.hide()` (verified permissionless + dialog-free in an accessory `NSApplication`
+  run loop; its return Bool is unreliable, so we ignore it). stdin uses `readabilityHandler` (off the
+  main run loop) so it never blocks the CFRunLoop powering the NSWorkspace stream.
+- **`fragmentation.py`** — dual-plane funnel: a measurement-plane ring (every micro-switch, full
+  fidelity) vs an ingestion-plane Schmitt (only rate-level crossings reach ONA).
+- **`surprise.py`** — `SurpriseDetector` with the **epistemic burn-in gate** (`min_confidence`): it
+  may interrupt only when the baseline belief's ONA confidence ≥ **0.85** (c=w/(w+k) ⇒ ~6
+  confirmations). Day-1 / low-evidence baselines stay silent — never cry wolf. The baseline is a
+  binary `<attention --> [steady]>` belief (`intervention.steadiness_belief`): steady=freq 1,
+  fragmenting=freq 0, so a confident "usually steady" makes a spike maximally surprising.
+- **`intervention.py`** — deterministic, closed-vocabulary prompt (no LLM near temporal logic):
+  *"Fragmentation spike (…) — hide [comms] apps for 25m? [y/n]"*. On `y` the console actuates
+  `sensor.hide(bundle)`; on the bad direction only (never on recovery), one prompt at a time.
+- **`focusblock.py`** + `store.py` KPI — the value metric: median focus-block duration AFTER vs
+  BEFORE accepted interventions ("minutes of focus protected"), surfaced in `health`. Pure; clock
+  injected; persisted (durations + timestamps only, never app/content).
+
+Opt-in via `sentinel on` in the console. Tests (pure/deterministic, no sleep):
+`test_fragmentation | test_surprise | test_intervention | test_focusblock`, plus `test_sentinel_v2`.
+
 ## Related
-PRD C3 / M2; ADR-001. Surprise detection (ONA prediction failure) + LLM narration are the next M2 pieces.
+PRD C3 / M2; ADR-001.

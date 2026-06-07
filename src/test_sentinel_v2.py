@@ -50,9 +50,28 @@ def test_sensor_compiles_when_swiftc_present() -> None:
     assert binary is not None and binary.exists(), "sensor.swift failed to compile"
 
 
+def test_kpi_persists_and_computes_lift() -> None:
+    # Focus blocks + interventions survive a restart and the lift readout is computed from them.
+    fd, db = tempfile.mkstemp(suffix=".db"); os.close(fd)
+    try:
+        s1 = SentinelStore(db)
+        s1.record_focus_block(500.0, 60.0)      # before the nudge
+        s1.record_focus_block(1100.0, 300.0)    # after the nudge
+        s1.record_intervention(1000.0, accepted=True)
+        s1.close()
+        s2 = SentinelStore(db)                   # reload from disk
+        k = s2.kpi()
+        assert k["accepted"] == 1
+        assert k["pre_median_s"] == 60.0 and k["post_median_s"] == 300.0
+        s2.close()
+    finally:
+        os.path.exists(db) and os.remove(db)
+
+
 if __name__ == "__main__":
     test_dual_brain_isolation()
     test_classify_via_uti_then_override()
     test_memoizer_caches_and_persists()
     test_sensor_compiles_when_swiftc_present()
+    test_kpi_persists_and_computes_lift()
     print("test_sentinel_v2: OK")

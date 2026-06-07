@@ -27,16 +27,25 @@ from language import IngestionGate, Translator, Voice
 from memory import MemoryStore, MetricsStore, SqliteGroundingStore
 from sentinel import (
     FRAGMENTATION_LADDER,
+    BlockState,
     RingState,
     Sensor,
     SentinelStore,
     SurpriseDetector,
     SystemSentinel,
+    block_update,
+    intervention_prompt,
+    is_steady,
     rate,
     record,
+    steadiness_belief,
 )
+from sentinel.focusblock import close as block_close
+from sentinel.intervention import DEFAULT_MINUTES
 from sentinel.narrate import Narrator
 from sentinel.schmitt import DiscState, step
+
+_DISTRACTION_BUCKETS = frozenset({"comms", "media"})  # the categories an intervention will hide
 
 PROMPT = "jarvis> "
 _STRONG = DecisionStats(0.95, 0.97, 30, 12)  # a REPL `act` is an explicit, high-confidence request
@@ -138,6 +147,7 @@ class Console:
         self._sensor: Sensor | None = None
         self._sentinel_brain: Brain | None = None
         self._sentinel_store: SentinelStore | None = None
+        self._sentinel_detector: SurpriseDetector | None = None  # 0.85-gated flow surprise
         self._db_path = db_path
         self._focus_events = 0
         self._focus_last: str | None = None
@@ -145,6 +155,11 @@ class Console:
         self._ring = RingState()
         self._frag = DiscState()
         self._frag_level: str | None = None
+        # Intervention tier: focus-block tracker (KPI), recent distraction apps (what to hide),
+        # and a single non-blocking pending [y/n] (the helper's stdin actuates the hide on 'y').
+        self._block = BlockState()
+        self._recent: list[tuple[str, str]] = []   # (bundle, bucket), capped — never raw titles
+        self._pending: dict | None = None
 
     # ── terminal writers ──────────────────────────────────────────────
     def _w(self, s: str) -> None:
@@ -220,12 +235,7 @@ class Console:
         finally:
             termios.tcsetattr(self._fd, termios.TCSADRAIN, old)
             self._w("\n")
-            if self._sensor is not None:
-                self._sensor.stop()
-            if self._sentinel_brain is not None:
-                self._sentinel_brain.close()
-            if self._sentinel_store is not None:
-                self._sentinel_store.close()
+            self._teardown_sentinel()
             self._brain.close()
 
     def _read_ready(self) -> None:
@@ -233,7 +243,9 @@ class Console:
             if ch in ("\r", "\n"):
                 self._w("\n")
                 line, self._buf = self._buf.strip(), ""
-                if line:
+                if self._pending is not None:       # an intervention [y/n] takes priority over commands
+                    self._resolve_intervention(line)
+                elif line:
                     self._dispatch(line)
                 if not self._quit:
                     self._redraw()
@@ -257,26 +269,59 @@ class Console:
         self._handle_sensor(line.strip())
 
     def _handle_sensor(self, line: str) -> None:
-        """Dual-plane funnel. Measurement plane (raw ring) sees EVERY switch; ingestion plane
-        (Schmitt) feeds the isolated Sentinel brain ONLY on a rate-level transition. Silent on
-        normal; never touches the Knowledge brain. (Surprise/templates/KPI = next increment.)"""
+        """Dual-plane funnel + intervention tier. Measurement plane (raw ring) sees EVERY switch;
+        ingestion plane (Schmitt) fires only on a rate-level CROSSING, which (a) feeds the isolated
+        Sentinel brain a steadiness baseline through the 0.85-gated detector, and (b) advances the
+        focus-block KPI. Silent on Day 1 (low confidence) and on normal flow; never touches the
+        Knowledge brain."""
         kind, _, rest = line.partition(" ")
         if kind == "activate" and rest:
             bundle, _, ls_cat = rest.partition(" ")
-            self._focus_last = (self._sentinel_store.resolve(bundle, ls_cat)
-                                if self._sentinel_store else "?")
+            bucket = self._sentinel_store.resolve(bundle, ls_cat) if self._sentinel_store else "?"
+            self._focus_last = bucket
             self._focus_events += 1
-            now = time.monotonic()
-            self._ring = record(self._ring, now)              # measurement: capture every micro-switch
-            self._frag, emitted = step(FRAGMENTATION_LADDER, self._frag, rate(self._ring, now))
+            if bucket in _DISTRACTION_BUCKETS:                 # remember what to hide (capped, no titles)
+                self._recent = ([(b, k) for (b, k) in self._recent if b != bundle]
+                                + [(bundle, bucket)])[-12:]
+            now_mono, now_wall = time.monotonic(), time.time()
+            self._ring = record(self._ring, now_mono)         # measurement: capture every micro-switch
+            self._frag, emitted = step(FRAGMENTATION_LADDER, self._frag, rate(self._ring, now_mono))
             if emitted is not None:                            # ingestion: only a level CROSSING
                 self._frag_level = emitted
-                if self._sentinel_brain is not None:
-                    try:  # one bounded state-transition belief into the SEPARATE brain
-                        self._sentinel_brain.add_belief(f"<attention --> [{emitted}]>. :|:")
+                steady = is_steady(emitted)
+                self._block, done = block_update(self._block, now_wall, steady)  # focus-block KPI
+                if done is not None and self._sentinel_store is not None:
+                    self._sentinel_store.record_focus_block(done.start, done.duration)
+                if self._sentinel_detector is not None:
+                    try:  # baseline observation -> 0.85-gated surprise (on_surprise = _on_flow_surprise)
+                        self._sentinel_detector.observe(steadiness_belief(emitted))
                     except Exception:  # noqa: BLE001 — a sensor hiccup must not break the loop
                         pass
-        # 'launch'/'idle'/'ready' are received but not acted on yet (next increment).
+        # 'launch'/'idle' are received but not acted on yet.
+
+    def _on_flow_surprise(self, event) -> None:
+        """A confident baseline diverged. Intervene ONLY on the BAD direction (became unsteady),
+        never on recovery, and never stack a second prompt while one is pending."""
+        if event.actual_expectation >= 0.5 or self._pending is not None:
+            return
+        distraction = list(dict.fromkeys(b for b, _ in self._recent))   # unique bundles, recency order
+        cats = sorted({k for _, k in self._recent})
+        self._pending = {"bundles": distraction, "ts": time.time()}
+        self._emit(intervention_prompt(self._frag_level or "fragmented", cats))
+
+    def _resolve_intervention(self, line: str) -> None:
+        """Non-blocking [y/n]: 'y' actuates the permissionless hide via the helper's stdin."""
+        pend, self._pending = self._pending, None
+        accepted = line.strip().lower() in ("y", "yes")
+        if accepted and self._sensor is not None:
+            for bundle in pend["bundles"]:
+                self._sensor.hide(bundle)
+            shown = ", ".join(pend["bundles"]) if pend["bundles"] else "(none currently running)"
+            self._out(f"✓ hidden for {DEFAULT_MINUTES}m: {shown}")
+        else:
+            self._out("ok — staying out of your way.")
+        if self._sentinel_store is not None:
+            self._sentinel_store.record_intervention(pend["ts"], accepted)
 
     def _tick(self) -> None:
         self._reap_notifs()
@@ -327,24 +372,60 @@ class Console:
             self._sensor = sensor
             self._sentinel_brain = Brain(cycles_per_step=20)  # SECOND isolated ONA (boots *babbling=0)
             self._sentinel_store = SentinelStore(self._db_path)  # app->bucket memoizer (persisted)
+            # 0.85 floor = the epistemic burn-in: stays silent until the 'usually steady' baseline
+            # has accumulated enough evidence (ONA c=w/(w+k); 0.85 ~ 6 confirmations). Never cry wolf.
+            self._sentinel_detector = SurpriseDetector(
+                self._sentinel_brain, threshold=0.5,
+                on_surprise=self._on_flow_surprise, min_confidence=0.85)
             self._ring, self._frag, self._frag_level = RingState(), DiscState(), None
+            self._block, self._recent, self._pending = BlockState(), [], None
             self._focus_events, self._focus_last = 0, None
-            self._out("sentinel: ON — watching app-focus in a fully isolated brain (silent on normal).")
+            self._out("sentinel: ON — watching app-focus in a fully isolated brain "
+                      "(silent during burn-in; intervenes only on a confident spike).")
         elif arg == "off":
-            if self._sensor:
-                self._sensor.stop(); self._sensor = None
-            if self._sentinel_brain:
-                self._sentinel_brain.close(); self._sentinel_brain = None
-            if self._sentinel_store:
-                self._sentinel_store.close(); self._sentinel_store = None
+            self._teardown_sentinel()
             self._out("sentinel: OFF.")
         else:
             self._out("usage: sentinel on | off | status")
 
+    def _teardown_sentinel(self) -> None:
+        """Stop the sensor + flush an open focus block so its time isn't lost, then close brain/store."""
+        if self._sentinel_store is not None:
+            done = block_close(self._block, time.time())
+            if done is not None:
+                self._sentinel_store.record_focus_block(done.start, done.duration)
+        if self._sensor:
+            self._sensor.stop(); self._sensor = None
+        if self._sentinel_brain:
+            self._sentinel_brain.close(); self._sentinel_brain = None
+        if self._sentinel_store:
+            self._sentinel_store.close(); self._sentinel_store = None
+        self._block, self._pending, self._sentinel_detector = BlockState(), None, None
+
+    def _focus_health(self) -> list[str]:
+        """Value KPI: focus-block lift around accepted interventions ('minutes of focus protected')."""
+        store = self._sentinel_store or SentinelStore(self._db_path)
+        try:
+            k = store.kpi()
+        finally:
+            if store is not self._sentinel_store:
+                store.close()
+        if k["accepted"] == 0:
+            return ["focus sentinel — no accepted interventions yet (lift accrues once you accept one)."]
+        if k["pre_median_s"] is None or k["post_median_s"] is None:
+            return [f"focus sentinel — {k['accepted']} accepted; lift pending "
+                    "(need focus blocks both before & after a nudge)."]
+        pre, post = k["pre_median_s"] / 60, k["post_median_s"] / 60
+        delta = (k["delta_s"] or 0.0) / 60
+        sign = "+" if delta >= 0 else ""
+        return [f"focus sentinel — {k['accepted']} accepted; median focus block "
+                f"{pre:.0f}m → {post:.0f}m after ({sign}{delta:.0f}m protected)."]
+
     def _do_health(self) -> None:
         s = self._metrics.summary()
         if s["total"] == 0:
-            return self._out("no ingestion telemetry yet — teach me something with `learn`.")
+            self._out("no ingestion telemetry yet — teach me something with `learn`.")
+            return self._out("\n".join(self._focus_health()))
         glob = (s["global_rate"] or 0.0) * 100
         out = [f"ingestion health — {s['total']} attempts ({s['session_total']} this session)"]
         sr, pr = s["session_rate"], s["prior_rate"]
@@ -363,6 +444,7 @@ class Console:
             label = {"REJECT_STRUCTURAL": "structural", "REJECT_FUSED": "fused",
                      "REJECT_SEMANTIC": "semantic", "ESCALATE_DECLINED": "esc-declined"}
             out.append("  failures: " + " · ".join(f"{label.get(k, k)} {v}" for k, v in sorted(fails.items())))
+        out += self._focus_health()
         self._out("\n".join(out))
 
     def _do_learn(self, text: str) -> None:

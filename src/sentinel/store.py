@@ -9,6 +9,7 @@ from __future__ import annotations
 import sqlite3
 import time
 
+from .focusblock import Block, lift
 from .sensor import classify
 
 _SCHEMA = """
@@ -18,6 +19,14 @@ CREATE TABLE IF NOT EXISTS app_categories (
     ls_category TEXT,
     source      TEXT NOT NULL,     -- 'auto' | 'override'
     created_at  REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS focus_blocks (
+    start    REAL NOT NULL,        -- wall-clock start (low-cardinality: a few/day; no app/content)
+    duration REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS interventions (
+    ts       REAL NOT NULL,        -- when offered
+    accepted INTEGER NOT NULL      -- 1=user said yes (apps hidden), 0=declined
 );
 """
 
@@ -61,6 +70,24 @@ class SentinelStore:
     def uncategorized(self) -> list[str]:
         """Bundles that fell through to 'other' — surfaced so the user could one-time-override them."""
         return [b for b, k in self._cache.items() if k == "other"]
+
+    # ── Value KPI: focus blocks + intervention lift (timestamps are wall-clock, caller-injected) ──
+    def record_focus_block(self, start: float, duration: float) -> None:
+        self._db.execute("INSERT INTO focus_blocks(start, duration) VALUES (?,?)", (start, duration))
+        self._db.commit()
+
+    def record_intervention(self, ts: float, accepted: bool) -> None:
+        self._db.execute("INSERT INTO interventions(ts, accepted) VALUES (?,?)",
+                         (ts, 1 if accepted else 0))
+        self._db.commit()
+
+    def kpi(self) -> dict:
+        """Intervention-lift readout: focus-block duration after vs before accepted nudges."""
+        blocks = [Block(s, d) for s, d in
+                  self._db.execute("SELECT start, duration FROM focus_blocks").fetchall()]
+        interventions = [(ts, bool(a)) for ts, a in
+                         self._db.execute("SELECT ts, accepted FROM interventions").fetchall()]
+        return lift(blocks, interventions)
 
     def close(self) -> None:
         self._db.close()

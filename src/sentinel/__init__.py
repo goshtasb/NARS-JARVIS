@@ -10,7 +10,10 @@ from .narrate import NARRATION_SYSTEM_PROMPT, Narrator, sanitize_narration
 from .narsese import activity_event, signal_event
 from .rollup import RollupState, on_event, on_tick
 from .schmitt import CPU_LADDER, MEM_LADDER, DiscState, Ladder, step
+from .focusblock import Block, BlockState, lift
+from .focusblock import update as block_update
 from .fragmentation import FRAGMENTATION_LADDER, WINDOW, RingState, rate, record
+from .intervention import intervention_prompt, is_steady, steadiness_belief
 from .sensor import BUCKETS, Sensor, bucket_for_uti, build_sensor, classify
 from .sensors import SystemSentinel
 from .store import SentinelStore
@@ -47,4 +50,11 @@ __all__ = [
     "rate",
     "FRAGMENTATION_LADDER",
     "WINDOW",
+    "is_steady",
+    "steadiness_belief",
+    "intervention_prompt",
+    "Block",
+    "BlockState",
+    "block_update",
+    "lift",
 ]

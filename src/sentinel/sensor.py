@@ -81,9 +81,19 @@ class Sensor:
         binary = build_sensor()
         if binary is None:
             return False
-        self._proc = subprocess.Popen([str(binary)], stdout=subprocess.PIPE,
-                                      stderr=subprocess.DEVNULL, text=True, bufsize=1)
+        self._proc = subprocess.Popen([str(binary)], stdin=subprocess.PIPE,
+                                      stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                      text=True, bufsize=1)
         return True
+
+    def hide(self, bundle_id: str) -> None:
+        """Actuate: ask the helper to hide a running app (permissionless NSRunningApplication.hide)."""
+        if self._proc and self._proc.stdin and not self._proc.stdin.closed:
+            try:
+                self._proc.stdin.write(f"hide {bundle_id}\n")
+                self._proc.stdin.flush()
+            except (BrokenPipeError, ValueError):
+                pass
 
     def stream(self):
         """The helper's stdout stream object — pass to select() and key dispatch on identity."""
