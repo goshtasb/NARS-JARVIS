@@ -13,8 +13,11 @@ ui/build.sh            # compile -> build/JARVIS.app (swiftc, no Xcode), ad-hoc 
 ui/run-ui.sh           # ensure the daemon is up (with models), build if needed, open the app
 ui/setup-whisper.sh    # one-time: install whisper.cpp + download the model -> enables push-to-talk
 ```
-Voice (Phase 3): hold **⌥Space** to talk; release to send. The mic is owned by this app (one clean
-Microphone permission); whisper.cpp STT + `say` TTS run in the daemon. See ADR-005.
+Voice (Phase 3): open the popover and click **🎙 Listen** to start, click **■ Stop & send** (or wait
+for the 30 s auto-stop) to send. Click-to-toggle from the menu bar — no global hotkey, so nothing
+conflicts. The mic is owned by this app (one clean Microphone permission); whisper.cpp STT + `say`
+TTS run in the daemon. (`HotKey.swift` keeps a Carbon hold-to-talk option available but unregistered.)
+See ADR-005.
 Headless verification (no GUI needed):
 ```bash
 ui/build/JARVIS.app/Contents/MacOS/JARVIS --check   # connect to the daemon, round-trip, exit
@@ -31,7 +34,8 @@ In the popover, type `learn …`, `ask …`, `tell …` (a bare line is treated 
   the daemon's pending intervention — the native replacement for the dropped osascript hack).
 - **`ChatView.swift`** — the popover view: transcript + input. Sends the typed command, renders the reply.
 - **`AudioRecorder.swift`** — push-to-talk mic capture (`AVAudioRecorder`) → 16 kHz WAV in `$TMPDIR`.
-- **`HotKey.swift`** — global ⌥Space via Carbon `RegisterEventHotKey` (no TCC dialog; hold-to-talk).
+- **`HotKey.swift`** — Carbon `RegisterEventHotKey` hold-to-talk (no TCC dialog). Available but not
+  registered — voice is triggered by the menu-bar 🎙 toggle instead (⌥Space conflicted).
 - **`main.swift`** — `.accessory` entry (menu-bar only); `--check` runs a headless IPC self-test.
 - **`probe_main.swift`** — standalone headless bridge verifier (`jarvis-probe`).
 - **`build.sh` / `run-ui.sh`** — bundle build and convenience launcher.

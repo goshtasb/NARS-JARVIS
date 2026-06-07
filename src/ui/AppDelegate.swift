@@ -45,15 +45,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         setupVoice()
     }
 
-    // ── push-to-talk: ⌥Space (hold) -> record -> send WAV path on release ──
+    // ── push-to-talk: click-to-toggle from the menu-bar popover (no global hotkey -> no conflicts) ──
     private func setupVoice() {
         AudioRecorder.requestPermission()
-        HotKey.shared.onPressed = { [weak self] in self?.startRecording() }
-        HotKey.shared.onReleased = { [weak self] in self?.stopAndSend() }
-        if HotKey.shared.register() {
-            chat.append("🎙 push-to-talk ready — hold ⌥Space to speak.")
+        chat.onToggleVoice = { [weak self] in self?.toggleVoice() }
+        chat.append("🎙 click 'Listen' to talk; click again (or it auto-stops at 30s) to send.")
+    }
+
+    private func toggleVoice() {
+        if recorder.isRecording {
+            stopAndSend()
         } else {
-            chat.append("⚠ could not register the ⌥Space hotkey.")
+            startRecording()
         }
     }
 
@@ -61,7 +64,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         guard !recorder.isRecording else { return }
         recorder.start()
         statusItem.button?.title = "🔴 JARVIS"
-        // Failsafe: if the release event is swallowed (cmd-tab, interrupt), never run away.
+        chat.setRecording(true)
+        // Failsafe: a toggle left on never runs away — auto-stop and send after 30s.
         failsafe = Timer.scheduledTimer(withTimeInterval: Self.maxRecordSeconds, repeats: false) {
             [weak self] _ in self?.stopAndSend()
         }
@@ -69,8 +73,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     private func stopAndSend() {
         failsafe?.invalidate(); failsafe = nil
-        guard let path = recorder.stop() else { return }
+        chat.setRecording(false)
         statusItem.button?.title = "🔵 JARVIS"
+        guard let path = recorder.stop() else { return }
         client?.call("voice", ["path": path]) { _, _ in }   // transcript/answer arrive as events
     }
 

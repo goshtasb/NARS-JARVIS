@@ -8,8 +8,10 @@ final class ChatViewController: NSViewController {
     weak var client: JarvisClient?
     var onQuit: (() -> Void)?            // set by AppDelegate
     var onStop: (() -> Void)?            // emergency stop (kill the daemon too)
+    var onToggleVoice: (() -> Void)?    // click-to-toggle push-to-talk
     private let transcript = NSTextView()
     private let input = NSTextField()
+    private let voiceButton = NSButton()
     private static let known = ["learn", "ask", "tell", "status", "health"]
 
     override func loadView() {
@@ -34,20 +36,33 @@ final class ChatViewController: NSViewController {
         transcript.autoresizingMask = [.width]
         transcript.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
         scroll.documentView = transcript
-        input.frame = NSRect(x: 8, y: 8, width: 404, height: 24)
+        input.frame = NSRect(x: 8, y: 8, width: 312, height: 24)
         input.placeholderString = "learn / ask / tell …"
         input.target = self
         input.action = #selector(submit)
+        voiceButton.frame = NSRect(x: 326, y: 6, width: 86, height: 28)
+        voiceButton.title = "🎙 Listen"
+        voiceButton.bezelStyle = .rounded
+        voiceButton.target = self
+        voiceButton.action = #selector(toggleVoice)
         container.addSubview(stop)
         container.addSubview(quit)
         container.addSubview(title)
         container.addSubview(scroll)
         container.addSubview(input)
+        container.addSubview(voiceButton)
         self.view = container
     }
 
     @objc private func quit() { onQuit?() }
     @objc private func stopAll() { onStop?() }
+    @objc private func toggleVoice() { onToggleVoice?() }
+
+    /// AppDelegate flips this when recording starts/stops so the button reflects state.
+    func setRecording(_ on: Bool) {
+        voiceButton.title = on ? "■ Stop & send" : "🎙 Listen"
+        voiceButton.contentTintColor = on ? .systemRed : nil
+    }
 
     func focusInput() { view.window?.makeFirstResponder(input) }
 
