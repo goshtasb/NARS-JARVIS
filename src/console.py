@@ -46,6 +46,7 @@ from sentinel.narrate import Narrator
 from sentinel.schmitt import DiscState, step
 
 _DISTRACTION_BUCKETS = frozenset({"comms", "media"})  # the categories an intervention will hide
+_BURNIN_FLOOR = 0.85  # ONA confidence the steady baseline must reach before the sentinel may interrupt
 
 PROMPT = "jarvis> "
 _STRONG = DecisionStats(0.95, 0.97, 30, 12)  # a REPL `act` is an explicit, high-confidence request
@@ -160,6 +161,11 @@ class Console:
         self._block = BlockState()
         self._recent: list[tuple[str, str]] = []   # (bundle, bucket), capped — never raw titles
         self._pending: dict | None = None
+        # Calibration (numeric only): when did the baseline cross the 0.85 floor, and after how many
+        # observations? Recorded once per fresh baseline — the empirical burn-in we tune against.
+        self._sentinel_started = 0.0
+        self._obs_count = 0
+        self._burnin_recorded = False
 
     # ── terminal writers ──────────────────────────────────────────────
     def _w(self, s: str) -> None:
@@ -295,9 +301,23 @@ class Console:
                 if self._sentinel_detector is not None:
                     try:  # baseline observation -> 0.85-gated surprise (on_surprise = _on_flow_surprise)
                         self._sentinel_detector.observe(steadiness_belief(emitted))
+                        self._obs_count += 1
+                        self._record_burnin_if_crossed(now_wall, now_mono)
                     except Exception:  # noqa: BLE001 — a sensor hiccup must not break the loop
                         pass
         # 'launch'/'idle' are received but not acted on yet.
+
+    def _record_burnin_if_crossed(self, now_wall: float, now_mono: float) -> None:
+        """The instant the steady baseline first reaches the floor, record (elapsed, observations).
+        Numeric only — this is what makes the empirical burn-in extractable without raw telemetry."""
+        if (not self._burnin_recorded and self._sentinel_detector is not None
+                and self._sentinel_detector.last_prior_confidence >= _BURNIN_FLOOR):
+            elapsed = now_mono - self._sentinel_started
+            if self._sentinel_store is not None:
+                self._sentinel_store.record_burnin(now_wall, elapsed, self._obs_count)
+            self._burnin_recorded = True
+            self._emit(f"[sentinel] baseline reached the {_BURNIN_FLOOR:.2f} floor after "
+                       f"{self._obs_count} observations ({elapsed / 60:.1f}m) — now armed.")
 
     def _on_flow_surprise(self, event) -> None:
         """A confident baseline diverged. Intervene ONLY on the BAD direction (became unsteady),
@@ -376,10 +396,11 @@ class Console:
             # has accumulated enough evidence (ONA c=w/(w+k); 0.85 ~ 6 confirmations). Never cry wolf.
             self._sentinel_detector = SurpriseDetector(
                 self._sentinel_brain, threshold=0.5,
-                on_surprise=self._on_flow_surprise, min_confidence=0.85)
+                on_surprise=self._on_flow_surprise, min_confidence=_BURNIN_FLOOR)
             self._ring, self._frag, self._frag_level = RingState(), DiscState(), None
             self._block, self._recent, self._pending = BlockState(), [], None
             self._focus_events, self._focus_last = 0, None
+            self._sentinel_started, self._obs_count, self._burnin_recorded = time.monotonic(), 0, False
             self._out("sentinel: ON — watching app-focus in a fully isolated brain "
                       "(silent during burn-in; intervenes only on a confident spike).")
         elif arg == "off":
@@ -406,20 +427,33 @@ class Console:
         """Value KPI: focus-block lift around accepted interventions ('minutes of focus protected')."""
         store = self._sentinel_store or SentinelStore(self._db_path)
         try:
-            k = store.kpi()
+            k, c = store.kpi(), store.calib()
         finally:
             if store is not self._sentinel_store:
                 store.close()
+        out: list[str] = []
+        # Calibration line (the scalars to relay for tuning the floor — all local, no content).
+        if c["burnin_observations"] is not None:
+            out.append(f"focus sentinel — burn-in: floor reached after "
+                       f"{c['burnin_observations']} obs ({(c['burnin_elapsed_s'] or 0) / 60:.1f}m).")
+        else:
+            out.append("focus sentinel — burn-in: floor not yet reached (still building baseline).")
+        if c["fired"]:
+            rate = (c["decline_rate"] or 0.0) * 100
+            out.append(f"  interventions: {c['fired']} fired, {c['declined']} declined "
+                       f"(decline rate {rate:.0f}% — false-positive proxy).")
+        # Lift line.
         if k["accepted"] == 0:
-            return ["focus sentinel — no accepted interventions yet (lift accrues once you accept one)."]
-        if k["pre_median_s"] is None or k["post_median_s"] is None:
-            return [f"focus sentinel — {k['accepted']} accepted; lift pending "
-                    "(need focus blocks both before & after a nudge)."]
-        pre, post = k["pre_median_s"] / 60, k["post_median_s"] / 60
-        delta = (k["delta_s"] or 0.0) / 60
-        sign = "+" if delta >= 0 else ""
-        return [f"focus sentinel — {k['accepted']} accepted; median focus block "
-                f"{pre:.0f}m → {post:.0f}m after ({sign}{delta:.0f}m protected)."]
+            out.append("  lift: no accepted interventions yet.")
+        elif k["pre_median_s"] is None or k["post_median_s"] is None:
+            out.append(f"  lift: {k['accepted']} accepted; pending (need blocks before & after a nudge).")
+        else:
+            pre, post = k["pre_median_s"] / 60, k["post_median_s"] / 60
+            delta = (k["delta_s"] or 0.0) / 60
+            sign = "+" if delta >= 0 else ""
+            out.append(f"  lift: median focus block {pre:.0f}m → {post:.0f}m after "
+                       f"({sign}{delta:.0f}m protected).")
+        return out
 
     def _do_health(self) -> None:
         s = self._metrics.summary()

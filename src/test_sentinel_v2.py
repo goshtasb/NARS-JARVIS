@@ -68,10 +68,28 @@ def test_kpi_persists_and_computes_lift() -> None:
         os.path.exists(db) and os.remove(db)
 
 
+def test_calibration_scalars_only() -> None:
+    # Burn-in is recorded ONCE; decline rate is the false-positive proxy. All numeric, no content.
+    fd, db = tempfile.mkstemp(suffix=".db"); os.close(fd)
+    try:
+        s = SentinelStore(db)
+        s.record_burnin(crossed_at=1000.0, elapsed_s=720.0, observations=6)
+        s.record_burnin(crossed_at=2000.0, elapsed_s=99.0, observations=99)  # ignored (already set)
+        s.record_intervention(1100.0, accepted=True)
+        s.record_intervention(1200.0, accepted=False)
+        c = s.calib()
+        assert c["burnin_observations"] == 6 and c["burnin_elapsed_s"] == 720.0   # first only
+        assert c["fired"] == 2 and c["declined"] == 1 and c["decline_rate"] == 0.5
+        s.close()
+    finally:
+        os.path.exists(db) and os.remove(db)
+
+
 if __name__ == "__main__":
     test_dual_brain_isolation()
     test_classify_via_uti_then_override()
     test_memoizer_caches_and_persists()
     test_sensor_compiles_when_swiftc_present()
     test_kpi_persists_and_computes_lift()
+    test_calibration_scalars_only()
     print("test_sentinel_v2: OK")

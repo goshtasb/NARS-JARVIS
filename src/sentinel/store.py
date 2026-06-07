@@ -28,6 +28,11 @@ CREATE TABLE IF NOT EXISTS interventions (
     ts       REAL NOT NULL,        -- when offered
     accepted INTEGER NOT NULL      -- 1=user said yes (apps hidden), 0=declined
 );
+CREATE TABLE IF NOT EXISTS calibration (
+    crossed_at   REAL NOT NULL,    -- the ONE moment the steady baseline first reached the floor
+    elapsed_s    REAL NOT NULL,    -- seconds of sentinel-on time to get there  (= empirical burn-in)
+    observations INTEGER NOT NULL  -- how many steadiness observations it took (numeric only, no content)
+);
 """
 
 
@@ -88,6 +93,32 @@ class SentinelStore:
         interventions = [(ts, bool(a)) for ts, a in
                          self._db.execute("SELECT ts, accepted FROM interventions").fetchall()]
         return lift(blocks, interventions)
+
+    def record_burnin(self, crossed_at: float, elapsed_s: float, observations: int) -> None:
+        """Record the ONE moment the baseline crossed the floor — only if not already recorded."""
+        if self._db.execute("SELECT 1 FROM calibration LIMIT 1").fetchone() is None:
+            self._db.execute(
+                "INSERT INTO calibration(crossed_at, elapsed_s, observations) VALUES (?,?,?)",
+                (crossed_at, elapsed_s, observations))
+            self._db.commit()
+
+    def calib(self) -> dict:
+        """Local, numeric-only calibration readout: empirical burn-in + false-positive proxy.
+        Everything here is a scalar — the only thing a human ever needs to relay to tune the floor.
+        No app, no category, no title ever enters this path."""
+        row = self._db.execute(
+            "SELECT elapsed_s, observations FROM calibration LIMIT 1").fetchone()
+        fired = self._db.execute("SELECT COUNT(*) FROM interventions").fetchone()[0]
+        declined = self._db.execute(
+            "SELECT COUNT(*) FROM interventions WHERE accepted=0").fetchone()[0]
+        return {
+            "burnin_elapsed_s": row[0] if row else None,      # empirical burn-in duration
+            "burnin_observations": row[1] if row else None,   # ...in steadiness observations
+            "fired": fired,
+            "declined": declined,
+            # Decline rate is our false-positive PROXY: a high rate => floor too low, raise it.
+            "decline_rate": (declined / fired) if fired else None,
+        }
 
     def close(self) -> None:
         self._db.close()

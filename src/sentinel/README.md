@@ -48,16 +48,25 @@ detects a fragmentation spike, and offers ONE reversible action.
 - **`fragmentation.py`** — dual-plane funnel: a measurement-plane ring (every micro-switch, full
   fidelity) vs an ingestion-plane Schmitt (only rate-level crossings reach ONA).
 - **`surprise.py`** — `SurpriseDetector` with the **epistemic burn-in gate** (`min_confidence`): it
-  may interrupt only when the baseline belief's ONA confidence ≥ **0.85** (c=w/(w+k) ⇒ ~6
-  confirmations). Day-1 / low-evidence baselines stay silent — never cry wolf. The baseline is a
-  binary `<attention --> [steady]>` belief (`intervention.steadiness_belief`): steady=freq 1,
-  fragmenting=freq 0, so a confident "usually steady" makes a spike maximally surprising.
+  may interrupt only when the baseline belief's ONA confidence ≥ **0.85**. Day-1 / low-evidence
+  baselines stay silent — never cry wolf. The baseline is a binary `<attention --> [steady]>` belief
+  (`intervention.steadiness_belief`): steady=freq 1, fragmenting=freq 0. Each observation carries
+  **single-evidence confidence 0.5** (w=1), so confidence accumulates by NAL revision —
+  `0.50, 0.67, 0.75, 0.80, 0.83, 0.857…` — and the 0.85 floor is reached only after **~6
+  confirmations** (measured against real ONA; this is exactly c=w/(w+k), k=1). A high per-observation
+  confidence would slam the belief to ~0.9 in one step and erase the burn-in (measured: armed at
+  obs #2) — `test_surprise.test_steadiness_burn_in_is_six_confirmations` guards this.
 - **`intervention.py`** — deterministic, closed-vocabulary prompt (no LLM near temporal logic):
   *"Fragmentation spike (…) — hide [comms] apps for 25m? [y/n]"*. On `y` the console actuates
   `sensor.hide(bundle)`; on the bad direction only (never on recovery), one prompt at a time.
 - **`focusblock.py`** + `store.py` KPI — the value metric: median focus-block duration AFTER vs
   BEFORE accepted interventions ("minutes of focus protected"), surfaced in `health`. Pure; clock
   injected; persisted (durations + timestamps only, never app/content).
+- **Calibration (privacy-preserving)** — `store.calib()` returns scalars only: empirical burn-in
+  (elapsed + observations to cross the floor, recorded once by the console), and the false-positive
+  proxy (interventions fired vs declined → decline rate). These tune the 0.85 floor. No raw event
+  stream, category, or title ever enters this path — the only thing that leaves the machine is a
+  human reading these numbers off `health` and relaying them.
 
 Opt-in via `sentinel on` in the console. Tests (pure/deterministic, no sleep):
 `test_fragmentation | test_surprise | test_intervention | test_focusblock`, plus `test_sentinel_v2`.

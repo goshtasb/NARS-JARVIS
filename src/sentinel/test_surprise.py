@@ -56,6 +56,25 @@ def test_confidence_floor_allows_confident_baseline() -> None:
     assert s > 0.5 and len(fired) == 1
 
 
+def test_steadiness_burn_in_is_six_confirmations() -> None:
+    # The defended Trap-1 math, enforced end-to-end on real ONA: steadiness observations accumulate
+    # to the 0.85 floor by NAL revision (~6 confirmations). Guards the single-evidence 0.5 value in
+    # steadiness_belief — a high value would arm at obs #2 and erase the burn-in entirely.
+    from sentinel.intervention import steadiness_belief
+    fired: list = []
+    with Brain(cycles_per_step=20) as brain:
+        det = SurpriseDetector(brain, threshold=0.5, on_surprise=fired.append, min_confidence=0.85)
+        armed_at = None
+        for i in range(1, 9):
+            det.observe(steadiness_belief("focused"))           # normal focused work
+            if det.last_prior_confidence >= 0.85 and armed_at is None:
+                armed_at = i
+        assert armed_at == 7, armed_at      # crosses on the 7th observe = after 6 prior confirmations
+        assert fired == []                   # pure-steady burn-in must NEVER interrupt
+        det.observe(steadiness_belief("thrashing"))             # a spike on the now-armed baseline
+        assert len(fired) == 1
+
+
 if __name__ == "__main__":
     test_expectation_formula()
     test_strong_prior_then_anomaly_trips()
@@ -63,4 +82,5 @@ if __name__ == "__main__":
     test_no_prior_is_not_surprising_by_default()
     test_confidence_floor_blocks_weak_baseline()
     test_confidence_floor_allows_confident_baseline()
+    test_steadiness_burn_in_is_six_confirmations()
     print("sentinel/test_surprise: OK")

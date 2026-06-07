@@ -5,9 +5,10 @@ from sentinel.intervention import intervention_prompt, is_steady, steadiness_bel
 def test_steadiness_mapping() -> None:
     assert is_steady("focused") and is_steady("light")
     assert not is_steady("fragmented") and not is_steady("thrashing")
-    # steady -> freq 1 baseline; unsteady -> freq 0. The Sentinel learns 'usually steady'.
-    assert steadiness_belief("focused") == "<attention --> [steady]>. {1.0 0.9}"
-    assert steadiness_belief("thrashing") == "<attention --> [steady]>. {0.0 0.9}"
+    # steady -> freq 1; unsteady -> freq 0. Per-obs confidence is single-evidence 0.5 so the
+    # baseline accumulates by revision (the burn-in); a high value would erase the burn-in.
+    assert steadiness_belief("focused") == "<attention --> [steady]>. {1.0 0.5}"
+    assert steadiness_belief("thrashing") == "<attention --> [steady]>. {0.0 0.5}"
 
 
 def test_intervention_prompt_is_closed_vocab() -> None:
