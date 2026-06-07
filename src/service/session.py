@@ -52,6 +52,7 @@ class Session:
         self._pending_act: dict[str, object] = {}
         self._voice_jobs: dict[int, WhisperJob] = {}   # fd -> in-flight transcription
         self._token = 0
+        self._shutdown = False                          # set by the `shutdown` command (kill switch)
 
     # ── command plane ─────────────────────────────────────────────────
     def dispatch(self, cmd: str, arg: object = "") -> tuple[bool, object]:
@@ -60,6 +61,7 @@ class Session:
             "learn_resolve": self._learn_resolve, "act": self._act, "act_confirm": self._act_confirm,
             "status": self._status, "health": self._health, "sentinel": self._sentinel,
             "intervene": self._intervene, "voice": self._voice,
+            "shutdown": self._do_shutdown,
         }.get(cmd)
         if handler is None:
             return False, {"text": f"unknown command: {cmd!r}"}
@@ -220,6 +222,15 @@ class Session:
         spoken = spoken or "done."
         self._emit("answer", {"text": spoken})
         speak(spoken)
+
+    def _do_shutdown(self, arg: object) -> tuple[bool, object]:
+        """Emergency stop / kill switch: the daemon loop exits after replying, closing the brains,
+        the sentinel, and the actuator. The single off-switch for the whole system."""
+        self._shutdown = True
+        return True, {"text": "shutting down"}
+
+    def wants_shutdown(self) -> bool:
+        return self._shutdown
 
     # ── select-loop hooks for the daemon (sensor pipe + voice jobs) ────
     def extra_fds(self) -> list[int]:

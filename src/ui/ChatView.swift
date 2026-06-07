@@ -6,13 +6,27 @@ import AppKit
 
 final class ChatViewController: NSViewController {
     weak var client: JarvisClient?
+    var onQuit: (() -> Void)?            // set by AppDelegate
+    var onStop: (() -> Void)?            // emergency stop (kill the daemon too)
     private let transcript = NSTextView()
     private let input = NSTextField()
     private static let known = ["learn", "ask", "tell", "status", "health"]
 
     override func loadView() {
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 420, height: 320))
-        let scroll = NSScrollView(frame: NSRect(x: 8, y: 40, width: 404, height: 272))
+
+        // Control row (always visible): an unmissable off-switch.
+        let stop = NSButton(title: "⛔ Stop All", target: self, action: #selector(stopAll))
+        stop.frame = NSRect(x: 8, y: 288, width: 110, height: 26)
+        stop.bezelColor = NSColor.systemRed
+        let quit = NSButton(title: "Quit", target: self, action: #selector(quit))
+        quit.frame = NSRect(x: 344, y: 288, width: 68, height: 26)
+        let title = NSTextField(labelWithString: "NARS-JARVIS")
+        title.frame = NSRect(x: 126, y: 292, width: 210, height: 18)
+        title.alignment = .center
+        title.textColor = .secondaryLabelColor
+
+        let scroll = NSScrollView(frame: NSRect(x: 8, y: 40, width: 404, height: 240))
         scroll.hasVerticalScroller = true
         scroll.borderType = .bezelBorder
         transcript.isEditable = false
@@ -24,10 +38,16 @@ final class ChatViewController: NSViewController {
         input.placeholderString = "learn / ask / tell …"
         input.target = self
         input.action = #selector(submit)
+        container.addSubview(stop)
+        container.addSubview(quit)
+        container.addSubview(title)
         container.addSubview(scroll)
         container.addSubview(input)
         self.view = container
     }
+
+    @objc private func quit() { onQuit?() }
+    @objc private func stopAll() { onStop?() }
 
     func focusInput() { view.window?.makeFirstResponder(input) }
 

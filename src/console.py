@@ -33,7 +33,8 @@ HELP = (
     "  status             last CPU/mem poll + memory counts\n"
     "  health             ingestion rejection-rate decay + focus-sentinel KPI\n"
     "  sentinel on|off    always-on flow sentinel (runs in the daemon)\n"
-    "  help | quit\n"
+    "  shutdown           stop the daemon entirely (whole system off)\n"
+    "  help | quit        quit this console (quit also stops a daemon it started)\n"
 )
 
 
@@ -149,6 +150,9 @@ class Console:
         if cmd in ("help", "?"):
             return self._out(HELP)
         if cmd in ("quit", "exit"):
+            self._quit = True; return
+        if cmd == "shutdown":                       # stop the daemon (whole system off), then exit
+            self._client.call("shutdown")
             self._quit = True; return
         if cmd == "learn":
             return self._do_learn(rest)

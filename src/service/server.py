@@ -56,6 +56,8 @@ class Daemon:
                         self._session.handle_fd(obj)
                     else:
                         self._handle(obj)
+                if self._session.wants_shutdown():      # `shutdown` command -> clean exit (kill switch)
+                    break
         finally:
             self._session.close()
             for sock in list(self._clients):

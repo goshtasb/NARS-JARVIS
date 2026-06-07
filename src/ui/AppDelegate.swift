@@ -19,10 +19,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.title = "🔵 JARVIS"
         statusItem.button?.target = self
-        statusItem.button?.action = #selector(togglePopover)
+        statusItem.button?.action = #selector(statusClick)
+        statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])  // right-click -> quit menu
         popover.behavior = .transient
         popover.contentViewController = chat
         popover.contentSize = NSSize(width: 420, height: 320)
+        chat.onQuit = { NSApp.terminate(nil) }
+        chat.onStop = { [weak self] in self?.emergencyStop() }
 
         let path = ProcessInfo.processInfo.environment["NARS_JARVIS_SOCK"]
             ?? "\(NSTemporaryDirectory())nars-jarvis.sock"
@@ -71,7 +74,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         client?.call("voice", ["path": path]) { _, _ in }   // transcript/answer arrive as events
     }
 
-    @objc private func togglePopover() {
+    @objc private func statusClick() {
+        // Right-click -> a quit menu (so you can stop JARVIS without opening the chat). Left -> popover.
+        if NSApp.currentEvent?.type == .rightMouseUp {
+            let menu = NSMenu()
+            menu.addItem(NSMenuItem(title: "Open JARVIS", action: #selector(openPopover), keyEquivalent: ""))
+            menu.addItem(.separator())
+            let stop = NSMenuItem(title: "⛔ Emergency Stop (quit everything)",
+                                  action: #selector(emergencyStop), keyEquivalent: "")
+            menu.addItem(stop)
+            menu.addItem(NSMenuItem(title: "Quit JARVIS (UI only)",
+                                    action: #selector(quitApp), keyEquivalent: "q"))
+            for item in menu.items { item.target = self }
+            statusItem.menu = menu
+            statusItem.button?.performClick(nil)   // present the menu
+            statusItem.menu = nil                  // detach so left-click still opens the popover
+        } else {
+            openPopover()
+        }
+    }
+
+    @objc private func openPopover() {
         guard let button = statusItem.button else { return }
         if popover.isShown {
             popover.performClose(nil)
@@ -79,6 +102,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             chat.focusInput()
         }
+    }
+
+    @objc private func quitApp() { NSApp.terminate(nil) }
+
+    /// Kill switch: tell the daemon to shut down (stops the brains, sentinel, autonomy, voice), then
+    /// quit the UI. The one action that turns the WHOLE system off.
+    @objc private func emergencyStop() {
+        client?.call("shutdown") { _, _ in }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { NSApp.terminate(nil) }
     }
 
     private func handleEvent(_ kind: String, _ body: [String: Any]) {
