@@ -60,13 +60,24 @@ def _reject_outcome(res) -> tuple[str | None, str]:
     return ("L1", "REJECT_SEMANTIC")
 
 
+# The prompt inversion (ADR-007): the LLM is the brain, ONA-backed memory is ground truth.
+ASSISTANT_SYSTEM_PROMPT = (
+    "You are JARVIS, a capable, concise local AI assistant running fully offline on the user's Mac. "
+    "Answer the user's request directly, using your own knowledge to reason, explain, and write code. "
+    "A 'Persistent memory' section may be provided with facts the user has taught you and their "
+    "preferences — treat those as absolute ground truth and prefer them over your own knowledge when "
+    "they are relevant. If you are unsure, say so briefly rather than inventing specifics. Be direct."
+)
+
+
 class Jarvis:
     def __init__(self, translator: Translator, store: MemoryStore, brain: Brain,
                  guard: ContradictionGuard | None = None,
                  executor: Executor | None = None,
                  gate: IngestionGate | None = None,
                  metrics: MetricsStore | None = None,
-                 voice: Voice | None = None) -> None:
+                 voice: Voice | None = None,
+                 assistant: object | None = None) -> None:
         self._translator = translator
         self._store = store
         self._brain = brain
@@ -75,6 +86,10 @@ class Jarvis:
         self._gate = gate          # None => ungated learn (no semantic gate; e.g. no embedder)
         self._metrics = metrics    # None => no telemetry; gate-friction outcomes only, never text
         self._voice = voice or Voice()  # template-only by default; formatter LLM is optional
+        # LLM-first brain (ADR-007): when a real model is wired, converse() lets the LLM answer from
+        # its own knowledge with the user's persistent memory injected as ground truth. With no
+        # assistant (tests / no model) converse() falls back to the legacy ONA-grounded path.
+        self._assistant = assistant if (assistant is not None and hasattr(assistant, "generate_text")) else None
 
     def learn(self, sentence: str, *, on_rejects: RejectPresenter | None = None,
               confirm_escalation: EscalationConfirm | None = None) -> list[str]:
@@ -214,13 +229,28 @@ class Jarvis:
         return answer
 
     def converse(self, question: str) -> str:
-        """English question in -> grounded ONA query -> English answer out, hallucination-proof.
+        """LLM-first answer (ADR-007): the model answers from its own knowledge with the user's
+        persistent memory injected as ground truth. Falls back to the legacy ONA-grounded path when
+        no language model is wired (tests / offline demo)."""
+        if self._assistant is None:
+            return self._converse_grounded(question)
+        memory = self._recall()
+        user = (f"Persistent memory (the user taught you these; treat as ground truth):\n{memory}\n\n"
+                if memory else "") + f"User: {question}"
+        try:
+            reply = self._assistant.generate_text(ASSISTANT_SYSTEM_PROMPT, user, max_tokens=512)
+        except Exception:  # noqa: BLE001 — a model hiccup degrades to the grounded path, never crashes
+            return self._converse_grounded(question)
+        return reply.strip() or self._converse_grounded(question)
 
-        Inbound reuses the translator+grounding (question -> a Narsese query term). Outbound maps
-        ONA's (frequency, confidence) to certainty bands and unrolls the evidence stamp to the real
-        premises — all in code — then the Voice renders it (formatter LLM optional + sanitized,
-        template-authoritative). If ONA has no answer, the user is told so; the LLM is never asked.
-        """
+    def _recall(self, limit: int = 30) -> str:
+        """The persistent-memory bridge: the English facts the user has taught, injected as context.
+        ONA/L2 is now a memory provider, not a gatekeeper."""
+        facts = self._store.facts_for_reload(limit=limit)
+        return "\n".join(f"- {f.english}" for f in facts if getattr(f, "english", None))
+
+    def _converse_grounded(self, question: str) -> str:
+        """Legacy hallucination-proof path: English -> ONA query -> cited verdict (no LLM knowledge)."""
         try:
             claims = self._translator.claims(question, QUESTION_SYSTEM_PROMPT)
         except Exception:  # noqa: BLE001 — unreadable question must not crash the REPL

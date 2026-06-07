@@ -76,7 +76,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         chat.setRecording(false)
         statusItem.button?.title = "🔵 JARVIS"
         guard let path = recorder.stop() else { return }
-        client?.call("voice", ["path": path]) { _, _ in }   // transcript/answer arrive as events
+        chat.append("… transcribing")
+        client?.call("voice", ["path": path]) { [weak self] ok, body in
+            // success -> transcript/answer arrive as events; failure -> surface it (no more silent dead button)
+            if !ok, let msg = body["text"] as? String {
+                DispatchQueue.main.async { self?.chat.append("⚠ " + msg) }
+            }
+        }
     }
 
     @objc private func statusClick() {

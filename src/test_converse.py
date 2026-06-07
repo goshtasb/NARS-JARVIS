@@ -32,6 +32,37 @@ def test_converse_yes_with_cited_evidence() -> None:
         assert "duck" in out, out                                # cites the real premise chain
 
 
+class _Assistant:
+    """Stub LLM with the free-form generate_text path (the LLM-first brain, ADR-007)."""
+    last_user = ""
+    def generate(self, system_prompt: str, sentence: str) -> str:
+        return "[]"
+    def generate_text(self, system_prompt: str, user: str, max_tokens: int = 64) -> str:
+        type(self).last_user = user
+        return "Paris is the capital of France."
+
+
+def test_converse_llm_first_answers_and_injects_memory() -> None:
+    # With a model wired, the LLM answers from its OWN knowledge, and the user's taught facts are
+    # injected as ground truth — the post-pivot behavior.
+    asst = _Assistant()
+    with Brain(cycles_per_step=50) as brain:
+        st = MemoryStore()
+        st.upsert("<sky --> blue>", 1.0, 0.9, english="the sky is blue")   # a taught fact
+        j = Jarvis(Translator(_QLLM()), st, brain, assistant=asst)
+        out = j.converse("What is the capital of France?")
+        assert out == "Paris is the capital of France."                    # answered from own knowledge
+        assert "the sky is blue" in _Assistant.last_user                   # memory injected as ground truth
+
+
+def test_converse_falls_back_to_grounded_without_a_model() -> None:
+    # No assistant wired (tests / offline) -> the legacy hallucination-proof ONA path still works.
+    with Brain(cycles_per_step=200) as brain:
+        j = Jarvis(Translator(_QLLM()), MemoryStore(), brain)             # no assistant
+        _teach(j)
+        assert "Tim is a bird" in j.converse("Is Tim a bird?")
+
+
 def test_converse_trace_dedups_and_renders_uniformly() -> None:
     # The audit trail must collapse a premise ONA cites via multiple evidence ids, and render each
     # via the fallback hierarchy: English alias if the L2 store has one, else clean canonical Narsese.
@@ -79,6 +110,8 @@ def test_converse_formatter_hallucination_is_suppressed() -> None:
 
 if __name__ == "__main__":
     test_converse_yes_with_cited_evidence()
+    test_converse_llm_first_answers_and_injects_memory()
+    test_converse_falls_back_to_grounded_without_a_model()
     test_converse_trace_dedups_and_renders_uniformly()
     test_converse_unknown_is_admitted_not_invented()
     test_converse_unreadable_question()

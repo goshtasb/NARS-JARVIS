@@ -5,7 +5,8 @@ set -e
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
 
-LLM="$root/models/qwen2.5-3b-instruct-q4_k_m.gguf"
+LLM="$root/models/qwen2.5-7b-instruct-q4_k_m.gguf"          # prefer the 7B brain (ADR-007)
+[ -f "$LLM" ] || LLM="$root/models/qwen2.5-3b-instruct-q4_k_m.gguf"
 EMBED="$root/models/nomic-embed-text-v1.5.f16.gguf"
 [ -f "$LLM" ]   && export NARS_JARVIS_LLM_GGUF="$LLM"
 [ -f "$EMBED" ] && export NARS_JARVIS_EMBED_GGUF="$EMBED"
