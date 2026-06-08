@@ -113,6 +113,9 @@ def render_action_prompt(actions: list[tuple[str, str]]) -> str:
         "[[DO: <action>]]   — or for an action that takes an argument —   [[DO: <action>: <argument>]]",
         "Use ONLY an action from the list above; never invent one. You may both answer and act in the "
         "same message. Never mention or explain the tag — it is stripped before the user sees it.",
+        "When you emit [[DO: report_system]], do NOT state or guess any system metric (CPU, memory, "
+        "disk, battery) in your prose — the real report is appended automatically below your reply; "
+        "defer to it entirely (e.g. say 'Let me check.' not 'Your CPU is at 0%').",
         "Worked examples:",
         "User: mute the volume",
         "Assistant: Muted.",

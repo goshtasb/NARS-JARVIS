@@ -56,3 +56,10 @@ def test_render_action_prompt_lists_actions_and_teaches_the_tag() -> None:
     assert "[[DO:" in text
     assert "report_system" in text and "mute" in text       # actions enumerated
     assert "open_url: https://google.com" in text           # a worked argument example
+
+
+def test_render_action_prompt_forbids_guessing_metrics() -> None:
+    # Trust fix: the model must not invent CPU/mem numbers in prose when it calls report_system —
+    # defer to the appended deterministic report (the live "your CPU is 0%" vs real 11% discrepancy).
+    text = catalog.render_action_prompt(catalog.available())
+    assert "do NOT state or guess any system metric" in text
