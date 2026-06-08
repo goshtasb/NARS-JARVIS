@@ -13,7 +13,7 @@ from typing import Callable
 from brain import Brain
 from execution import DecisionStats, build_air_gapped_executor, decide
 from jarvis import Jarvis
-from language import IngestionGate, Translator, Voice
+from language import IngestionGate, Translator, Voice, strip_acknowledgment
 from memory import MemoryStore, MetricsStore, SqliteGroundingStore
 from sentinel import SurpriseDetector, SystemSentinel
 from sentinel.narrate import Narrator
@@ -221,8 +221,8 @@ class Session:
             committed = body.get("committed", [])
             spoken = ("saved " + ", ".join(committed)) if committed else "I couldn't save that."
         spoken = spoken or "done."
-        self._emit("answer", {"text": spoken})
-        speak(spoken)
+        self._emit("answer", {"text": spoken})            # on-screen keeps the visible "(Saved: …)"
+        speak(strip_acknowledgment(spoken))               # but never voice the confirmation suffix
 
     def _do_shutdown(self, arg: object) -> tuple[bool, object]:
         """Emergency stop / kill switch: the daemon loop exits after replying, closing the brains,

@@ -57,6 +57,17 @@ def memory_acknowledgment(facts: list[str]) -> str:
     return "(Saved: " + "; ".join(facts) + ")"
 
 
+# The acknowledgment is a VISUAL affordance (on-screen). Spoken aloud it breaks the conversational
+# illusion, so the voice path strips it. Anchored to the trailing line memory_acknowledgment writes.
+_ACK_SUFFIX = re.compile(r"\s*\(Saved:[^\n]*$")
+
+
+def strip_acknowledgment(text: str) -> str:
+    """Remove a trailing '(Saved: …)' confirmation — for the TTS payload, which should not voice it.
+    Inverse of `memory_acknowledgment`; leaves text without an acknowledgment untouched."""
+    return _ACK_SUFFIX.sub("", text).rstrip()
+
+
 def filter_known(facts: list[str], known: list[str]) -> list[str]:
     """Drop facts the model merely echoed back from its injected memory (the context-echo bug).
 

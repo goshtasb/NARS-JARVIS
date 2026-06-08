@@ -5,6 +5,7 @@ from language.extract import (
     filter_semantic,
     memory_acknowledgment,
     split_memory_directives,
+    strip_acknowledgment,
 )
 
 
@@ -123,6 +124,22 @@ def test_filter_semantic_empty_known_passthrough() -> None:
     assert filter_semantic(["x"], [], _fake_embed) == ["x"]
 
 
+# ── strip_acknowledgment: the TTS payload must not voice "(Saved: …)" ──
+def test_strip_acknowledgment_removes_trailing_suffix() -> None:
+    assert strip_acknowledgment("Nice to meet you, Ashkan!\n(Saved: the user's name is Ashkan)") \
+        == "Nice to meet you, Ashkan!"
+
+
+def test_strip_acknowledgment_noop_without_suffix() -> None:
+    assert strip_acknowledgment("Paris.") == "Paris."
+
+
+def test_strip_acknowledgment_inverse_of_acknowledgment() -> None:
+    reply, facts = "Good to know.", ["the user prefers tabs over spaces"]
+    spoken = f"{reply}\n{memory_acknowledgment(facts)}"
+    assert strip_acknowledgment(spoken) == reply
+
+
 if __name__ == "__main__":
     test_no_tag_passthrough()
     test_single_own_line_tag()
@@ -140,4 +157,7 @@ if __name__ == "__main__":
     test_filter_semantic_keeps_distinct_fact()
     test_filter_semantic_mixed()
     test_filter_semantic_empty_known_passthrough()
+    test_strip_acknowledgment_removes_trailing_suffix()
+    test_strip_acknowledgment_noop_without_suffix()
+    test_strip_acknowledgment_inverse_of_acknowledgment()
     print("language/test_extract: OK")

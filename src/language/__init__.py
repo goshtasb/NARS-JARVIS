@@ -15,6 +15,7 @@ from .extract import (
     filter_semantic,
     memory_acknowledgment,
     split_memory_directives,
+    strip_acknowledgment,
 )
 from .gate import (
     L0,
@@ -61,6 +62,7 @@ __all__ = [
     "REMEMBER_TAG",
     "split_memory_directives",
     "memory_acknowledgment",
+    "strip_acknowledgment",
     "filter_known",
     "filter_semantic",
     "L0",
