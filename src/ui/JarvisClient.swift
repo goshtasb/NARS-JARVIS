@@ -16,6 +16,10 @@ final class JarvisClient {
     private let lock = NSLock()
     /// Called on a background thread with (kind, body) for every unsolicited event frame.
     var onEvent: ((String, [String: Any]) -> Void)?
+    /// Called once, on a background thread, when the socket drops (daemon restart/exit) so the app
+    /// can reconnect instead of silently zombieing (ADR-017).
+    var onDisconnect: (() -> Void)?
+    private var didDisconnect = false
 
     init?(path: String) {
         fd = socket(AF_UNIX, SOCK_STREAM, 0)
@@ -46,7 +50,7 @@ final class JarvisClient {
         var chunk = [UInt8](repeating: 0, count: 65536)
         while true {
             let n = read(fd, &chunk, chunk.count)
-            if n <= 0 { return }                       // daemon closed / error
+            if n <= 0 { signalDisconnect(); return }    // daemon closed / error -> let the app reconnect
             inbuf.append(contentsOf: chunk[0..<n])
             while let nl = inbuf.firstIndex(of: 0x0A) {
                 let line = inbuf.subdata(in: inbuf.startIndex..<nl)
@@ -56,6 +60,11 @@ final class JarvisClient {
                 }
             }
         }
+    }
+
+    private func signalDisconnect() {
+        lock.lock(); let first = !didDisconnect; didDisconnect = true; lock.unlock()
+        if first { onDisconnect?() }                 // fire at most once per client
     }
 
     private func dispatch(_ frame: [String: Any]) {
@@ -89,5 +98,8 @@ final class JarvisClient {
         return sem.wait(timeout: .now() + timeout) == .success ? out : nil
     }
 
-    func close() { Darwin.close(fd) }
+    func close() {
+        lock.lock(); didDisconnect = true; lock.unlock()   // intentional teardown -> don't trigger reconnect
+        Darwin.close(fd)
+    }
 }

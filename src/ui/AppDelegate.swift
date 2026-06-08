@@ -11,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private let popover = NSPopover()
     private let chat = ChatViewController()
     private var client: JarvisClient?
+    private var sockPath = ""                     // ADR-017: remembered for auto-reconnect
     private let recorder = AudioRecorder()
     private var failsafe: Timer?                 // force-stops a runaway recording
     private static let maxRecordSeconds = 30.0
@@ -29,20 +30,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
         let path = ProcessInfo.processInfo.environment["NARS_JARVIS_SOCK"]
             ?? "\(NSTemporaryDirectory())nars-jarvis.sock"
-        guard let c = JarvisClient(path: path) else {
-            _log("UI: could not connect to daemon at \(path)")
-            chat.append("⚠ could not connect to JARVIS daemon at \(path)")
-            return
+        sockPath = path
+        setupNotifications()
+        setupVoice()
+        connect(reconnect: false)   // ADR-017: retry until up, and auto-reconnect on a daemon restart
+    }
+
+    // ── ADR-017: resilient connect — retry with backoff, survive daemon restarts ──
+    private func connect(reconnect: Bool) {
+        if reconnect { DispatchQueue.main.async { [weak self] in self?.setConnected(false) } }
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self else { return }
+            var delay = 0.5
+            while true {
+                if let c = JarvisClient(path: self.sockPath) {
+                    DispatchQueue.main.async { self.wire(c, reconnect: reconnect) }
+                    return
+                }
+                Thread.sleep(forTimeInterval: delay)
+                delay = min(delay * 2, 5.0)            // capped backoff
+            }
         }
+    }
+
+    private func wire(_ c: JarvisClient, reconnect: Bool) {   // main thread
         c.onEvent = { [weak self] kind, body in
             DispatchQueue.main.async { self?.handleEvent(kind, body) }
+        }
+        c.onDisconnect = { [weak self] in
+            DispatchQueue.main.async {
+                self?.chat.append("⚠ lost the daemon — reconnecting…")
+                self?.client?.close()
+                self?.connect(reconnect: true)
+            }
         }
         c.start()
         client = c
         chat.client = c
-        _log("UI: connected to daemon at \(path)")
-        setupNotifications()
-        setupVoice()
+        setConnected(true)
+        chat.append(reconnect ? "↻ reconnected to JARVIS." : "✓ connected to JARVIS.")
+        _log("UI: \(reconnect ? "reconnected" : "connected") to daemon at \(sockPath)")
+    }
+
+    private func setConnected(_ up: Bool) {            // main thread — reflect IPC state in the menu bar
+        statusItem?.button?.title = up ? "🔵 JARVIS" : "⚪ JARVIS"
     }
 
     // ── push-to-talk: click-to-toggle from the menu-bar popover (no global hotkey -> no conflicts) ──

@@ -14,13 +14,29 @@ EMBED="$root/models/nomic-embed-text-v1.5.f16.gguf"
 SOCK="${NARS_JARVIS_SOCK:-${TMPDIR:-/tmp}/nars-jarvis.sock}"
 export NARS_JARVIS_SOCK="$SOCK"
 
-# Start the daemon only if its socket isn't already serving.
-if [ ! -S "$SOCK" ]; then
+# Start the daemon only if one is actually LISTENING (ADR-017) — not merely a stale socket FILE.
+if python3 -c "import socket,sys;s=socket.socket(socket.AF_UNIX);s.settimeout(.5);sys.exit(s.connect_ex('$SOCK'))" 2>/dev/null; then
+  echo "reusing the running JARVIS daemon."
+else
+  rm -f "$SOCK"                                   # clear any stale socket file left by a non-clean exit
   echo "starting JARVIS daemon (loads local models ~10-20s)…"
   ( cd "$root/src" && exec python3 -m service ) >"${TMPDIR:-/tmp}/nars-jarvisd.log" 2>&1 &
   for i in $(seq 1 600); do [ -S "$SOCK" ] && break; sleep 0.1; done
 fi
 
-[ -d "$here/build/JARVIS.app" ] || "$here/build.sh"
-open "$here/build/JARVIS.app"
+# Build the app if missing OR if any Swift source is newer than the built binary (ship UI edits).
+bin="$here/build/JARVIS.app/Contents/MacOS/JARVIS"
+needbuild=0
+[ -x "$bin" ] || needbuild=1
+for s in "$here"/*.swift; do
+  if [ "$s" -nt "$bin" ]; then needbuild=1; fi
+done
+[ "$needbuild" -eq 0 ] || "$here/build.sh"
+
+# Don't open a second instance — a running app auto-reconnects to the fresh daemon (ADR-017).
+if pgrep -f "build/JARVIS.app/Contents/MacOS/JARVIS" >/dev/null 2>&1; then
+  echo "JARVIS app already running — it will auto-reconnect to the daemon."
+else
+  open "$here/build/JARVIS.app"
+fi
 echo "JARVIS is in your menu bar (🔵). Daemon log: ${TMPDIR:-/tmp}/nars-jarvisd.log"
