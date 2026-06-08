@@ -12,6 +12,7 @@ import time
 from typing import Callable
 
 from brain import Brain
+from memory import statement_term
 from sentinel import (
     FRAGMENTATION_LADDER,
     BlockState,
@@ -33,6 +34,23 @@ from .autonomy import approved_term, evidence_belief, gate_passes
 
 _DISTRACTION_BUCKETS = frozenset({"comms", "media"})
 _BURNIN_FLOOR = 0.85  # ONA confidence the steady baseline must reach before the sentinel may act
+
+
+# ── ADR-011: belief persistence (mirrors memory.reload_into_brain). Module functions, not methods,
+# so they unit-test with a real Brain + SentinelStore WITHOUT the macOS sensor. ──
+def persist_belief(store: SentinelStore, brain: object, term: str, now: float | None = None) -> None:
+    """Write-through the current ONA truth for `term` (gate authorization or baseline) to L2."""
+    ans = brain.ask(term + "?")  # type: ignore[attr-defined]
+    if ans is not None and ans.truth is not None:
+        store.record_belief(term, ans.truth.frequency, ans.truth.confidence, now)
+
+
+def replay_beliefs(store: SentinelStore, brain: object) -> int:
+    """Inject every persisted belief truth into a fresh sentinel brain on start; returns the count."""
+    persisted = store.beliefs()
+    for term, frequency, confidence in persisted:
+        brain.add_belief(f"{term}. {{{frequency:.4f} {confidence:.4f}}}")  # type: ignore[attr-defined]
+    return len(persisted)
 
 EventSink = Callable[[str, dict], None]
 
@@ -82,16 +100,21 @@ class SentinelLoop:
         if not sensor.start():
             return "sentinel unavailable (needs macOS + swiftc to build the helper)."
         self._sensor = sensor
+        self._store = SentinelStore(self._db_path)         # store first — we replay from it next
         self._brain = Brain(cycles_per_step=20)            # SECOND isolated ONA (zero contamination)
-        self._store = SentinelStore(self._db_path)
+        restored = replay_beliefs(self._store, self._brain)  # ADR-011: restore gate + baseline
         self._detector = SurpriseDetector(self._brain, threshold=0.5,
                                           on_surprise=self._on_surprise, min_confidence=_BURNIN_FLOOR)
         self._ring, self._frag, self._level = RingState(), DiscState(), None
         self._block, self._recent, self._pending = BlockState(), [], None
-        self._started, self._obs, self._burnin = time.monotonic(), 0, False
+        self._started, self._obs = time.monotonic(), 0
+        # If the baseline already crossed the floor in a prior session, we're armed immediately.
+        self._burnin = self._store.calib()["burnin_observations"] is not None
         self._events, self._last = 0, None
+        suffix = f" — restored {restored} learned belief(s), already armed." if restored and self._burnin \
+            else f" — restored {restored} learned belief(s)." if restored else ""
         return ("sentinel: ON — watching app-focus in a fully isolated brain "
-                "(silent during burn-in; intervenes only on a confident spike).")
+                "(silent during burn-in; intervenes only on a confident spike)." + suffix)
 
     # ── select-loop hooks (daemon multiplexes these) ──────────────────
     def fileno(self) -> int | None:
@@ -125,8 +148,10 @@ class SentinelLoop:
             self._store.record_focus_block(done.start, done.duration)
         if self._detector is not None:
             try:
-                self._detector.observe(steadiness_belief(emitted))
+                belief = steadiness_belief(emitted)
+                self._detector.observe(belief)
                 self._obs += 1
+                persist_belief(self._store, self._brain, statement_term(belief), now_wall)  # ADR-011
                 self._record_burnin(now_wall, now_mono)
             except Exception:  # noqa: BLE001 — a sensor hiccup must not break the loop
                 pass
@@ -161,6 +186,7 @@ class SentinelLoop:
         for cat in cats:
             try:
                 self._brain.add_belief(evidence_belief(cat, approved))
+                persist_belief(self._store, self._brain, approved_term(cat))  # ADR-011: durable gate
             except Exception:  # noqa: BLE001
                 pass
 

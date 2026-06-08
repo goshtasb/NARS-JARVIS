@@ -42,8 +42,10 @@ value (memory injection); a code request → correct code.
   (a) ~~retrieval (embedding-ranked memory) instead of dumping recent facts~~ — **done, see
   [ADR-009](ADR-009-memory-at-scale.md)**; (b) ~~auto-extracting memorable facts from conversation~~ —
   **done, see [ADR-008](ADR-008-auto-memory-extraction.md)**; (c) injecting sentinel habits —
-  *partial: sentinel **state** (foreground category) now injected as live context, see
-  [ADR-010](ADR-010-dynamic-context.md); learned habits still pending*; (d) optional hybrid grounding
+  *partial: sentinel **state** (foreground category) injected as live context
+  ([ADR-010](ADR-010-dynamic-context.md)), and sentinel beliefs now **persist** across restarts
+  ([ADR-011](ADR-011-sentinel-persistence.md)); injecting learned habits into the LLM still pending*;
+  (d) optional hybrid grounding
   where ONA flags contradictions against the LLM's answer.
 
 ## Alternatives Considered

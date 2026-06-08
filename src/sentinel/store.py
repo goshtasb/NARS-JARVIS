@@ -33,6 +33,15 @@ CREATE TABLE IF NOT EXISTS calibration (
     elapsed_s    REAL NOT NULL,    -- seconds of sentinel-on time to get there  (= empirical burn-in)
     observations INTEGER NOT NULL  -- how many steadiness observations it took (numeric only, no content)
 );
+-- ADR-011: durable ONA belief truths so earned autonomy + the steadiness baseline survive a restart.
+-- ONA has no save/load, so we persist truths and REPLAY them into a fresh sentinel brain on start
+-- (mirrors the knowledge brain's memory.reload_into_brain). Terms only — no app id, title, or content.
+CREATE TABLE IF NOT EXISTS sentinel_beliefs (
+    term       TEXT PRIMARY KEY,   -- e.g. "<distracted_hide_comms --> [approved]>" or a steadiness term
+    frequency  REAL NOT NULL,
+    confidence REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
 """
 
 
@@ -119,6 +128,24 @@ class SentinelStore:
             # Decline rate is our false-positive PROXY: a high rate => floor too low, raise it.
             "decline_rate": (declined / fired) if fired else None,
         }
+
+    # ── ADR-011: durable belief truths (gate authorizations + steadiness baseline) ──
+    def record_belief(self, term: str, frequency: float, confidence: float,
+                      now: float | None = None) -> None:
+        """Write-through one ONA belief truth; latest value wins. Called on the discrete, low-frequency
+        events (a consent decision, a Schmitt-trigger baseline shift), so it never thrashes the disk."""
+        now = time.time() if now is None else now
+        self._db.execute(
+            "INSERT INTO sentinel_beliefs(term, frequency, confidence, updated_at) VALUES (?,?,?,?) "
+            "ON CONFLICT(term) DO UPDATE SET frequency=excluded.frequency, "
+            "confidence=excluded.confidence, updated_at=excluded.updated_at",
+            (term, frequency, confidence, now))
+        self._db.commit()
+
+    def beliefs(self) -> list[tuple[str, float, float]]:
+        """All persisted (term, frequency, confidence) — replayed into a fresh sentinel brain on start."""
+        return [(t, f, c) for t, f, c in
+                self._db.execute("SELECT term, frequency, confidence FROM sentinel_beliefs").fetchall()]
 
     def close(self) -> None:
         self._db.close()
