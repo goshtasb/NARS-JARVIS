@@ -12,6 +12,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import safespawn
+
 _DEFAULT_MODEL = str(Path(__file__).resolve().parents[2] / "models" / "ggml-base.en.bin")
 
 
@@ -36,7 +38,7 @@ class WhisperJob:
 
     def __init__(self, wav_path: str) -> None:
         self.wav = wav_path
-        self._proc = subprocess.Popen(
+        self._proc = safespawn.popen(
             [_bin(), "-m", _model(), "-f", wav_path, "-nt", "-np"],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         self._chunks: list[bytes] = []
@@ -69,6 +71,6 @@ def speak(text: str) -> None:
     if not text or os.environ.get("NARS_JARVIS_NO_TTS"):
         return
     try:
-        subprocess.Popen(["say", text[:600]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        safespawn.popen(["say", text[:600]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:  # noqa: BLE001 — TTS is best-effort; never break the loop
         pass

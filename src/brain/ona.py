@@ -9,6 +9,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import safespawn
+
 from .parse import Answer, parse_answer, parse_line
 
 # OpenNARS-for-Applications/NAR, relative to the repo root (two levels up from src/brain/).
@@ -32,7 +34,7 @@ class Brain:
                 "Build it: (cd OpenNARS-for-Applications && sh build.sh)."
             )
         self._cycles = cycles_per_step
-        self._proc = subprocess.Popen(
+        self._proc = safespawn.popen(
             [path, "shell"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,

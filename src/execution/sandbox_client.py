@@ -8,20 +8,16 @@ strip secrets from the environment, per the 2026-06-05 crucible). It accepts ONL
 from __future__ import annotations
 
 import os
-import subprocess
+import subprocess  # for subprocess.TimeoutExpired only; all spawns go through safespawn (ADR-015)
 from pathlib import Path
+
+import safespawn
+from safespawn import looks_secret as _looks_secret  # unified secret-marker source (ADR-015)
 
 _PROFILE = Path(__file__).resolve().parent / "profiles" / "air_gapped.sb"
 
 # Non-secret runtime vars the child may keep (mirrors env_filter.rs ESSENTIAL_VARS, minus secrets).
 _ESSENTIAL_ENV = ("PATH", "HOME", "USER", "LANG", "TERM", "SHELL")
-# A forwarded variable NAME containing any of these is never passed through (defense-in-depth).
-_SECRET_MARKERS = ("KEY", "SECRET", "TOKEN", "PASSWORD", "AWS", "ANTHROPIC", "OPENAI")
-
-
-def _looks_secret(name: str) -> bool:
-    upper = name.upper()
-    return any(marker in upper for marker in _SECRET_MARKERS)
 
 
 class AirGappedSandboxClient:
@@ -47,8 +43,8 @@ class AirGappedSandboxClient:
             raise TypeError("argv must be a non-empty tuple[str, ...] — no shell strings")
         cmd = ["sandbox-exec", "-f", str(self._profile), *argv]
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True,
-                                  env=self._filtered_env(), cwd="/", timeout=self._timeout)
+            proc = safespawn.run(cmd, capture_output=True, text=True,
+                                 env=self._filtered_env(), cwd="/", timeout=self._timeout)
         except subprocess.TimeoutExpired:
             return False
         return proc.returncode == 0

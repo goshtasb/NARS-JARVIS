@@ -9,10 +9,20 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import time
 from pathlib import Path
+
+import safespawn
+
+from .limiter import BucketState, try_consume
 
 _SRC = Path(__file__).resolve().parent / "sensor.swift"
 _BIN = Path(__file__).resolve().parent / ".sensor.bin"  # gitignored build artifact
+
+# ADR-015: hard cap on UI actuation (hide/unhide) so a context-manipulated trigger can't spam app
+# visibility. Far above human-paced interventions, far below a spam loop.
+_ACTUATE_RATE = 0.5       # sustained: ~1 toggle / 2s
+_ACTUATE_CAPACITY = 4.0   # burst
 
 # Our closed, coarse taxonomy — aligned to Apple's own UTI app categories so novel apps self-classify.
 BUCKETS = ("dev", "web", "comms", "media", "productivity", "utility", "other")
@@ -66,33 +76,47 @@ def build_sensor() -> Path | None:
         return None
     if _BIN.exists() and _BIN.stat().st_mtime >= _SRC.stat().st_mtime:
         return _BIN
-    result = subprocess.run(["swiftc", "-O", str(_SRC), "-o", str(_BIN)],
-                            capture_output=True, text=True, timeout=120)
+    result = safespawn.run(["swiftc", "-O", str(_SRC), "-o", str(_BIN)],
+                           capture_output=True, text=True, timeout=120)
     return _BIN if result.returncode == 0 else None
 
 
 class Sensor:
     """Owns the helper subprocess. Yields raw event lines; the caller funnels + discretizes them."""
 
-    def __init__(self) -> None:
+    def __init__(self, now=time.monotonic) -> None:
         self._proc: subprocess.Popen | None = None
+        self._now = now                                  # injected clock (testable)
+        self._bucket = BucketState(tokens=_ACTUATE_CAPACITY, last_refill=now())
+        self._actuate_overflow = 0                       # dropped actuations (logged, never silent)
 
     def start(self) -> bool:
         binary = build_sensor()
         if binary is None:
             return False
-        self._proc = subprocess.Popen([str(binary)], stdin=subprocess.PIPE,
-                                      stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                      text=True, bufsize=1)
+        self._proc = safespawn.popen([str(binary)], stdin=subprocess.PIPE,
+                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                     text=True, bufsize=1)
         return True
 
+    def _actuation_allowed(self) -> bool:
+        """Token-bucket gate on UI actuation (ADR-015): drop + count when the budget is spent."""
+        self._bucket, ok = try_consume(self._bucket, self._now(), _ACTUATE_RATE, _ACTUATE_CAPACITY)
+        if not ok:
+            self._actuate_overflow += 1
+        return ok
+
     def hide(self, bundle_id: str) -> None:
-        """Actuate: ask the helper to hide a running app (permissionless NSRunningApplication.hide)."""
-        self._send(f"hide {bundle_id}")
+        """Actuate: ask the helper to hide a running app (permissionless NSRunningApplication.hide).
+        Rate-limited (ADR-015) — excess toggles are dropped to prevent visibility-spam DoS."""
+        if self._actuation_allowed():
+            self._send(f"hide {bundle_id}")
 
     def unhide(self, bundle_id: str) -> None:
-        """Undo an (autonomous) hide — un-hides the app via NSRunningApplication.unhide()."""
-        self._send(f"unhide {bundle_id}")
+        """Undo an (autonomous) hide — un-hides the app via NSRunningApplication.unhide(). Shares the
+        same actuation budget as hide()."""
+        if self._actuation_allowed():
+            self._send(f"unhide {bundle_id}")
 
     def _send(self, line: str) -> None:
         if self._proc and self._proc.stdin and not self._proc.stdin.closed:

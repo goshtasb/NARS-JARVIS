@@ -96,6 +96,8 @@ class Daemon:
 
 
 def main() -> None:
+    from safespawn import scrub_environ
+    scrub_environ()  # ADR-015: purge secrets from os.environ BEFORE any model/subprocess spawn
     Daemon(db_path=os.environ.get("NARS_JARVIS_DB", "jarvis.db")).serve()
 
 

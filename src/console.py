@@ -15,6 +15,8 @@ import sys
 import tempfile
 import time
 
+import safespawn
+
 from service import Client, socket_path
 
 PROMPT = "jarvis> "
@@ -57,8 +59,8 @@ class Console:
         except (FileNotFoundError, ConnectionRefusedError):
             pass
         log = open(os.path.join(tempfile.gettempdir(), "nars-jarvisd.log"), "w")
-        self._daemon = subprocess.Popen([sys.executable, "-m", "service"],
-                                        stdout=log, stderr=subprocess.STDOUT)
+        self._daemon = safespawn.popen([sys.executable, "-m", "service"],
+                                       stdout=log, stderr=subprocess.STDOUT)
         self._w("Starting JARVIS daemon (first start loads local models ~10-20s)…\n")
         for _ in range(600):                   # up to ~60s for model load + bind
             if self._daemon.poll() is not None:
@@ -233,6 +235,7 @@ class Console:
 
 
 def main() -> None:
+    safespawn.scrub_environ()  # ADR-015: purge secrets before spawning the daemon
     Console().run()
 
 
