@@ -68,7 +68,8 @@ CREATE TABLE IF NOT EXISTS memories (
   last_used     REAL    NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_text ON memories(text);
-CREATE INDEX IF NOT EXISTS idx_memories_active ON memories(active);
+-- NOTE: the idx_memories_active index is created in _migrate(), AFTER the `active` column is added —
+-- never here, because on a pre-ADR-009 DB this script runs before `active` exists (it would error).
 """
 
 # Columns added to `memories` after its first release (ADR-009). Applied in-place by `_migrate`

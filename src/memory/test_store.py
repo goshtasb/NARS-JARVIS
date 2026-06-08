@@ -155,6 +155,26 @@ def test_supersedence_chain_one_hop_semantics() -> None:
     assert _active(store) == {"the user prefers spaces over tabs"}
 
 
+def test_migration_from_pre_adr009_schema(tmp_path) -> None:
+    # Regression: an EXISTING ADR-008 `memories` table (no active/superseded_* columns). Opening
+    # MemoryStore on it must migrate cleanly — not crash creating an index on a not-yet-added column.
+    import sqlite3
+    db = str(tmp_path / "old.db")
+    con = sqlite3.connect(db)
+    con.executescript(
+        "CREATE TABLE memories (id INTEGER PRIMARY KEY, text TEXT NOT NULL, source TEXT, "
+        "embedding BLOB, pinned INTEGER NOT NULL DEFAULT 0, use_count INTEGER NOT NULL DEFAULT 1, "
+        "created_at REAL NOT NULL, updated_at REAL NOT NULL, last_used REAL NOT NULL);"
+        "CREATE UNIQUE INDEX idx_memories_text ON memories(text);"
+        "INSERT INTO memories(text, created_at, updated_at, last_used) VALUES ('old fact',1,1,1);")
+    con.commit(); con.close()
+    store = MemoryStore(db)                                    # must not raise
+    cols = {r[1] for r in store._db.execute("PRAGMA table_info(memories)")}
+    assert {"active", "superseded_by", "superseded_at"} <= cols
+    assert "old fact" in store.memories_for_recall()          # legacy row survives + is active
+    store.close()
+
+
 def test_migration_idempotent_on_existing_db(tmp_path) -> None:
     # Open twice on a file DB: the second open must not crash re-adding columns.
     db = str(tmp_path / "m.db")
@@ -180,5 +200,6 @@ if __name__ == "__main__":
     test_no_supersede_for_multivalued()
     test_forget_is_soft_and_restorable()
     test_forget_normalized_matches_case_and_punctuation()
+    # (pytest-only: test_migration_* take a tmp_path fixture)
     test_supersedence_chain_one_hop_semantics()
     print("memory/test_store: OK")
