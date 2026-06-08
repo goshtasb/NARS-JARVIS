@@ -303,6 +303,42 @@ def test_converse_no_habits_block_when_empty() -> None:
         assert "Learned habits" not in asst.last_user        # absent when empty
 
 
+def test_converse_grounds_memory_against_denied_habit() -> None:
+    # ADR-013 split-brain fix: a casual request to auto-hide a DENIED category must NOT be saved as a
+    # memory; the deterministic layer owns the reply with the authoritative habit state.
+    denied_dev = [("<distracted_hide_dev --> [approved]>", 0.0, 0.9)]
+    asst = _RememberLLM("Sure!\n[[REMEMBER: the user wants JARVIS to auto-hide developer tools when distracted]]")
+    with Brain(cycles_per_step=50) as brain:
+        store = MemoryStore()
+        j = Jarvis(Translator(asst), store, brain, assistant=asst, embedder=_FakeEmbedder(),
+                   sentinel_beliefs_provider=lambda: denied_dev)
+        out = j.converse("please auto-hide my IDE when I'm distracted")
+        assert store.memories_for_recall() == [], store.memories_for_recall()   # not saved
+        assert "currently disabled" in out and "developer apps" in out          # authoritative notice
+        assert "Sure!" not in out                                               # hallucinated agreement suppressed
+
+
+def test_converse_no_governing_habit_saves_normally() -> None:
+    asst = _RememberLLM("Noted.\n[[REMEMBER: the user wants JARVIS to auto-hide developer tools when distracted]]")
+    with Brain(cycles_per_step=50) as brain:
+        store = MemoryStore()
+        j = Jarvis(Translator(asst), store, brain, assistant=asst, embedder=_FakeEmbedder(),
+                   sentinel_beliefs_provider=lambda: [])              # no habits at all
+        j.converse("please auto-hide my IDE when I'm distracted")
+        assert any("auto-hide developer tools" in m for m in store.memories_for_recall())  # saved
+
+
+def test_converse_unrelated_fact_not_grounded() -> None:
+    denied_dev = [("<distracted_hide_dev --> [approved]>", 0.0, 0.9)]
+    asst = _RememberLLM("Nice.\n[[REMEMBER: the user's name is Ashkan]]")
+    with Brain(cycles_per_step=50) as brain:
+        store = MemoryStore()
+        j = Jarvis(Translator(asst), store, brain, assistant=asst, embedder=_FakeEmbedder(),
+                   sentinel_beliefs_provider=lambda: denied_dev)
+        j.converse("my name is Ashkan")
+        assert "the user's name is Ashkan" in store.memories_for_recall()   # unrelated -> saved
+
+
 def test_converse_falls_back_to_grounded_without_a_model() -> None:
     # No assistant wired (tests / offline) -> the legacy hallucination-proof ONA path still works.
     with Brain(cycles_per_step=200) as brain:
@@ -378,6 +414,9 @@ if __name__ == "__main__":
     test_converse_injects_learned_habits()
     test_converse_does_not_resave_injected_habit()
     test_converse_no_habits_block_when_empty()
+    test_converse_grounds_memory_against_denied_habit()
+    test_converse_no_governing_habit_saves_normally()
+    test_converse_unrelated_fact_not_grounded()
     test_converse_falls_back_to_grounded_without_a_model()
     test_converse_trace_dedups_and_renders_uniformly()
     test_converse_unknown_is_admitted_not_invented()

@@ -49,7 +49,8 @@ class Session:
                               metrics=self._metrics, voice=voice, assistant=llm,  # LLM-first (ADR-007)
                               embedder=embedder,  # auto-memory semantic echo-guard (ADR-008)
                               context_provider=self._live_context,  # dynamic context (ADR-010)
-                              habits_provider=self._learned_habits)  # learned sentinel habits (ADR-012)
+                              habits_provider=self._learned_habits,  # learned sentinel habits (ADR-012)
+                              sentinel_beliefs_provider=self._sentinel_store.beliefs)  # grounding (ADR-013)
         # M2 system sentinel (CPU/mem surprise) feeds the knowledge brain; alerts push as events.
         narrator = Narrator(NoNarrationLLM(), on_alert=lambda t: self._emit("alert", {"text": "⚠  " + t}))
         self._sys_detector = SurpriseDetector(self._brain, threshold=0.5, on_surprise=narrator.narrate)

@@ -10,7 +10,7 @@ from dataclasses import dataclass, replace
 from typing import Callable
 
 from brain import Brain, canonical_input, input_accepted
-from context import is_volatile
+from context import conflicting_habit, grounding_notice, is_volatile
 from contradiction import ContradictionGuard
 from execution import DecisionStats, Executor, decide
 from language import (
@@ -121,7 +121,9 @@ class Jarvis:
                  assistant: object | None = None,
                  embedder: object | None = None,
                  context_provider: Callable[[], str] | None = None,
-                 habits_provider: Callable[[], str] | None = None) -> None:
+                 habits_provider: Callable[[], str] | None = None,
+                 sentinel_beliefs_provider: Callable[[], list[tuple[str, float, float]]] | None = None,
+                 ) -> None:
         self._translator = translator
         self._store = store
         self._brain = brain
@@ -138,6 +140,9 @@ class Jarvis:
         # Learned habits (ADR-012): a callable returning the translated "Learned habits" block from the
         # sentinel's persisted beliefs. None => no habits block (tests/offline).
         self._habits_provider = habits_provider
+        # Pre-commit grounding (ADR-013): a callable returning the raw persisted sentinel beliefs, so
+        # converse can drop conversational memories that try to control a sentinel-governed category.
+        self._sentinel_beliefs_provider = sentinel_beliefs_provider
         self._voice = voice or Voice()  # template-only by default; formatter LLM is optional
         # LLM-first brain (ADR-007): when a real model is wired, converse() lets the LLM answer from
         # its own knowledge with the user's persistent memory injected as ground truth. With no
@@ -323,10 +328,26 @@ class Jarvis:
                 except Exception:  # noqa: BLE001 — an embed hiccup must not crash converse
                     pass
             facts = updates + others
+        # Pre-commit grounding (ADR-013): a fact that tries to control a sentinel-governed category is
+        # a control-plane statement — it belongs in the gate, not conversational memory. Drop it; the
+        # deterministic layer will own the reply (the LLM's possibly-agreeing prose is suppressed).
+        grounded: tuple[str, bool] | None = None
+        if facts and self._sentinel_beliefs_provider is not None:
+            beliefs = self._sentinel_beliefs_provider()
+            kept: list[str] = []
+            for f in facts:
+                hit = conflicting_habit(f, beliefs)
+                if hit is not None and grounded is None:
+                    grounded = hit
+                elif hit is None:
+                    kept.append(f)
+            facts = kept
         # Resolve memory ops BEFORE deciding on a fallback, so a directive-only reply (the 7B sometimes
         # emits just the tag, no prose) is never discarded.
         saved = self._remember_facts(facts, source=question) if facts else []
         forgotten = self._forget_facts(forgets) if forgets else []
+        if grounded is not None:  # control-plane conflict: deterministic layer OWNS the reply (ADR-013)
+            return grounding_notice(*grounded)
         acks = [a for a in (memory_acknowledgment(saved),
                             ("(Forgot: " + "; ".join(forgotten) + ")") if forgotten else "") if a]
         if not clean:  # no prose: show the confirmation if we acted, else fall back to grounded
