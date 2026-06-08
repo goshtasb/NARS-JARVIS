@@ -91,6 +91,10 @@ ASSISTANT_SYSTEM_PROMPT = (
     "LIVE CONTEXT: a 'Current context' section gives the real date/time, system load, and (if known) "
     "the user's foreground activity. Answer time/date/'what am I doing' questions FROM it. Never "
     "[[REMEMBER]] anything from it — it is ephemeral, not a durable fact.\n"
+    "LEARNED HABITS: a 'Learned habits' section states standing preferences about how JARVIS may act "
+    "(what it may or may NOT auto-do). Treat them as firm boundaries. If the user asks you to do "
+    "something a habit says NOT to do, do NOT agree — remind them they've disabled it and that they "
+    "can re-enable it by approving it. Never [[REMEMBER]] a habit; it is managed separately.\n"
     "Worked examples (note the tag lines):\n"
     "User: my name is Ashkan\n"
     "Assistant: Nice to meet you, Ashkan!\n"
@@ -116,7 +120,8 @@ class Jarvis:
                  voice: Voice | None = None,
                  assistant: object | None = None,
                  embedder: object | None = None,
-                 context_provider: Callable[[], str] | None = None) -> None:
+                 context_provider: Callable[[], str] | None = None,
+                 habits_provider: Callable[[], str] | None = None) -> None:
         self._translator = translator
         self._store = store
         self._brain = brain
@@ -130,6 +135,9 @@ class Jarvis:
         # Dynamic context (ADR-010): a shell-provided callable returning the fresh live-facts block
         # (date/time + system + foreground) injected each turn. None => no live context (tests/offline).
         self._context_provider = context_provider
+        # Learned habits (ADR-012): a callable returning the translated "Learned habits" block from the
+        # sentinel's persisted beliefs. None => no habits block (tests/offline).
+        self._habits_provider = habits_provider
         self._voice = voice or Voice()  # template-only by default; formatter LLM is optional
         # LLM-first brain (ADR-007): when a real model is wired, converse() lets the LLM answer from
         # its own knowledge with the user's persistent memory injected as ground truth. With no
@@ -281,9 +289,12 @@ class Jarvis:
             return self._converse_grounded(question)
         memory = self._recall(question)
         live = self._context_provider() if self._context_provider is not None else ""
+        habits = self._habits_provider() if self._habits_provider is not None else ""
         blocks: list[str] = []
         if live:
             blocks.append(live)
+        if habits:                                            # ADR-012: learned preferences to respect
+            blocks.append(habits)
         if memory:
             blocks.append("Persistent memory (the user taught you these; treat as ground truth):\n"
                           + memory)
@@ -300,7 +311,7 @@ class Jarvis:
         clean = clean.strip()
         if facts:  # guard the context-echo bug — but an UPDATE (same slot, new value) is not an echo
             known = [ln[2:] if ln.startswith("- ") else ln
-                     for ln in (memory + "\n" + live).splitlines()]   # incl. live lines (don't re-save)
+                     for ln in (memory + "\n" + live + "\n" + habits).splitlines()]  # incl. live + habits
             # A same-single-valued-slot-but-different-value fact is a correction that must reach the
             # store to supersede the old value; only NON-updates run through the echo guards.
             updates = [f for f in facts if any(same_single_valued_slot(f, k) for k in known)]

@@ -12,12 +12,12 @@ from datetime import datetime
 from typing import Callable
 
 from brain import Brain
-from context import render_live_context
+from context import render_habits, render_live_context
 from execution import DecisionStats, build_air_gapped_executor, decide
 from jarvis import Jarvis
 from language import IngestionGate, Translator, Voice, strip_acknowledgment
 from memory import MemoryStore, MetricsStore, SqliteGroundingStore
-from sentinel import SurpriseDetector, SystemSentinel
+from sentinel import SentinelStore, SurpriseDetector, SystemSentinel
 from sentinel.narrate import Narrator
 
 from .sentinel_loop import SentinelLoop
@@ -40,12 +40,16 @@ class Session:
         gate = IngestionGate(embedder) if embedder is not None else None
         grounding = SqliteGroundingStore(db_path) if embedder is not None else None
         self._metrics = MetricsStore(db_path, session_id=uuid.uuid4().hex[:8])
+        # Read-only handle on the sentinel's persisted beliefs, so learned habits inject even when the
+        # Flow Sentinel loop is OFF (ADR-012). Separate connection from the loop's write-store.
+        self._sentinel_store = SentinelStore(db_path)
         voice = Voice(formatter=llm if hasattr(llm, "generate_text") else None)
         self._jarvis = Jarvis(Translator(llm, embedder=embedder, cache=grounding),
                               self._store, self._brain, executor=self._executor, gate=gate,
                               metrics=self._metrics, voice=voice, assistant=llm,  # LLM-first (ADR-007)
                               embedder=embedder,  # auto-memory semantic echo-guard (ADR-008)
-                              context_provider=self._live_context)  # dynamic context (ADR-010)
+                              context_provider=self._live_context,  # dynamic context (ADR-010)
+                              habits_provider=self._learned_habits)  # learned sentinel habits (ADR-012)
         # M2 system sentinel (CPU/mem surprise) feeds the knowledge brain; alerts push as events.
         narrator = Narrator(NoNarrationLLM(), on_alert=lambda t: self._emit("alert", {"text": "⚠  " + t}))
         self._sys_detector = SurpriseDetector(self._brain, threshold=0.5, on_surprise=narrator.narrate)
@@ -186,6 +190,11 @@ class Session:
         return render_live_context(datetime.now().astimezone(), self._last,
                                    self._flow.current_context())
 
+    def _learned_habits(self) -> str:
+        """The 'Learned habits' block (ADR-012): the sentinel's confident persisted authorizations,
+        translated to English. Sourced from the durable store, so it applies even with the loop off."""
+        return render_habits(self._sentinel_store.beliefs())
+
     def _health(self, arg: object) -> tuple[bool, object]:
         s = self._metrics.summary()
         out: list[str] = []
@@ -286,6 +295,7 @@ class Session:
     def close(self) -> None:
         self._flow.close()
         self._brain.close()
+        self._sentinel_store.close()
 
 
 def _ingestion_health(s: dict) -> list[str]:

@@ -267,6 +267,42 @@ def test_converse_still_saves_durable_fact_with_live_context() -> None:
         assert "the user's name is Ashkan" in store.memories_for_recall()  # durable still saved
 
 
+def test_converse_injects_learned_habits() -> None:
+    # ADR-012: a habits_provider's block is injected so the LLM respects learned preferences.
+    asst = _RememberLLM("Sure.")
+    habits = ("Learned habits (how the user prefers JARVIS to operate — respect these):\n"
+              "- You've told JARVIS NOT to auto-hide developer apps.")
+    with Brain(cycles_per_step=50) as brain:
+        j = Jarvis(Translator(asst), MemoryStore(), brain, assistant=asst,
+                   habits_provider=lambda: habits)
+        j.converse("Can you hide my IDE when I'm distracted?")
+        assert "NOT to auto-hide developer apps" in asst.last_user      # habit injected
+
+
+def test_converse_does_not_resave_injected_habit() -> None:
+    # Habits are sourced from sentinel_beliefs, not memory — the model must not re-save them as
+    # durable facts (the live ADR-012 echo bug). Habit lines are in the echo-guard `known` set.
+    habits = ("Learned habits (how the user prefers JARVIS to operate — respect these):\n"
+              "- When you're fragmenting between apps, you've authorized JARVIS to automatically hide chat apps.")
+    asst = _RememberLLM("Sure.\n[[REMEMBER: you've authorized JARVIS to automatically hide chat apps]]")
+    with Brain(cycles_per_step=50) as brain:
+        store = MemoryStore()
+        j = Jarvis(Translator(asst), store, brain, assistant=asst, embedder=_FakeEmbedder(),
+                   habits_provider=lambda: habits)
+        out = j.converse("can you hide my chat apps?")
+        assert store.memories_for_recall() == [], store.memories_for_recall()   # habit not re-saved
+        assert "(Saved:" not in out, out
+
+
+def test_converse_no_habits_block_when_empty() -> None:
+    asst = _RememberLLM("Hi.")
+    with Brain(cycles_per_step=50) as brain:
+        j = Jarvis(Translator(asst), MemoryStore(), brain, assistant=asst,
+                   habits_provider=lambda: "")               # no confident habits
+        j.converse("hello")
+        assert "Learned habits" not in asst.last_user        # absent when empty
+
+
 def test_converse_falls_back_to_grounded_without_a_model() -> None:
     # No assistant wired (tests / offline) -> the legacy hallucination-proof ONA path still works.
     with Brain(cycles_per_step=200) as brain:
@@ -339,6 +375,9 @@ if __name__ == "__main__":
     test_converse_injects_live_context()
     test_converse_does_not_persist_volatile_fact()
     test_converse_still_saves_durable_fact_with_live_context()
+    test_converse_injects_learned_habits()
+    test_converse_does_not_resave_injected_habit()
+    test_converse_no_habits_block_when_empty()
     test_converse_falls_back_to_grounded_without_a_model()
     test_converse_trace_dedups_and_renders_uniformly()
     test_converse_unknown_is_admitted_not_invented()
