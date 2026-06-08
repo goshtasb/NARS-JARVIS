@@ -71,14 +71,22 @@ ASSISTANT_SYSTEM_PROMPT = (
     "A 'Persistent memory' section may be provided with facts the user has taught you and their "
     "preferences — treat those as absolute ground truth and prefer them over your own knowledge when "
     "they are relevant. If you are unsure, say so briefly rather than inventing specifics. Be direct.\n\n"
-    "MEMORY: When the user tells you a durable fact about themselves (e.g. their name or role), states "
-    "a lasting preference, or explicitly asks you to remember something, record it by appending a "
-    "directive on its own line, exactly: [[REMEMBER: <concise third-person fact>]] — one per item. "
-    "Examples: user says 'my name is Ashkan' -> [[REMEMBER: the user's name is Ashkan]]; "
-    "'I prefer tabs over spaces' -> [[REMEMBER: the user prefers tabs over spaces]]. "
-    "Be conservative: do NOT emit it for questions, small talk, or transient details — only clear "
-    "personal facts, preferences, and explicit 'remember…' requests. Write your normal reply as "
-    "usual; do not mention or explain the directive — it is stripped before the user sees it."
+    "MEMORY PROTOCOL — follow exactly. Whenever the user states a durable fact about themselves "
+    "(name, role, where they live), a lasting preference, or explicitly asks you to remember "
+    "something, you MUST end your reply with one tag per item, each on its own line, written "
+    "literally as: [[REMEMBER: <concise third-person fact>]]. Do this even while also answering a "
+    "question in the same message. For ordinary questions, greetings, or small talk, do NOT add any "
+    "tag. Never mention or explain the tag — it is stripped before the user sees it.\n"
+    "Worked examples (note the tag lines):\n"
+    "User: my name is Ashkan\n"
+    "Assistant: Nice to meet you, Ashkan!\n"
+    "[[REMEMBER: the user's name is Ashkan]]\n"
+    "User: I'm a pilot and I prefer tabs over spaces\n"
+    "Assistant: Good to know.\n"
+    "[[REMEMBER: the user is a pilot]]\n"
+    "[[REMEMBER: the user prefers tabs over spaces]]\n"
+    "User: what is the capital of France?\n"
+    "Assistant: Paris."
 )
 
 
@@ -269,7 +277,8 @@ class Jarvis:
         model hiccup must never block the save. Returns the facts actually stored, for the ack."""
         saved: list[str] = []
         for fact in facts:
-            self._store.remember(fact, source=source)  # ALWAYS — guaranteed recall
+            if not self._store.remember(fact, source=source):  # store ALWAYS; skip if already known
+                continue                                       # (a revisit, e.g. a recall question)
             try:
                 self.learn(fact)  # best-effort: enrich ONA when the fact fits the claim schema
             except Exception:  # noqa: BLE001 — gate/parse rejection or model hiccup never blocks

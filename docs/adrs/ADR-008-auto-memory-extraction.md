@@ -47,9 +47,21 @@ and never blocks the save or crashes `converse`. We deliberately did **not** rel
 - *Conservative* extraction: only clear personal facts, stated preferences, and explicit
   "remember…" requests — the prompt says so and shows few-shot examples; the parser caps at 3
   facts/turn and ignores empty/over-long captures.
-- *Visible* saves: every save is confirmed inline with `(Saved: …)` so a wrong save is seen and can
-  be corrected (`MemoryStore.forget` / `forget_like` are provided). This matches the project's
-  "always 100% factual / no silent behavior" rule.
+- *Visible* saves: every NEW save is confirmed inline with `(Saved: …)` so a wrong save is seen and
+  can be corrected (`MemoryStore.forget` / `forget_like` are provided). `MemoryStore.remember`
+  returns whether the memory was newly created, so revisiting a known fact (e.g. a recall question
+  the model re-tags) saves silently — no spurious `(Saved: …)`. Matches the "no silent behavior"
+  rule without nagging.
+
+## Live validation (Qwen2.5-7B, real daemon over IPC, 2026-06-07)
+Verified end-to-end through the actual daemon: a pure question saves nothing; "My name is Ashkan."
+and "I prefer tabs over spaces." each emit the tag and confirm `(Saved: …)`; and after **killing
+the daemon and starting a fresh process**, "What is my name?" → "Ashkan" and "Do I prefer tabs or
+spaces?" → "tabs" — proving recall comes from persisted memory, not in-process model state.
+The first live run **failed**: the 7B ignored a purely descriptive instruction. Reliable adherence
+required adding **worked User/Assistant examples** (showing the tag lines) to the system prompt;
+that is now part of `ASSISTANT_SYSTEM_PROMPT`. Tag emission still depends on the model, so the
+parser degrades safely (no tag → behaves exactly as before).
 
 ## Consequences
 - **Gained:** JARVIS now learns facts/preferences mid-conversation, by voice or typed `ask`, with

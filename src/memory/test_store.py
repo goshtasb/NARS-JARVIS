@@ -52,8 +52,8 @@ def test_remember_and_recall_roundtrip() -> None:
 
 def test_remember_dedups_exact_text() -> None:
     store = MemoryStore()
-    store.remember("the user is a pilot", now=1.0)
-    store.remember("the user is a pilot", now=2.0)  # identical -> bump, not duplicate
+    assert store.remember("the user is a pilot", now=1.0) is True   # newly created
+    assert store.remember("the user is a pilot", now=2.0) is False  # already known -> bump only
     rows = store.memories_for_recall()
     assert rows.count("the user is a pilot") == 1
     count = store._db.execute("SELECT use_count FROM memories WHERE text=?",

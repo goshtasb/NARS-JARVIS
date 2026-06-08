@@ -90,10 +90,13 @@ class MemoryStore:
         self._db.commit()
 
     # ── conversational memory (ADR-008) — guaranteed-recall English store ──────────────
-    def remember(self, text: str, source: str | None = None, now: float | None = None) -> None:
+    def remember(self, text: str, source: str | None = None, now: float | None = None) -> bool:
         """Persist one auto-extracted English memory. Idempotent: identical text bumps usage/recency
-        instead of duplicating (the UNIQUE index on `text` does exact-match dedup)."""
+        instead of duplicating (the UNIQUE index on `text` does exact-match dedup). Returns True iff
+        this created a NEW memory (False if it was already known) — lets the caller acknowledge only
+        genuinely new saves and stay silent when the user merely revisits a known fact."""
         now = time.time() if now is None else now
+        is_new = self._db.execute("SELECT 1 FROM memories WHERE text=?", (text,)).fetchone() is None
         self._db.execute(
             """INSERT INTO memories (text, source, use_count, created_at, updated_at, last_used)
                VALUES (?,?,1,?,?,?)
@@ -105,6 +108,7 @@ class MemoryStore:
             (text, source, now, now, now),
         )
         self._db.commit()
+        return is_new
 
     def memories_for_recall(self, limit: int = 30) -> list[str]:
         """English memories to inject as ground truth: pinned first, then most recently used."""
