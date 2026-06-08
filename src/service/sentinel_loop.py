@@ -56,6 +56,13 @@ class SentinelLoop:
     def running(self) -> bool:
         return self._sensor is not None and self._sensor.running()
 
+    def current_context(self) -> tuple[str | None, str | None]:
+        """Foreground (category, attention) for the dynamic-context provider (ADR-010). (None, None)
+        when the sentinel is off or has no reading yet — so JARVIS never invents a foreground."""
+        if not self.running() or self._last is None:
+            return (None, None)
+        return (self._last, self._level or "focused")
+
     def cmd(self, arg: str) -> str:
         arg = (arg or "").strip().lower()
         if arg in ("", "status"):

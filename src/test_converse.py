@@ -234,6 +234,39 @@ def test_converse_forget_missing_does_not_hit_wrong_sibling() -> None:
         assert "the user likes coffee" in store.memories_for_recall()   # sibling untouched
 
 
+def test_converse_injects_live_context() -> None:
+    # ADR-010: a context_provider's live block is injected so the LLM can answer time/system questions.
+    asst = _RememberLLM("It's 8:35 pm.")
+    live = "Current context (live — answer from this; do NOT memorize it):\n- date/time: Sunday 2026-06-07 20:35 (local)"
+    with Brain(cycles_per_step=50) as brain:
+        j = Jarvis(Translator(asst), MemoryStore(), brain, assistant=asst,
+                   context_provider=lambda: live)
+        j.converse("What time is it?")
+        assert "date/time: Sunday 2026-06-07 20:35" in asst.last_user      # live facts injected
+
+
+def test_converse_does_not_persist_volatile_fact() -> None:
+    # The original bug: a corrected time must NOT become a durable memory.
+    asst = _RememberLLM("Got it.\n[[REMEMBER: the current time is 8 pm]]")
+    with Brain(cycles_per_step=50) as brain:
+        store = MemoryStore()
+        j = Jarvis(Translator(asst), store, brain, assistant=asst, embedder=_FakeEmbedder(),
+                   context_provider=lambda: "Current context:\n- date/time: now")
+        out = j.converse("It's 8pm")
+        assert store.memories_for_recall() == []                          # nothing volatile saved
+        assert "(Saved:" not in out, out
+
+
+def test_converse_still_saves_durable_fact_with_live_context() -> None:
+    asst = _RememberLLM("Nice!\n[[REMEMBER: the user's name is Ashkan]]")
+    with Brain(cycles_per_step=50) as brain:
+        store = MemoryStore()
+        j = Jarvis(Translator(asst), store, brain, assistant=asst, embedder=_FakeEmbedder(),
+                   context_provider=lambda: "Current context:\n- date/time: now")
+        j.converse("My name is Ashkan")
+        assert "the user's name is Ashkan" in store.memories_for_recall()  # durable still saved
+
+
 def test_converse_falls_back_to_grounded_without_a_model() -> None:
     # No assistant wired (tests / offline) -> the legacy hallucination-proof ONA path still works.
     with Brain(cycles_per_step=200) as brain:
@@ -303,6 +336,9 @@ if __name__ == "__main__":
     test_converse_directive_only_reply_still_persists()
     test_converse_forget_directive_soft_deletes()
     test_converse_forget_missing_does_not_hit_wrong_sibling()
+    test_converse_injects_live_context()
+    test_converse_does_not_persist_volatile_fact()
+    test_converse_still_saves_durable_fact_with_live_context()
     test_converse_falls_back_to_grounded_without_a_model()
     test_converse_trace_dedups_and_renders_uniformly()
     test_converse_unknown_is_admitted_not_invented()

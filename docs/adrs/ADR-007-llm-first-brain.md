@@ -41,8 +41,10 @@ value (memory injection); a code request → correct code.
 - **Open / next:** v1 learns by explicit `learn` + injection of all recent taught facts. Future work:
   (a) ~~retrieval (embedding-ranked memory) instead of dumping recent facts~~ — **done, see
   [ADR-009](ADR-009-memory-at-scale.md)**; (b) ~~auto-extracting memorable facts from conversation~~ —
-  **done, see [ADR-008](ADR-008-auto-memory-extraction.md)**; (c) injecting sentinel habits;
-  (d) optional hybrid grounding where ONA flags contradictions against the LLM's answer.
+  **done, see [ADR-008](ADR-008-auto-memory-extraction.md)**; (c) injecting sentinel habits —
+  *partial: sentinel **state** (foreground category) now injected as live context, see
+  [ADR-010](ADR-010-dynamic-context.md); learned habits still pending*; (d) optional hybrid grounding
+  where ONA flags contradictions against the LLM's answer.
 
 ## Alternatives Considered
 - **Keep symbolic-only:** rejected by the user — not useful as an assistant.

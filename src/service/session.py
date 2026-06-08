@@ -8,9 +8,11 @@ clients of this same surface, so reasoning logic can never be polluted by — or
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Callable
 
 from brain import Brain
+from context import render_live_context
 from execution import DecisionStats, build_air_gapped_executor, decide
 from jarvis import Jarvis
 from language import IngestionGate, Translator, Voice, strip_acknowledgment
@@ -42,7 +44,8 @@ class Session:
         self._jarvis = Jarvis(Translator(llm, embedder=embedder, cache=grounding),
                               self._store, self._brain, executor=self._executor, gate=gate,
                               metrics=self._metrics, voice=voice, assistant=llm,  # LLM-first (ADR-007)
-                              embedder=embedder)  # auto-memory semantic echo-guard (ADR-008)
+                              embedder=embedder,  # auto-memory semantic echo-guard (ADR-008)
+                              context_provider=self._live_context)  # dynamic context (ADR-010)
         # M2 system sentinel (CPU/mem surprise) feeds the knowledge brain; alerts push as events.
         narrator = Narrator(NoNarrationLLM(), on_alert=lambda t: self._emit("alert", {"text": "⚠  " + t}))
         self._sys_detector = SurpriseDetector(self._brain, threshold=0.5, on_surprise=narrator.narrate)
@@ -175,6 +178,13 @@ class Session:
 
     def _status(self, arg: object) -> tuple[bool, object]:
         return True, {"text": f"last poll: {self._last} | L2 facts: {self._store.count()}"}
+
+    def _live_context(self) -> str:
+        """Fresh live-facts block for each converse turn (ADR-010): real local date/time, the latest
+        system snapshot, and the sentinel foreground (omitted when the sentinel is off). The single
+        place the wall clock / snapshot / foreground are read for context (imperative shell)."""
+        return render_live_context(datetime.now().astimezone(), self._last,
+                                   self._flow.current_context())
 
     def _health(self, arg: object) -> tuple[bool, object]:
         s = self._metrics.summary()

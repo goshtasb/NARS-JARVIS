@@ -10,6 +10,7 @@ from dataclasses import dataclass, replace
 from typing import Callable
 
 from brain import Brain, canonical_input, input_accepted
+from context import is_volatile
 from contradiction import ContradictionGuard
 from execution import DecisionStats, Executor, decide
 from language import (
@@ -87,6 +88,9 @@ ASSISTANT_SYSTEM_PROMPT = (
     "'I no longer…', 'that's wrong') or directly changes a single-valued fact (a new name/location). "
     "Do NOT forget a still-true fact just because the user adds a new COMPATIBLE one — liking coffee "
     "does not mean they stopped liking tea.\n"
+    "LIVE CONTEXT: a 'Current context' section gives the real date/time, system load, and (if known) "
+    "the user's foreground activity. Answer time/date/'what am I doing' questions FROM it. Never "
+    "[[REMEMBER]] anything from it — it is ephemeral, not a durable fact.\n"
     "Worked examples (note the tag lines):\n"
     "User: my name is Ashkan\n"
     "Assistant: Nice to meet you, Ashkan!\n"
@@ -111,7 +115,8 @@ class Jarvis:
                  metrics: MetricsStore | None = None,
                  voice: Voice | None = None,
                  assistant: object | None = None,
-                 embedder: object | None = None) -> None:
+                 embedder: object | None = None,
+                 context_provider: Callable[[], str] | None = None) -> None:
         self._translator = translator
         self._store = store
         self._brain = brain
@@ -122,6 +127,9 @@ class Jarvis:
         # Embedder for the auto-memory semantic echo-guard (ADR-008). None => guard degrades to the
         # verbatim/normalized filter + prompt only (tests / offline).
         self._embedder = embedder if (embedder is not None and hasattr(embedder, "embed")) else None
+        # Dynamic context (ADR-010): a shell-provided callable returning the fresh live-facts block
+        # (date/time + system + foreground) injected each turn. None => no live context (tests/offline).
+        self._context_provider = context_provider
         self._voice = voice or Voice()  # template-only by default; formatter LLM is optional
         # LLM-first brain (ADR-007): when a real model is wired, converse() lets the LLM answer from
         # its own knowledge with the user's persistent memory injected as ground truth. With no
@@ -272,8 +280,15 @@ class Jarvis:
         if self._assistant is None:
             return self._converse_grounded(question)
         memory = self._recall(question)
-        user = (f"Persistent memory (the user taught you these; treat as ground truth):\n{memory}\n\n"
-                if memory else "") + f"User: {question}"
+        live = self._context_provider() if self._context_provider is not None else ""
+        blocks: list[str] = []
+        if live:
+            blocks.append(live)
+        if memory:
+            blocks.append("Persistent memory (the user taught you these; treat as ground truth):\n"
+                          + memory)
+        blocks.append(f"User: {question}")
+        user = "\n\n".join(blocks)
         try:
             reply = self._assistant.generate_text(ASSISTANT_SYSTEM_PROMPT, user, max_tokens=512)
         except Exception:  # noqa: BLE001 — a model hiccup degrades to the grounded path, never crashes
@@ -284,7 +299,8 @@ class Jarvis:
         clean, forgets = split_forget_directives(clean)
         clean = clean.strip()
         if facts:  # guard the context-echo bug — but an UPDATE (same slot, new value) is not an echo
-            known = [ln[2:] if ln.startswith("- ") else ln for ln in memory.splitlines()]
+            known = [ln[2:] if ln.startswith("- ") else ln
+                     for ln in (memory + "\n" + live).splitlines()]   # incl. live lines (don't re-save)
             # A same-single-valued-slot-but-different-value fact is a correction that must reach the
             # store to supersede the old value; only NON-updates run through the echo guards.
             updates = [f for f in facts if any(same_single_valued_slot(f, k) for k in known)]
@@ -322,6 +338,8 @@ class Jarvis:
         save. Returns the facts actually stored, for the ack."""
         saved: list[str] = []
         for fact in facts:
+            if is_volatile(fact):
+                continue                                       # ADR-010: never persist transient facts
             embedding = self._embed(fact)
             if not self._store.remember(fact, source=source, embedding=embedding):
                 continue                                       # already known (a revisit)
