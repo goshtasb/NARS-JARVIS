@@ -1,6 +1,8 @@
 """Unit tests for conversational-memory directive extraction (ADR-008). Pure — no model."""
 from language.extract import (
     MAX_FACTS,
+    filter_known,
+    filter_semantic,
     memory_acknowledgment,
     split_memory_directives,
 )
@@ -64,6 +66,63 @@ def test_acknowledgment() -> None:
     assert memory_acknowledgment(["a", "b"]) == "(Saved: a; b)"
 
 
+# ── filter_known: the deterministic context-echo guard (ADR-008 follow-up) ──
+def test_filter_known_drops_verbatim_echo() -> None:
+    known = ["the user's name is Ashkan", "ducks are birds"]
+    facts = ["the user's name is Ashkan", "ducks are birds"]
+    assert filter_known(facts, known) == []          # pure-echo turn -> nothing survives
+
+
+def test_filter_known_normalizes_near_matches() -> None:
+    known = ["the user's name is Ashkan"]
+    # case, leading article, and trailing punctuation variations all normalize to the same key
+    assert filter_known(["User's name is Ashkan."], known) == []
+    assert filter_known(["THE USER'S NAME IS ASHKAN"], known) == []
+
+
+def test_filter_known_keeps_genuinely_new() -> None:
+    known = ["the user's name is Ashkan"]
+    facts = ["the user's name is Ashkan", "the user lives in Berlin"]
+    assert filter_known(facts, known) == ["the user lives in Berlin"]
+
+
+def test_filter_known_empty_known_is_passthrough() -> None:
+    facts = ["the user prefers tabs"]
+    assert filter_known(facts, []) == facts
+
+
+# ── filter_semantic: the embedding guard for PARAPHRASE echoes normalization can't catch ──
+def _fake_embed(text: str) -> list[float]:
+    """Concept-keyed unit vectors so paraphrases of the same fact collide, distinct facts don't."""
+    t = text.lower()
+    if "ashkan" in t:
+        return [1.0, 0.0, 0.0]   # any phrasing of the name fact -> same vector
+    if "berlin" in t:
+        return [0.0, 1.0, 0.0]
+    return [0.0, 0.0, 1.0]
+
+
+def test_filter_semantic_drops_paraphrase_echo() -> None:
+    # the exact live failure: injected "my name is Ashkan" re-tagged as "the user's name is Ashkan"
+    kept = filter_semantic(["the user's name is Ashkan"], ["my name is Ashkan"], _fake_embed)
+    assert kept == []
+
+
+def test_filter_semantic_keeps_distinct_fact() -> None:
+    kept = filter_semantic(["the user lives in Berlin"], ["my name is Ashkan"], _fake_embed)
+    assert kept == ["the user lives in Berlin"]
+
+
+def test_filter_semantic_mixed() -> None:
+    kept = filter_semantic(["the user's name is Ashkan", "the user lives in Berlin"],
+                           ["my name is Ashkan"], _fake_embed)
+    assert kept == ["the user lives in Berlin"]
+
+
+def test_filter_semantic_empty_known_passthrough() -> None:
+    assert filter_semantic(["x"], [], _fake_embed) == ["x"]
+
+
 if __name__ == "__main__":
     test_no_tag_passthrough()
     test_single_own_line_tag()
@@ -73,4 +132,12 @@ if __name__ == "__main__":
     test_empty_and_overlong_directives_ignored()
     test_caps_at_max_facts_and_dedups()
     test_acknowledgment()
+    test_filter_known_drops_verbatim_echo()
+    test_filter_known_normalizes_near_matches()
+    test_filter_known_keeps_genuinely_new()
+    test_filter_known_empty_known_is_passthrough()
+    test_filter_semantic_drops_paraphrase_echo()
+    test_filter_semantic_keeps_distinct_fact()
+    test_filter_semantic_mixed()
+    test_filter_semantic_empty_known_passthrough()
     print("language/test_extract: OK")

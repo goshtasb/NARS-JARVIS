@@ -22,6 +22,8 @@ from language import (
     Voice,
     assess,
     back_render,
+    filter_known,
+    filter_semantic,
     memory_acknowledgment,
     split_memory_directives,
     to_narsese,
@@ -77,6 +79,8 @@ ASSISTANT_SYSTEM_PROMPT = (
     "literally as: [[REMEMBER: <concise third-person fact>]]. Do this even while also answering a "
     "question in the same message. For ordinary questions, greetings, or small talk, do NOT add any "
     "tag. Never mention or explain the tag — it is stripped before the user sees it.\n"
+    "CRITICAL: tag ONLY genuinely NEW information from the user's current message. NEVER emit a tag "
+    "for anything already listed in the 'Persistent memory' section — you already know it.\n"
     "Worked examples (note the tag lines):\n"
     "User: my name is Ashkan\n"
     "Assistant: Nice to meet you, Ashkan!\n"
@@ -97,7 +101,8 @@ class Jarvis:
                  gate: IngestionGate | None = None,
                  metrics: MetricsStore | None = None,
                  voice: Voice | None = None,
-                 assistant: object | None = None) -> None:
+                 assistant: object | None = None,
+                 embedder: object | None = None) -> None:
         self._translator = translator
         self._store = store
         self._brain = brain
@@ -105,6 +110,9 @@ class Jarvis:
         self._executor = executor  # None => orchestrator stays learn/ask only (no execution path)
         self._gate = gate          # None => ungated learn (no semantic gate; e.g. no embedder)
         self._metrics = metrics    # None => no telemetry; gate-friction outcomes only, never text
+        # Embedder for the auto-memory semantic echo-guard (ADR-008). None => guard degrades to the
+        # verbatim/normalized filter + prompt only (tests / offline).
+        self._embedder = embedder if (embedder is not None and hasattr(embedder, "embed")) else None
         self._voice = voice or Voice()  # template-only by default; formatter LLM is optional
         # LLM-first brain (ADR-007): when a real model is wired, converse() lets the LLM answer from
         # its own knowledge with the user's persistent memory injected as ground truth. With no
@@ -267,6 +275,14 @@ class Jarvis:
         clean = clean.strip()
         if not clean:
             return self._converse_grounded(question)
+        if facts:  # hard guards against the context-echo bug: drop facts re-tagged from injected memory
+            known = [ln[2:] if ln.startswith("- ") else ln for ln in memory.splitlines()]
+            facts = filter_known(facts, known)                 # verbatim / normalized echoes
+            if facts and self._embedder is not None:
+                try:
+                    facts = filter_semantic(facts, known, self._embedder.embed)  # paraphrase echoes
+                except Exception:  # noqa: BLE001 — an embed hiccup must not crash converse
+                    pass
         saved = self._remember_facts(facts, source=question) if facts else []
         ack = memory_acknowledgment(saved)
         return f"{clean}\n{ack}" if ack else clean

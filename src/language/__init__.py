@@ -9,7 +9,13 @@ Public interface (ADR-001: a Python module's surface is its `__init__.py` + `__a
 """
 from .compiler import claims_to_narsese, to_narsese
 from .embed import LocalEmbedder
-from .extract import REMEMBER_TAG, memory_acknowledgment, split_memory_directives
+from .extract import (
+    REMEMBER_TAG,
+    filter_known,
+    filter_semantic,
+    memory_acknowledgment,
+    split_memory_directives,
+)
 from .gate import (
     L0,
     THRESHOLD_ACCEPT,
@@ -55,6 +61,8 @@ __all__ = [
     "REMEMBER_TAG",
     "split_memory_directives",
     "memory_acknowledgment",
+    "filter_known",
+    "filter_semantic",
     "L0",
     "L0Result",
     "validate_l0",

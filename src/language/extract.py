@@ -15,6 +15,15 @@ with no (or malformed) directive simply yields the reply unchanged and no facts.
 from __future__ import annotations
 
 import re
+from typing import Callable
+
+from .ground import cosine_similarity
+
+# Cosine at/above which a candidate fact is treated as a paraphrase of an injected memory line and
+# dropped. Tuned below the gate's synonym floor (0.90) to catch person/phrasing restatements
+# ("my name is Ashkan" ≈ "the user's name is Ashkan") while staying high enough that two genuinely
+# distinct facts about the user are not collapsed.
+SEM_ECHO_THRESHOLD = 0.88
 
 # Tolerant by design (a plain-text 7B drifts): case-insensitive, flexible spacing, inline or own
 # line. The captured group is the fact text, taken non-greedily up to the closing `]]`.
@@ -46,6 +55,49 @@ def memory_acknowledgment(facts: list[str]) -> str:
     if not facts:
         return ""
     return "(Saved: " + "; ".join(facts) + ")"
+
+
+def filter_known(facts: list[str], known: list[str]) -> list[str]:
+    """Drop facts the model merely echoed back from its injected memory (the context-echo bug).
+
+    The HARD guard behind the prompt's soft rule: an LLM handed a 'Persistent memory' block often
+    re-tags those facts verbatim, which would re-save what it already knows in an expanding loop.
+    Echoes are near-verbatim, so we compare on a normalized form (case / leading article / quotes /
+    whitespace / trailing punctuation). This catches verbatim and near-verbatim repeats; it is NOT a
+    semantic matcher, so a genuine paraphrase can still slip through (then handled by dedup/visibility).
+    """
+    seen = {_normalize(k) for k in known if k}
+    return [f for f in facts if _normalize(f) not in seen]
+
+
+def filter_semantic(facts: list[str], known: list[str],
+                    embed: Callable[[str], list[float]],
+                    threshold: float = SEM_ECHO_THRESHOLD) -> list[str]:
+    """Drop facts whose MEANING matches an injected memory line — the paraphrase echoes that
+    `filter_known` (verbatim/normalized) misses, e.g. the model restating injected "my name is
+    Ashkan" as "the user's name is Ashkan". `embed` maps text -> vector; pure given `embed`, so it
+    unit-tests with a fake embedder. The caller supplies a real embedder only when one is wired
+    (degrades to the verbatim guard + prompt offline)."""
+    if not facts or not known:
+        return facts
+    known_vecs = [embed(k) for k in known if k]
+    if not known_vecs:
+        return facts
+    kept: list[str] = []
+    for f in facts:
+        fv = embed(f)
+        if all(cosine_similarity(fv, kv) < threshold for kv in known_vecs):
+            kept.append(f)
+    return kept
+
+
+def _normalize(s: str) -> str:
+    """Canonical form for echo comparison. Conservative on purpose — over-normalizing risks dropping
+    genuinely new facts that merely look similar."""
+    s = s.strip().strip("\"'“”‘’").lower()
+    s = re.sub(r"^(the|a|an)\s+", "", s)   # leading article ("The user's…" == "user's…")
+    s = re.sub(r"\s+", " ", s)             # collapse internal whitespace
+    return s.strip(" .,!?;:")              # trailing/leading punctuation
 
 
 def _strip_tags(reply: str) -> str:

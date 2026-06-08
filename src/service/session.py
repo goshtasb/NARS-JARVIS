@@ -41,7 +41,8 @@ class Session:
         voice = Voice(formatter=llm if hasattr(llm, "generate_text") else None)
         self._jarvis = Jarvis(Translator(llm, embedder=embedder, cache=grounding),
                               self._store, self._brain, executor=self._executor, gate=gate,
-                              metrics=self._metrics, voice=voice, assistant=llm)  # LLM-first (ADR-007)
+                              metrics=self._metrics, voice=voice, assistant=llm,  # LLM-first (ADR-007)
+                              embedder=embedder)  # auto-memory semantic echo-guard (ADR-008)
         # M2 system sentinel (CPU/mem surprise) feeds the knowledge brain; alerts push as events.
         narrator = Narrator(NoNarrationLLM(), on_alert=lambda t: self._emit("alert", {"text": "⚠  " + t}))
         self._sys_detector = SurpriseDetector(self._brain, threshold=0.5, on_surprise=narrator.narrate)

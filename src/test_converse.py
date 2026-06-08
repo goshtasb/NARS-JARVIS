@@ -120,6 +120,53 @@ def test_converse_saved_memory_injected_next_turn() -> None:
         assert "the user's name is Ashkan" in asst.last_user, asst.last_user  # injected as ground truth
 
 
+def test_converse_does_not_resave_injected_memory() -> None:
+    # The live context-echo bug: with pre-existing memory injected, the model re-tags it verbatim on
+    # an unrelated question. The hard guard must drop the echo -> no save, no "(Saved:" banner.
+    asst = _RememberLLM("Paris.\n[[REMEMBER: the sky is blue]]")   # echoes injected fact on a pure Q
+    with Brain(cycles_per_step=50) as brain:
+        store = MemoryStore()
+        store.upsert("<sky --> [blue]>", 1.0, 0.9, english="the sky is blue")  # pre-existing memory
+        out = _jarvis(asst, store, brain).converse("What is the capital of France?")
+        assert "(Saved:" not in out, out                          # echo suppressed
+        assert store.memories_for_recall() == []                  # nothing re-saved
+
+
+def test_converse_echo_guard_keeps_new_fact_in_same_turn() -> None:
+    asst = _RememberLLM("Noted.\n[[REMEMBER: the sky is blue]]\n[[REMEMBER: the user lives in Berlin]]")
+    with Brain(cycles_per_step=50) as brain:
+        store = MemoryStore()
+        store.upsert("<sky --> [blue]>", 1.0, 0.9, english="the sky is blue")  # known -> must drop
+        out = _jarvis(asst, store, brain).converse("Anything else?")
+        assert "the user lives in Berlin" in store.memories_for_recall()   # new fact survives
+        assert "the sky is blue" not in store.memories_for_recall()        # echo dropped
+        assert "(Saved: the user lives in Berlin)" in out, out
+
+
+class _FakeEmbedder:
+    """Concept-keyed vectors: paraphrases of the same fact collide; distinct facts don't."""
+    def embed(self, text: str) -> list[float]:
+        t = text.lower()
+        if "ashkan" in t:
+            return [1.0, 0.0, 0.0]
+        if "berlin" in t:
+            return [0.0, 1.0, 0.0]
+        return [0.0, 0.0, 1.0]
+
+
+def test_converse_semantic_guard_drops_paraphrased_injected_memory() -> None:
+    # The live bug the verbatim guard missed: injected "my name is Ashkan" re-tagged in third person.
+    # With an embedder wired, the semantic guard must drop it -> no save, no banner.
+    asst = _RememberLLM("32% CPU in use.\n[[REMEMBER: the user's name is Ashkan]]")
+    with Brain(cycles_per_step=50) as brain:
+        store = MemoryStore()
+        store.upsert("<name --> [ashkan]>", 1.0, 0.9, english="my name is Ashkan")  # injected memory
+        j = Jarvis(Translator(asst), store, brain, assistant=asst, embedder=_FakeEmbedder())
+        out = j.converse("What percentage of CPU are we using?")
+        assert "(Saved:" not in out, out                       # paraphrase echo suppressed
+        assert store.memories_for_recall() == []              # nothing re-saved
+
+
 def test_converse_falls_back_to_grounded_without_a_model() -> None:
     # No assistant wired (tests / offline) -> the legacy hallucination-proof ONA path still works.
     with Brain(cycles_per_step=200) as brain:
@@ -181,6 +228,9 @@ if __name__ == "__main__":
     test_converse_pure_question_saves_nothing()
     test_converse_save_independent_of_ona_gate()
     test_converse_saved_memory_injected_next_turn()
+    test_converse_does_not_resave_injected_memory()
+    test_converse_echo_guard_keeps_new_fact_in_same_turn()
+    test_converse_semantic_guard_drops_paraphrased_injected_memory()
     test_converse_falls_back_to_grounded_without_a_model()
     test_converse_trace_dedups_and_renders_uniformly()
     test_converse_unknown_is_admitted_not_invented()

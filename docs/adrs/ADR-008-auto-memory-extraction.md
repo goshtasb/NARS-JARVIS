@@ -63,6 +63,25 @@ required adding **worked User/Assistant examples** (showing the tag lines) to th
 that is now part of `ASSISTANT_SYSTEM_PROMPT`. Tag emission still depends on the model, so the
 parser degrades safely (no tag → behaves exactly as before).
 
+## The context-echo bug (found on a pre-populated live DB, 2026-06-07)
+The first live runs used a fresh, empty DB and passed. On the **real** `jarvis.db` (which already
+held taught facts injected via `_recall`), the 7B re-tagged its own injected memory as
+`[[REMEMBER: …]]` — so an unrelated question ("what % CPU?") spuriously re-saved "the user's name is
+Ashkan", an expanding self-pollution loop (a classic RAG/context-injection failure mode). Fix is
+three layers, soft→hard:
+1. **Prompt (soft):** *"tag ONLY genuinely new info from the current message; NEVER tag anything in
+   the Persistent memory section."*
+2. **Verbatim guard (hard, cheap):** `language.extract.filter_known` drops facts whose normalized
+   form (case / leading article / quotes / whitespace / trailing punctuation) matches an injected
+   memory line — catches verbatim/near-verbatim echoes.
+3. **Semantic guard (hard, robust):** `filter_semantic` embeds each candidate and drops it if cosine
+   ≥ `SEM_ECHO_THRESHOLD` (0.88) against any injected line — catches *paraphrase* echoes the
+   normalizer cannot (the live failure was "my name is Ashkan" → "the user's name is Ashkan", which
+   normalizes to different strings). Degrades to layers 1–2 when no embedder is wired.
+Re-validated live on the exact trigger: no spurious save, DB unchanged (facts/memories steady). The
+residual gap is an arbitrary paraphrase scoring < 0.88; it would then dedup over time and is visible
+via `(Saved: …)`.
+
 ## Consequences
 - **Gained:** JARVIS now learns facts/preferences mid-conversation, by voice or typed `ask`, with
   no special command and no added latency; saves survive restarts and are injected on later turns.
