@@ -4,6 +4,7 @@ from language.extract import (
     filter_known,
     filter_semantic,
     memory_acknowledgment,
+    split_forget_directives,
     split_memory_directives,
     strip_acknowledgment,
 )
@@ -140,6 +141,22 @@ def test_strip_acknowledgment_inverse_of_acknowledgment() -> None:
     assert strip_acknowledgment(spoken) == reply
 
 
+# ── [[FORGET]] directive (ADR-009), mirrors [[REMEMBER]] ──
+def test_split_forget_directives() -> None:
+    clean, forgets = split_forget_directives("Okay, done.\n[[FORGET: the user likes tea]]")
+    assert forgets == ["the user likes tea"]
+    assert clean == "Okay, done." and "FORGET" not in clean
+
+
+def test_remember_and_forget_coexist() -> None:
+    reply = "Updated.\n[[FORGET: the user likes tea]]\n[[REMEMBER: the user likes coffee]]"
+    clean1, remembers = split_memory_directives(reply)
+    clean2, forgets = split_forget_directives(clean1)
+    assert remembers == ["the user likes coffee"]
+    assert forgets == ["the user likes tea"]
+    assert clean2 == "Updated." and "[[" not in clean2
+
+
 if __name__ == "__main__":
     test_no_tag_passthrough()
     test_single_own_line_tag()
@@ -160,4 +177,6 @@ if __name__ == "__main__":
     test_strip_acknowledgment_removes_trailing_suffix()
     test_strip_acknowledgment_noop_without_suffix()
     test_strip_acknowledgment_inverse_of_acknowledgment()
+    test_split_forget_directives()
+    test_remember_and_forget_coexist()
     print("language/test_extract: OK")

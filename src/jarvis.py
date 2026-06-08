@@ -25,6 +25,7 @@ from language import (
     filter_known,
     filter_semantic,
     memory_acknowledgment,
+    split_forget_directives,
     split_memory_directives,
     to_narsese,
 )
@@ -34,6 +35,7 @@ from memory import (
     is_valid_belief,
     observe,
     reload_into_brain,
+    same_single_valued_slot,
     statement_term,
     statement_truth,
 )
@@ -81,6 +83,10 @@ ASSISTANT_SYSTEM_PROMPT = (
     "tag. Never mention or explain the tag — it is stripped before the user sees it.\n"
     "CRITICAL: tag ONLY genuinely NEW information from the user's current message. NEVER emit a tag "
     "for anything already listed in the 'Persistent memory' section — you already know it.\n"
+    "Only emit [[FORGET: <old fact>]] when the user EXPLICITLY retracts a fact ('forget that…', "
+    "'I no longer…', 'that's wrong') or directly changes a single-valued fact (a new name/location). "
+    "Do NOT forget a still-true fact just because the user adds a new COMPATIBLE one — liking coffee "
+    "does not mean they stopped liking tea.\n"
     "Worked examples (note the tag lines):\n"
     "User: my name is Ashkan\n"
     "Assistant: Nice to meet you, Ashkan!\n"
@@ -89,6 +95,9 @@ ASSISTANT_SYSTEM_PROMPT = (
     "Assistant: Good to know.\n"
     "[[REMEMBER: the user is a pilot]]\n"
     "[[REMEMBER: the user prefers tabs over spaces]]\n"
+    "User: forget that I like tea\n"
+    "Assistant: Done.\n"
+    "[[FORGET: the user likes tea]]\n"
     "User: what is the capital of France?\n"
     "Assistant: Paris."
 )
@@ -262,39 +271,60 @@ class Jarvis:
         no language model is wired (tests / offline demo)."""
         if self._assistant is None:
             return self._converse_grounded(question)
-        memory = self._recall()
+        memory = self._recall(question)
         user = (f"Persistent memory (the user taught you these; treat as ground truth):\n{memory}\n\n"
                 if memory else "") + f"User: {question}"
         try:
             reply = self._assistant.generate_text(ASSISTANT_SYSTEM_PROMPT, user, max_tokens=512)
         except Exception:  # noqa: BLE001 — a model hiccup degrades to the grounded path, never crashes
             return self._converse_grounded(question)
-        # Auto-memory (ADR-008): pull any [[REMEMBER: …]] directives the LLM emitted, persist them,
-        # show the cleaned reply, and confirm what was saved so a wrong save is visible/correctable.
+        # Auto-memory (ADR-008/009): pull [[REMEMBER]]/[[FORGET]] directives, persist them, show the
+        # cleaned reply, and confirm changes so a wrong save/forget is visible and correctable.
         clean, facts = split_memory_directives(reply)
+        clean, forgets = split_forget_directives(clean)
         clean = clean.strip()
-        if not clean:
-            return self._converse_grounded(question)
-        if facts:  # hard guards against the context-echo bug: drop facts re-tagged from injected memory
+        if facts:  # guard the context-echo bug — but an UPDATE (same slot, new value) is not an echo
             known = [ln[2:] if ln.startswith("- ") else ln for ln in memory.splitlines()]
-            facts = filter_known(facts, known)                 # verbatim / normalized echoes
-            if facts and self._embedder is not None:
+            # A same-single-valued-slot-but-different-value fact is a correction that must reach the
+            # store to supersede the old value; only NON-updates run through the echo guards.
+            updates = [f for f in facts if any(same_single_valued_slot(f, k) for k in known)]
+            others = [f for f in facts if f not in updates]
+            others = filter_known(others, known)               # verbatim / normalized echoes
+            if others and self._embedder is not None:
                 try:
-                    facts = filter_semantic(facts, known, self._embedder.embed)  # paraphrase echoes
+                    others = filter_semantic(others, known, self._embedder.embed)  # paraphrase echoes
                 except Exception:  # noqa: BLE001 — an embed hiccup must not crash converse
                     pass
+            facts = updates + others
+        # Resolve memory ops BEFORE deciding on a fallback, so a directive-only reply (the 7B sometimes
+        # emits just the tag, no prose) is never discarded.
         saved = self._remember_facts(facts, source=question) if facts else []
-        ack = memory_acknowledgment(saved)
-        return f"{clean}\n{ack}" if ack else clean
+        forgotten = self._forget_facts(forgets) if forgets else []
+        acks = [a for a in (memory_acknowledgment(saved),
+                            ("(Forgot: " + "; ".join(forgotten) + ")") if forgotten else "") if a]
+        if not clean:  # no prose: show the confirmation if we acted, else fall back to grounded
+            return " ".join(acks) if acks else self._converse_grounded(question)
+        return f"{clean}\n{' '.join(acks)}" if acks else clean
+
+    def forget(self, text: str) -> list[str]:
+        """Soft-delete a memory by exact text or nearest semantic match (ADR-009). Undoable via
+        `restore`. Returns the memory text(s) actually tombstoned."""
+        return self._forget_facts([text])
+
+    def restore(self, text: str) -> bool:
+        """Reactivate a tombstoned memory (evicting the current slot holder to keep the invariant)."""
+        return self._store.restore(text)
 
     def _remember_facts(self, facts: list[str], *, source: str) -> list[str]:
-        """Persist auto-extracted memories (ADR-008). The English memory store is the system of
-        record (guaranteed recall); feeding ONA via `learn` is opportunistic — a gate rejection or
-        model hiccup must never block the save. Returns the facts actually stored, for the ack."""
+        """Persist auto-extracted memories (ADR-008/009). The English store is the system of record
+        (guaranteed recall) and now carries an embedding for ranked retrieval + slot supersedence;
+        feeding ONA via `learn` is opportunistic — a gate rejection or model hiccup never blocks the
+        save. Returns the facts actually stored, for the ack."""
         saved: list[str] = []
         for fact in facts:
-            if not self._store.remember(fact, source=source):  # store ALWAYS; skip if already known
-                continue                                       # (a revisit, e.g. a recall question)
+            embedding = self._embed(fact)
+            if not self._store.remember(fact, source=source, embedding=embedding):
+                continue                                       # already known (a revisit)
             try:
                 self.learn(fact)  # best-effort: enrich ONA when the fact fits the claim schema
             except Exception:  # noqa: BLE001 — gate/parse rejection or model hiccup never blocks
@@ -302,15 +332,39 @@ class Jarvis:
             saved.append(fact)
         return saved
 
-    def _recall(self, limit: int = 30) -> str:
-        """The persistent-memory bridge: the English facts injected as context. Merges what the user
-        explicitly taught (`facts.english`) with auto-extracted conversational memories (ADR-008).
-        ONA/L2 is now a memory provider, not a gatekeeper."""
+    def _forget_facts(self, forgets: list[str]) -> list[str]:
+        """Soft-delete memories the user retracted, by EXACT (then normalized) text match against the
+        active set. Deliberately NOT embedding-nearest: similar siblings ("likes tea" vs "likes
+        coffee") have near-identical vectors, so a nearest-match forget can tombstone the wrong one.
+        Tombstoned + undoable; an unmatched forget is a safe no-op (reported, never a wrong delete)."""
+        gone: list[str] = []
+        for f in forgets:
+            if self._store.forget(f) or self._store.forget_normalized(f):
+                gone.append(f)
+        return gone
+
+    def _embed(self, text: str) -> list[float] | None:
+        """Embed text via the wired embedder, or None (tests / offline) — never raises."""
+        if self._embedder is None:
+            return None
+        try:
+            return self._embedder.embed(text)
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _recall(self, question: str = "", limit: int = 30) -> str:
+        """The persistent-memory bridge: English facts injected as context. Merges what the user
+        explicitly taught (`facts.english`) with conversational memories — the latter **ranked by
+        embedding relevance to `question`** (ADR-009) when an embedder is wired, else most-recent.
+        ONA/L2 is a memory provider, not a gatekeeper."""
         taught = [f.english for f in self._store.facts_for_reload(limit=limit)
                   if getattr(f, "english", None)]
+        qvec = self._embed(question) if question else None
+        mems = (self._store.search(qvec, k=limit) if qvec is not None
+                else self._store.memories_for_recall(limit=limit))
         lines: list[str] = []
         seen: set[str] = set()
-        for text in taught + self._store.memories_for_recall(limit=limit):
+        for text in taught + mems:
             if text and text not in seen:
                 seen.add(text)
                 lines.append(f"- {text}")

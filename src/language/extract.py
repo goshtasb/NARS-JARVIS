@@ -28,26 +28,35 @@ SEM_ECHO_THRESHOLD = 0.88
 # Tolerant by design (a plain-text 7B drifts): case-insensitive, flexible spacing, inline or own
 # line. The captured group is the fact text, taken non-greedily up to the closing `]]`.
 REMEMBER_TAG = re.compile(r"\[\[\s*REMEMBER\s*:\s*(.+?)\s*\]\]", re.IGNORECASE)
+# Mirror of REMEMBER for explicit corrections / "forget that …" (ADR-009) — soft-deletes a memory.
+FORGET_TAG = re.compile(r"\[\[\s*FORGET\s*:\s*(.+?)\s*\]\]", re.IGNORECASE)
 
 MAX_FACTS = 3          # conservative cap per turn — a single utterance rarely teaches more
 MAX_FACT_LEN = 200     # a "fact" longer than this is almost certainly the model misusing the tag
 
 
-def split_memory_directives(reply: str) -> tuple[str, list[str]]:
-    """Split an assistant reply into (user-facing text, extracted facts).
-
-    Strips every `[[REMEMBER: …]]` directive from `reply` and returns the cleaned prose plus the
-    list of facts to persist. Empty/whitespace-only and over-long captures are ignored; the result
-    is capped at `MAX_FACTS`. On no match this returns `(reply, [])` — i.e. today's behavior.
-    """
-    facts: list[str] = []
-    for raw in REMEMBER_TAG.findall(reply):
-        fact = raw.strip()
-        if fact and len(fact) <= MAX_FACT_LEN and fact not in facts:
-            facts.append(fact)
-        if len(facts) >= MAX_FACTS:
+def _collect(reply: str, tag: re.Pattern[str]) -> tuple[str, list[str]]:
+    """Strip every `tag` directive from `reply`; return (cleaned text, captured items). Shared by the
+    REMEMBER and FORGET parsers. Ignores empty/over-long captures; caps at MAX_FACTS; dedups."""
+    items: list[str] = []
+    for raw in tag.findall(reply):
+        item = raw.strip()
+        if item and len(item) <= MAX_FACT_LEN and item not in items:
+            items.append(item)
+        if len(items) >= MAX_FACTS:
             break
-    return _strip_tags(reply), facts
+    return _strip_tags(reply, tag), items
+
+
+def split_memory_directives(reply: str) -> tuple[str, list[str]]:
+    """Split a reply into (user-facing text, facts to remember). On no `[[REMEMBER]]` tag returns
+    `(reply, [])` — today's behavior."""
+    return _collect(reply, REMEMBER_TAG)
+
+
+def split_forget_directives(reply: str) -> tuple[str, list[str]]:
+    """Split a reply into (user-facing text, facts to forget) from `[[FORGET: …]]` directives."""
+    return _collect(reply, FORGET_TAG)
 
 
 def memory_acknowledgment(facts: list[str]) -> str:
@@ -58,13 +67,13 @@ def memory_acknowledgment(facts: list[str]) -> str:
 
 
 # The acknowledgment is a VISUAL affordance (on-screen). Spoken aloud it breaks the conversational
-# illusion, so the voice path strips it. Anchored to the trailing line memory_acknowledgment writes.
-_ACK_SUFFIX = re.compile(r"\s*\(Saved:[^\n]*$")
+# illusion, so the voice path strips it. Anchored to the trailing "(Saved: …)"/"(Forgot: …)" line.
+_ACK_SUFFIX = re.compile(r"\s*\((?:Saved|Forgot):[^\n]*$")
 
 
 def strip_acknowledgment(text: str) -> str:
-    """Remove a trailing '(Saved: …)' confirmation — for the TTS payload, which should not voice it.
-    Inverse of `memory_acknowledgment`; leaves text without an acknowledgment untouched."""
+    """Remove a trailing '(Saved: …)'/'(Forgot: …)' confirmation — for the TTS payload, which should
+    not voice it. Inverse of the ack builders; leaves text without an acknowledgment untouched."""
     return _ACK_SUFFIX.sub("", text).rstrip()
 
 
@@ -111,9 +120,9 @@ def _normalize(s: str) -> str:
     return s.strip(" .,!?;:")              # trailing/leading punctuation
 
 
-def _strip_tags(reply: str) -> str:
-    """Remove all directives and tidy the whitespace they leave behind. Pure."""
-    text = REMEMBER_TAG.sub("", reply)
+def _strip_tags(reply: str, tag: re.Pattern[str]) -> str:
+    """Remove all `tag` directives and tidy the whitespace they leave behind. Pure."""
+    text = tag.sub("", reply)
     text = re.sub(r"[ \t]{2,}", " ", text)      # collapse gaps left by inline removal
     text = re.sub(r"[ \t]+\n", "\n", text)      # trailing spaces on a line
     text = re.sub(r"\n{3,}", "\n\n", text)      # blank lines left by own-line directives

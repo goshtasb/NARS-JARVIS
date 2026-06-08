@@ -144,14 +144,20 @@ def test_converse_echo_guard_keeps_new_fact_in_same_turn() -> None:
 
 
 class _FakeEmbedder:
-    """Concept-keyed vectors: paraphrases of the same fact collide; distinct facts don't."""
+    """Concept-keyed vectors: same-topic texts collide (incl. query<->memory), distinct topics don't.
+    Note name values (ashkan/sam) share the 'name' vector so the echo guard sees them as one topic —
+    the slot layer, not cosine, distinguishes a name *change* from a name *echo*."""
     def embed(self, text: str) -> list[float]:
         t = text.lower()
-        if "ashkan" in t:
-            return [1.0, 0.0, 0.0]
-        if "berlin" in t:
-            return [0.0, 1.0, 0.0]
-        return [0.0, 0.0, 1.0]
+        if "ashkan" in t or "sam" in t or "name" in t:
+            return [1.0, 0.0, 0.0, 0.0, 0.0]
+        if "berlin" in t or "live" in t:
+            return [0.0, 1.0, 0.0, 0.0, 0.0]
+        if "tea" in t:
+            return [0.0, 0.0, 1.0, 0.0, 0.0]
+        if "vim" in t or "editor" in t:
+            return [0.0, 0.0, 0.0, 1.0, 0.0]
+        return [0.0, 0.0, 0.0, 0.0, 1.0]
 
 
 def test_converse_semantic_guard_drops_paraphrased_injected_memory() -> None:
@@ -165,6 +171,67 @@ def test_converse_semantic_guard_drops_paraphrased_injected_memory() -> None:
         out = j.converse("What percentage of CPU are we using?")
         assert "(Saved:" not in out, out                       # paraphrase echo suppressed
         assert store.memories_for_recall() == []              # nothing re-saved
+
+
+def test_converse_ranked_recall_uses_embedding_path() -> None:
+    # The embedder-driven recall path injects the relevant memory (ranking proven in test_store).
+    asst = _RememberLLM("Berlin.")
+    emb = _FakeEmbedder()
+    with Brain(cycles_per_step=50) as brain:
+        store = MemoryStore()
+        for m in ("the user lives in Berlin", "the user likes tea", "the user uses vim"):
+            store.remember(m, embedding=emb.embed(m))
+        j = Jarvis(Translator(asst), store, brain, assistant=asst, embedder=emb)
+        j.converse("Where does the user live?")
+        assert "the user lives in Berlin" in asst.last_user      # relevant memory injected
+
+
+def test_converse_name_change_supersedes_old() -> None:
+    asst = _RememberLLM("Hi Sam!\n[[REMEMBER: the user's name is Sam]]")
+    with Brain(cycles_per_step=50) as brain:
+        store = MemoryStore()
+        store.remember("the user's name is Ashkan", embedding=_FakeEmbedder().embed("ashkan"))
+        j = Jarvis(Translator(asst), store, brain, assistant=asst, embedder=_FakeEmbedder())
+        j.converse("Actually my name is Sam")
+        active = store.memories_for_recall()
+        assert "the user's name is Sam" in active
+        assert "the user's name is Ashkan" not in active         # superseded
+
+
+def test_converse_directive_only_reply_still_persists() -> None:
+    # The 7B sometimes emits ONLY the tag (no prose). That must still persist + confirm, NOT fall to
+    # the grounded "I don't know" path (the live ADR-009 bug).
+    asst = _RememberLLM("[[REMEMBER: the user's name is Ashkan]]")
+    with Brain(cycles_per_step=50) as brain:
+        store = MemoryStore()
+        j = Jarvis(Translator(asst), store, brain, assistant=asst, embedder=_FakeEmbedder())
+        out = j.converse("My name is Ashkan")
+        assert "don't know" not in out.lower(), out             # not the grounded fallback
+        assert "(Saved: the user's name is Ashkan)" in out, out
+        assert "the user's name is Ashkan" in store.memories_for_recall()
+
+
+def test_converse_forget_directive_soft_deletes() -> None:
+    asst = _RememberLLM("Done.\n[[FORGET: the user likes tea]]")
+    with Brain(cycles_per_step=50) as brain:
+        store = MemoryStore()
+        store.remember("the user likes tea", embedding=_FakeEmbedder().embed("tea"))
+        j = Jarvis(Translator(asst), store, brain, assistant=asst, embedder=_FakeEmbedder())
+        out = j.converse("forget that I like tea")
+        assert "the user likes tea" not in store.memories_for_recall()
+        assert "Forgot" in out, out
+        assert store.restore("the user likes tea") is True       # undoable
+
+
+def test_converse_forget_missing_does_not_hit_wrong_sibling() -> None:
+    # The live misfire: forgetting an already-gone fact must NOT tombstone a similar sibling.
+    asst = _RememberLLM("Done.\n[[FORGET: the user likes tea]]")
+    with Brain(cycles_per_step=50) as brain:
+        store = MemoryStore()
+        store.remember("the user likes coffee", embedding=_FakeEmbedder().embed("coffee"))  # only coffee
+        j = Jarvis(Translator(asst), store, brain, assistant=asst, embedder=_FakeEmbedder())
+        j.converse("forget that I like tea")
+        assert "the user likes coffee" in store.memories_for_recall()   # sibling untouched
 
 
 def test_converse_falls_back_to_grounded_without_a_model() -> None:
@@ -231,6 +298,11 @@ if __name__ == "__main__":
     test_converse_does_not_resave_injected_memory()
     test_converse_echo_guard_keeps_new_fact_in_same_turn()
     test_converse_semantic_guard_drops_paraphrased_injected_memory()
+    test_converse_ranked_recall_uses_embedding_path()
+    test_converse_name_change_supersedes_old()
+    test_converse_directive_only_reply_still_persists()
+    test_converse_forget_directive_soft_deletes()
+    test_converse_forget_missing_does_not_hit_wrong_sibling()
     test_converse_falls_back_to_grounded_without_a_model()
     test_converse_trace_dedups_and_renders_uniformly()
     test_converse_unknown_is_admitted_not_invented()

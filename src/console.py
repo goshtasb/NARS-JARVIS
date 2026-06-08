@@ -30,6 +30,8 @@ HELP = (
     "  ask   <english?>   ask in plain English  (answered + cited, no hallucination)\n"
     "                     (expert: `ask <tim --> bird>?` runs a raw Narsese query)\n"
     "  act   <op> <arg>   propose an action; Suggestion-Only ones prompt [y/n]\n"
+    "  forget <fact>      soft-delete a remembered fact (undoable)\n"
+    "  restore <fact>     undo a forget / bring a superseded memory back\n"
     "  status             last CPU/mem poll + memory counts\n"
     "  health             ingestion rejection-rate decay + focus-sentinel KPI\n"
     "  sentinel on|off    always-on flow sentinel (runs in the daemon)\n"
@@ -158,7 +160,7 @@ class Console:
             return self._do_learn(rest)
         if cmd == "act":
             return self._do_act(rest)
-        if cmd in ("ask", "tell", "status", "health", "sentinel"):
+        if cmd in ("ask", "tell", "status", "health", "sentinel", "forget", "restore"):
             _, body = self._client.call(cmd, rest)
             return self._render(body)
         self._out(f"unknown command: {cmd!r} (try 'help')")

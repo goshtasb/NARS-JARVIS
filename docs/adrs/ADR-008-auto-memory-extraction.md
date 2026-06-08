@@ -93,8 +93,9 @@ via `(Saved: …)`.
   auto-save is possible. Mitigated by conservative prompting, the visible `(Saved: …)` confirmation,
   and `forget`. Exact-text dedup only — semantic near-duplicates ("my name is Ashkan" vs "the
   user's name is Ashkan") are not merged (embedding-ranked recall is ADR-007 future work (a)).
-- **Open / next:** a `forget` command / `[[FORGET: …]]` directive for spoken corrections;
-  embedding-ranked recall instead of recency; surfacing the save as a distinct UI event.
+- **Open / next:** ~~a `forget` command / `[[FORGET: …]]` directive for spoken corrections;
+  embedding-ranked recall instead of recency~~ — **done, see [ADR-009](ADR-009-memory-at-scale.md)**;
+  surfacing the save as a distinct UI event.
 
 ## Alternatives Considered
 - **Learn-gate for everything:** rejected — drops most natural memories (the original bug) and adds

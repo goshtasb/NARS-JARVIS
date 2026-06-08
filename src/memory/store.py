@@ -7,10 +7,30 @@ durability comes from write-through at ingestion + reconciliation.
 """
 from __future__ import annotations
 
+import math
 import sqlite3
 import time
 
 from .fact import Fact, pack_embedding, unpack_embedding
+from .slots import same_single_valued_slot, slot_of
+
+# Cosine pre-filter for conflict detection (ADR-009): deliberately PERMISSIVE — the slot check is the
+# authoritative gate, cosine only prunes clearly-unrelated rows for scale (a same-slot pair always
+# scores well above this). Retrieval ranking uses cosine directly, no floor.
+_CONFLICT_CANDIDATE_COSINE = 0.5
+
+
+def _norm_text(s: str) -> str:
+    """Loose canonical form for forget matching (case / whitespace / surrounding punctuation)."""
+    import re
+    return re.sub(r"\s+", " ", s.strip().lower()).strip(" .,!?;:\"'")
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    return dot / (na * nb) if na and nb else 0.0
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS facts (
@@ -34,18 +54,30 @@ CREATE INDEX IF NOT EXISTS idx_facts_pin ON facts(pinned, priority_tier);
 -- to remember (preferences, tasks, self-facts) is durable here even when it has no clean ONA
 -- form. `_recall` merges this with `facts.english`. `text` is unique so identical saves dedup.
 CREATE TABLE IF NOT EXISTS memories (
-  id         INTEGER PRIMARY KEY,
-  text       TEXT    NOT NULL,
-  source     TEXT,
-  embedding  BLOB,
-  pinned     INTEGER NOT NULL DEFAULT 0,
-  use_count  INTEGER NOT NULL DEFAULT 1,
-  created_at REAL    NOT NULL,
-  updated_at REAL    NOT NULL,
-  last_used  REAL    NOT NULL
+  id            INTEGER PRIMARY KEY,
+  text          TEXT    NOT NULL,
+  source        TEXT,
+  embedding     BLOB,
+  pinned        INTEGER NOT NULL DEFAULT 0,
+  use_count     INTEGER NOT NULL DEFAULT 1,
+  active        INTEGER NOT NULL DEFAULT 1,   -- 0 = tombstoned (superseded or forgotten); ADR-009
+  superseded_by INTEGER,                      -- id of the memory that replaced this one (chain link)
+  superseded_at REAL,
+  created_at    REAL    NOT NULL,
+  updated_at    REAL    NOT NULL,
+  last_used     REAL    NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_text ON memories(text);
+CREATE INDEX IF NOT EXISTS idx_memories_active ON memories(active);
 """
+
+# Columns added to `memories` after its first release (ADR-009). Applied in-place by `_migrate`
+# (SQLite lacks ADD COLUMN IF NOT EXISTS), so an existing jarvis.db upgrades on next open.
+_MEMORIES_ADDED_COLUMNS = (
+    ("active", "INTEGER NOT NULL DEFAULT 1"),
+    ("superseded_by", "INTEGER"),
+    ("superseded_at", "REAL"),
+)
 
 _COLS = (
     "narsese, english, frequency, confidence, embedding, pinned, "
@@ -62,7 +94,18 @@ class MemoryStore:
     def __init__(self, db_path: str = ":memory:") -> None:
         self._db = sqlite3.connect(db_path)
         self._db.executescript(_SCHEMA)
+        self._migrate()
         self._db.commit()
+
+    def _migrate(self) -> None:
+        """Additive, idempotent schema evolution for `memories` (ADR-009). SQLite has no
+        ADD COLUMN IF NOT EXISTS, so add only the columns PRAGMA reports missing — no data loss,
+        no crash-loop on restart."""
+        have = {row[1] for row in self._db.execute("PRAGMA table_info(memories)")}
+        for name, decl in _MEMORIES_ADDED_COLUMNS:
+            if name not in have:
+                self._db.execute(f"ALTER TABLE memories ADD COLUMN {name} {decl}")
+        self._db.execute("CREATE INDEX IF NOT EXISTS idx_memories_active ON memories(active)")
 
     def upsert(self, narsese: str, frequency: float, confidence: float,
                english: str | None = None, embedding: list[float] | None = None,
@@ -89,45 +132,140 @@ class MemoryStore:
         )
         self._db.commit()
 
-    # ── conversational memory (ADR-008) — guaranteed-recall English store ──────────────
-    def remember(self, text: str, source: str | None = None, now: float | None = None) -> bool:
-        """Persist one auto-extracted English memory. Idempotent: identical text bumps usage/recency
-        instead of duplicating (the UNIQUE index on `text` does exact-match dedup). Returns True iff
-        this created a NEW memory (False if it was already known) — lets the caller acknowledge only
-        genuinely new saves and stay silent when the user merely revisits a known fact."""
+    # ── conversational memory (ADR-008 + ADR-009) — ranked, supersedable English store ──
+    def remember(self, text: str, source: str | None = None,
+                 embedding: list[float] | None = None, now: float | None = None) -> bool:
+        """Persist one auto-extracted English memory and resolve single-valued-slot conflicts.
+
+        Idempotent on exact text (re-stating reactivates + bumps usage). Stores `embedding` for
+        ranked retrieval. After writing, supersedes any active memory that fills the SAME
+        single-valued slot with a DIFFERENT value (ADR-009) — the new memory wins. Returns True iff
+        this created a genuinely NEW memory (so callers acknowledge only new saves)."""
         now = time.time() if now is None else now
         is_new = self._db.execute("SELECT 1 FROM memories WHERE text=?", (text,)).fetchone() is None
         self._db.execute(
-            """INSERT INTO memories (text, source, use_count, created_at, updated_at, last_used)
-               VALUES (?,?,1,?,?,?)
+            """INSERT INTO memories (text, source, embedding, use_count, active,
+                                     created_at, updated_at, last_used)
+               VALUES (?,?,?,1,1,?,?,?)
                ON CONFLICT(text) DO UPDATE SET
                  source=COALESCE(excluded.source, memories.source),
+                 embedding=COALESCE(excluded.embedding, memories.embedding),
+                 active=1, superseded_by=NULL, superseded_at=NULL,
                  use_count=memories.use_count+1,
                  updated_at=excluded.updated_at,
                  last_used=excluded.last_used""",
-            (text, source, now, now, now),
+            (text, source, pack_embedding(embedding), now, now, now),
         )
+        new_id = self._db.execute("SELECT id FROM memories WHERE text=?", (text,)).fetchone()[0]
+        self._resolve_conflicts(new_id, text, embedding, now)
         self._db.commit()
         return is_new
 
-    def memories_for_recall(self, limit: int = 30) -> list[str]:
-        """English memories to inject as ground truth: pinned first, then most recently used."""
+    def search(self, query_vec: list[float], k: int = 8, threshold: float = 0.0) -> list[str]:
+        """Embedding-ranked retrieval (ADR-009): the top-k ACTIVE memories most relevant to the
+        query, by cosine, with pinned memories always included. Replaces the recency dump as the
+        injection set so a growing table neither overflows context nor drowns out relevance."""
         rows = self._db.execute(
-            "SELECT text FROM memories ORDER BY pinned DESC, last_used DESC LIMIT ?",
+            "SELECT text, embedding, pinned FROM memories WHERE active=1").fetchall()
+        scored = [(_cosine(query_vec, v), t)
+                  for (t, e, _p) in rows if (v := unpack_embedding(e)) is not None]
+        scored.sort(key=lambda st: st[0], reverse=True)
+        top = [t for (s, t) in scored[:k] if s >= threshold]
+        out: list[str] = []
+        for t in [t for (t, _e, p) in rows if p] + top:   # pinned first, then ranked
+            if t not in out:
+                out.append(t)
+        return out
+
+    def memories_for_recall(self, limit: int = 30) -> list[str]:
+        """Recency fallback (no embedder wired): ACTIVE memories, pinned first then most recent."""
+        rows = self._db.execute(
+            "SELECT text FROM memories WHERE active=1 ORDER BY pinned DESC, last_used DESC LIMIT ?",
             (limit,)).fetchall()
         return [r[0] for r in rows]
 
-    def forget(self, text: str) -> int:
-        """Delete an exact-match memory (correction of a wrong auto-save). Returns rows removed."""
-        cur = self._db.execute("DELETE FROM memories WHERE text=?", (text,))
+    def _resolve_conflicts(self, new_id: int, text: str, embedding: list[float] | None,
+                           now: float) -> None:
+        """Supersede active memories that fill the same single-valued slot with a different value.
+        Cosine pre-filters candidates when an embedding is present (scale); the slot check decides."""
+        if slot_of(text) is None:
+            return  # no single-valued slot -> keep both (multi-valued or unknown predicate)
+        for rid, rtext, remb in self._db.execute(
+                "SELECT id, text, embedding FROM memories WHERE active=1 AND id!=?", (new_id,)):
+            if embedding is not None:
+                cand = unpack_embedding(remb)
+                if cand is not None and _cosine(embedding, cand) < _CONFLICT_CANDIDATE_COSINE:
+                    continue
+            if same_single_valued_slot(text, rtext):
+                self._supersede(rid, by=new_id, now=now)
+
+    def _supersede(self, older_id: int, by: int, now: float) -> None:
+        self._db.execute(
+            "UPDATE memories SET active=0, superseded_by=?, superseded_at=? WHERE id=?",
+            (by, now, older_id))
+
+    def forget(self, text: str, now: float | None = None) -> int:
+        """Soft-delete: tombstone an active memory (no auto-fallback — the slot goes empty). The row
+        is kept for audit/undo. Returns rows deactivated. `restore` brings it back."""
+        now = time.time() if now is None else now
+        cur = self._db.execute(
+            "UPDATE memories SET active=0, updated_at=? WHERE text=? AND active=1", (now, text))
         self._db.commit()
         return cur.rowcount
 
-    def forget_like(self, pattern: str) -> int:
-        """Delete memories matching a SQL LIKE pattern (e.g. '%name%'). Returns rows removed."""
-        cur = self._db.execute("DELETE FROM memories WHERE text LIKE ?", (pattern,))
+    def forget_normalized(self, text: str, now: float | None = None) -> int:
+        """Soft-delete the first ACTIVE memory whose normalized text matches `text` (case/whitespace/
+        punctuation-insensitive). Fallback for `forget` when phrasing differs slightly. No fuzzy/
+        semantic match — see Jarvis._forget_facts for why that is unsafe with similar siblings."""
+        now = time.time() if now is None else now
+        target = _norm_text(text)
+        for rid, rtext in self._db.execute("SELECT id, text FROM memories WHERE active=1"):
+            if _norm_text(rtext) == target:
+                self._db.execute("UPDATE memories SET active=0, updated_at=? WHERE id=?", (now, rid))
+                self._db.commit()
+                return 1
+        return 0
+
+    def restore(self, text: str, now: float | None = None) -> bool:
+        """Reactivate a tombstoned memory, tombstoning whatever currently fills its slot (preserves
+        the ≤1-active-per-slot invariant). Returns True if a row was reactivated."""
+        now = time.time() if now is None else now
+        row = self._db.execute("SELECT id, text FROM memories WHERE text=?", (text,)).fetchone()
+        if row is None:
+            return False
+        mid, mtext = row
+        if slot_of(mtext) is not None:  # evict the current slot holder, if any
+            for rid, rtext in self._db.execute(
+                    "SELECT id, text FROM memories WHERE active=1 AND id!=?", (mid,)):
+                if same_single_valued_slot(mtext, rtext):
+                    self._supersede(rid, by=mid, now=now)
+        self._db.execute(
+            "UPDATE memories SET active=1, superseded_by=NULL, superseded_at=NULL, updated_at=? "
+            "WHERE id=?", (now, mid))
         self._db.commit()
-        return cur.rowcount
+        return True
+
+    def undo_supersede(self, text: str, now: float | None = None) -> bool:
+        """Undo the supersession in which `text` was the superseder (C): reactivate C's IMMEDIATE
+        predecessor (the row whose superseded_by points at C) and tombstone C. One hop — never a
+        transitive cascade (that would resurrect two mutually-exclusive values). Returns True if a
+        predecessor was reactivated."""
+        now = time.time() if now is None else now
+        row = self._db.execute("SELECT id FROM memories WHERE text=?", (text,)).fetchone()
+        if row is None:
+            return False
+        cid = row[0]
+        pred = self._db.execute(
+            "SELECT id FROM memories WHERE superseded_by=? ORDER BY superseded_at DESC LIMIT 1",
+            (cid,)).fetchone()
+        if pred is None:
+            return False
+        self._db.execute(
+            "UPDATE memories SET active=1, superseded_by=NULL, superseded_at=NULL, updated_at=? "
+            "WHERE id=?", (now, pred[0]))
+        self._db.execute("UPDATE memories SET active=0, updated_at=? WHERE id=?", (now, cid))
+        self._db.commit()
+        return True
 
     def touch_usage(self, narsese: str, use_count: int, last_used: float) -> None:
         """Snapshot reconciliation of usage/recency (use_count mirrors ONA's usage signal)."""

@@ -62,6 +62,7 @@ class Session:
             "learn_resolve": self._learn_resolve, "act": self._act, "act_confirm": self._act_confirm,
             "status": self._status, "health": self._health, "sentinel": self._sentinel,
             "intervene": self._intervene, "voice": self._voice,
+            "forget": self._forget, "restore": self._restore,
             "shutdown": self._do_shutdown,
         }.get(cmd)
         if handler is None:
@@ -88,6 +89,21 @@ class Session:
             return False, {"text": f"invalid narsese: {exc}"}
         return True, {"text": "committed to L2+L1 (durable)." if committed
                               else "deferred (contradiction flagged)."}
+
+    def _forget(self, arg: object) -> tuple[bool, object]:
+        text = str(arg).strip()
+        if not text:
+            return False, {"text": "usage: forget <fact>"}
+        gone = self._jarvis.forget(text)
+        return True, {"text": ("forgot: " + "; ".join(gone)) if gone
+                              else "nothing matched to forget."}
+
+    def _restore(self, arg: object) -> tuple[bool, object]:
+        text = str(arg).strip()
+        if not text:
+            return False, {"text": "usage: restore <fact>"}
+        ok = self._jarvis.restore(text)
+        return True, {"text": "restored." if ok else "no such memory to restore."}
 
     def _learn(self, arg: object) -> tuple[bool, object]:
         sentence = str(arg).strip()
