@@ -18,6 +18,18 @@ def test_strong_prior_then_anomaly_trips() -> None:
     assert len(surprises) == 1 and surprises[0].term == "<cpu --> [pegged]>"
 
 
+def test_observe_exposes_last_values_for_trace() -> None:
+    # ADR-016: observe() records the per-tick math for the observability trace (non-breaking).
+    with Brain(cycles_per_step=50) as brain:
+        brain.add_belief("<cpu --> [pegged]>. {0.0 0.9}")     # prior: usually NOT pegged
+        det = SurpriseDetector(brain, threshold=0.5)
+        s = det.observe("<cpu --> [pegged]>. :|:")
+        assert det.last_surprise == s
+        assert det.last_prior_expectation is not None and det.last_prior_expectation < 0.5
+        assert det.last_actual_expectation > 0.5              # IS pegged now
+        assert det.last_prior_confidence >= 0.9
+
+
 def test_expected_event_no_surprise() -> None:
     surprises: list = []
     with Brain(cycles_per_step=50) as brain:

@@ -8,6 +8,8 @@ because it is a distinct capability with its own state — splitting it keeps bo
 """
 from __future__ import annotations
 
+import os
+import sys
 import time
 from typing import Callable
 
@@ -30,7 +32,8 @@ from sentinel import (
 from sentinel.focusblock import close as block_close
 from sentinel.schmitt import DiscState, step
 
-from .autonomy import approved_term, evidence_belief, gate_passes
+from .autonomy import approved_term, evidence_belief, expectation, gate_passes
+from .sentinel_trace import format_gate_proximity, format_observation
 
 _DISTRACTION_BUCKETS = frozenset({"comms", "media"})
 _BURNIN_FLOOR = 0.85  # ONA confidence the steady baseline must reach before the sentinel may act
@@ -69,6 +72,7 @@ class SentinelLoop:
         self._next_id = 1
         self._started, self._obs, self._burnin = 0.0, 0, False
         self._events, self._last = 0, None
+        self._trace, self._dry_run = False, False   # ADR-016: set from env at _start()
 
     # ── lifecycle / commands ──────────────────────────────────────────
     def running(self) -> bool:
@@ -84,9 +88,12 @@ class SentinelLoop:
     def cmd(self, arg: str) -> str:
         arg = (arg or "").strip().lower()
         if arg in ("", "status"):
-            return (f"sentinel: ON — {self._events} switches, last context: {self._last or '-'}, "
-                    f"attention: {self._level or 'focused'} (isolated brain)" if self.running()
-                    else "sentinel: OFF   (turn on with: sentinel on)")
+            if not self.running():
+                return "sentinel: OFF   (turn on with: sentinel on)"
+            mode = " [DRY-RUN]" if self._dry_run else ""
+            return (f"sentinel: ON{mode} — {self._events} switches, last context: {self._last or '-'}, "
+                    f"attention: {self._level or 'focused'} (isolated brain)\n  "
+                    + self._gate_proximity())
         if arg == "on":
             return self._start()
         if arg == "off":
@@ -96,7 +103,10 @@ class SentinelLoop:
     def _start(self) -> str:
         if self.running():
             return "sentinel already on."
-        sensor = Sensor()
+        # ADR-016 observability flags (set before `sentinel on`; default off -> normal behavior).
+        self._trace = os.environ.get("NARS_JARVIS_TRACE") not in (None, "", "0")
+        self._dry_run = os.environ.get("NARS_JARVIS_DRY_RUN") not in (None, "", "0")
+        sensor = Sensor(dry_run=self._dry_run)
         if not sensor.start():
             return "sentinel unavailable (needs macOS + swiftc to build the helper)."
         self._sensor = sensor
@@ -113,6 +123,10 @@ class SentinelLoop:
         self._events, self._last = 0, None
         suffix = f" — restored {restored} learned belief(s), already armed." if restored and self._burnin \
             else f" — restored {restored} learned belief(s)." if restored else ""
+        if self._dry_run:
+            suffix += " — DRY-RUN (no real hides)"
+        if self._trace:
+            suffix += " — TRACE on (see daemon log)"
         return ("sentinel: ON — watching app-focus in a fully isolated brain "
                 "(silent during burn-in; intervenes only on a confident spike)." + suffix)
 
@@ -153,6 +167,11 @@ class SentinelLoop:
                 self._obs += 1
                 persist_belief(self._store, self._brain, statement_term(belief), now_wall)  # ADR-011
                 self._record_burnin(now_wall, now_mono)
+                if self._trace:  # ADR-016: surface the per-observation math (numeric/category only)
+                    d = self._detector
+                    print(format_observation(self._last or "?", emitted, d.last_surprise,
+                                             d.last_prior_expectation, d.last_actual_expectation,
+                                             d.last_prior_confidence, self._burnin), file=sys.stderr)
             except Exception:  # noqa: BLE001 — a sensor hiccup must not break the loop
                 pass
 
@@ -165,6 +184,17 @@ class SentinelLoop:
             self._burnin = True
             self._emit("alert", {"text": f"[sentinel] baseline reached the {_BURNIN_FLOOR:.2f} floor "
                                          f"after {self._obs} observations ({elapsed / 60:.1f}m) — now armed."})
+
+    def _gate_proximity(self) -> str:
+        """ADR-016: per distraction-category, the live gate expectation vs the arm floor."""
+        if self._brain is None:
+            return format_gate_proximity([])
+        items: list[tuple[str, float]] = []
+        for cat in sorted(_DISTRACTION_BUCKETS):
+            ans = self._brain.ask(approved_term(cat) + "?")
+            if ans is not None and ans.truth is not None:
+                items.append((cat, expectation(ans.truth.frequency, ans.truth.confidence)))
+        return format_gate_proximity(items)
 
     # ── NARS-gated autonomy: query / feed the procedural appropriateness beliefs ──
     def _autonomous_ok(self, cats: list[str]) -> bool:
@@ -198,13 +228,18 @@ class SentinelLoop:
         iid, self._next_id = self._next_id, self._next_id + 1
         if self._autonomous_ok(cats):
             # Earned autonomy: act now, transparently, with an undo path that revokes trust.
-            if self._sensor is not None:
+            # ADR-016 dry-run: keep the full state machine (pending/undo/KPI) but DON'T actuate;
+            # the Sensor is also a hard backstop, so this is belt-and-suspenders.
+            if self._sensor is not None and not self._dry_run:
                 for bundle in bundles:
                     self._sensor.hide(bundle)
             if self._store is not None:
                 self._store.record_intervention(time.time(), True)
             self._pending = {"id": iid, "bundles": bundles, "cats": cats, "ts": time.time(), "mode": "auto"}
-            self._emit("acted", {"id": iid, "text": f"Hid {', '.join(cats)} apps — you were fragmenting. (Undo?)"})
+            text = (f"[dry-run] WOULD hide {', '.join(cats)} apps (gate passed) — no real hide. (Undo?)"
+                    if self._dry_run
+                    else f"Hid {', '.join(cats)} apps — you were fragmenting. (Undo?)")
+            self._emit("acted", {"id": iid, "text": text})
         else:
             self._pending = {"id": iid, "bundles": bundles, "cats": cats, "ts": time.time(), "mode": "ask"}
             self._emit("intervention", {"id": iid, "prompt": intervention_prompt(self._level or "fragmented", cats)})

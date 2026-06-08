@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -84,11 +85,12 @@ def build_sensor() -> Path | None:
 class Sensor:
     """Owns the helper subprocess. Yields raw event lines; the caller funnels + discretizes them."""
 
-    def __init__(self, now=time.monotonic) -> None:
+    def __init__(self, now=time.monotonic, dry_run: bool = False) -> None:
         self._proc: subprocess.Popen | None = None
         self._now = now                                  # injected clock (testable)
         self._bucket = BucketState(tokens=_ACTUATE_CAPACITY, last_refill=now())
         self._actuate_overflow = 0                       # dropped actuations (logged, never silent)
+        self._dry_run = dry_run                          # ADR-016: hard backstop — never _send a hide
 
     def start(self) -> bool:
         binary = build_sensor()
@@ -108,13 +110,19 @@ class Sensor:
 
     def hide(self, bundle_id: str) -> None:
         """Actuate: ask the helper to hide a running app (permissionless NSRunningApplication.hide).
-        Rate-limited (ADR-015) — excess toggles are dropped to prevent visibility-spam DoS."""
+        Rate-limited (ADR-015). Under dry_run (ADR-016) it NEVER sends — the hard actuation backstop."""
+        if self._dry_run:
+            print(f"[dry-run] WOULD hide {bundle_id}", file=sys.stderr)
+            return
         if self._actuation_allowed():
             self._send(f"hide {bundle_id}")
 
     def unhide(self, bundle_id: str) -> None:
         """Undo an (autonomous) hide — un-hides the app via NSRunningApplication.unhide(). Shares the
-        same actuation budget as hide()."""
+        same actuation budget as hide(); under dry_run it never sends."""
+        if self._dry_run:
+            print(f"[dry-run] WOULD unhide {bundle_id}", file=sys.stderr)
+            return
         if self._actuation_allowed():
             self._send(f"unhide {bundle_id}")
 

@@ -44,9 +44,12 @@ class SurpriseDetector:
         # Epistemic burn-in: never fire until the PRIOR baseline has accumulated enough evidence.
         # ONA confidence c = w/(w+k), so e.g. 0.85 ~ 6 confirmations. 0.0 keeps legacy M2 behavior.
         self._min_confidence = min_confidence
-        # Calibration side-channel: baseline confidence at the last observe(). Pure number, no
-        # content — lets the shell record empirically WHEN the floor is crossed (burn-in duration).
+        # Calibration side-channel: numbers from the last observe(), no content — lets the shell trace
+        # the expectation math approaching the threshold in real time (ADR-016 observability).
         self.last_prior_confidence: float = 0.0
+        self.last_surprise: float = 0.0
+        self.last_prior_expectation: float | None = None
+        self.last_actual_expectation: float = 0.0
 
     def observe(self, statement: str) -> float:
         """Sink for sentinel events. Injects into ONA and returns the computed surprise."""
@@ -59,6 +62,8 @@ class SurpriseDetector:
         self._brain.add_belief(statement)  # type: ignore[attr-defined]  # feed the event to ONA
         actual_exp = expectation(Truth(*statement_truth(statement)))
         surprise = self._no_prior_surprise if prior_exp is None else abs(actual_exp - prior_exp)
+        self.last_prior_expectation, self.last_actual_expectation = prior_exp, actual_exp
+        self.last_surprise = surprise
         # Gate: divergence must exceed threshold AND the baseline must be trustworthy (burn-in).
         if surprise > self._threshold and prior_conf >= self._min_confidence:
             self._on_surprise(

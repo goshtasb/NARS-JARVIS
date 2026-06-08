@@ -55,8 +55,20 @@ def test_hide_and_unhide_share_one_budget() -> None:
     assert "unhide com.app" not in s._proc.stdin.lines
 
 
+def test_dry_run_never_actuates() -> None:
+    # ADR-016: a dry_run Sensor is the hard backstop — it never sends a hide/unhide, regardless of
+    # the rate budget (so even a missed call site in the loop cannot actuate live).
+    clock = [0.0]
+    s = Sensor(now=lambda: clock[0], dry_run=True)
+    s._proc = _FakeProc()  # type: ignore[assignment]
+    s.hide("com.app")
+    s.unhide("com.app")
+    assert s._proc.stdin.lines == []                            # nothing ever sent to the helper
+
+
 if __name__ == "__main__":
     test_burst_past_capacity_is_dropped()
     test_tokens_refill_over_time()
     test_hide_and_unhide_share_one_budget()
+    test_dry_run_never_actuates()
     print("sentinel/test_sensor_ratelimit: OK")
