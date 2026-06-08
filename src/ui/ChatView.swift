@@ -12,7 +12,12 @@ final class ChatViewController: NSViewController {
     private let transcript = NSTextView()
     private let input = NSTextField()
     private let voiceButton = NSButton()
-    private static let known = ["learn", "ask", "tell", "status", "health"]
+    // Command words routed to the daemon as-is; anything else is treated as a question (`ask`).
+    // Must track the daemon's dispatch + the console (`sentinel`/`forget`/`restore` were missing,
+    // so "sentinel on" was being sent to the LLM as chat). `act` is intentionally NOT here — its
+    // needs_confirm round-trip has no GUI yet; use the terminal console for actions.
+    private static let known = ["learn", "ask", "tell", "status", "health",
+                                "sentinel", "forget", "restore"]
 
     override func loadView() {
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 420, height: 320))
