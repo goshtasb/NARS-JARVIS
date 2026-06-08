@@ -28,6 +28,23 @@ CREATE TABLE IF NOT EXISTS facts (
   last_used     REAL    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_facts_pin ON facts(pinned, priority_tier);
+
+-- Conversational memory (ADR-008): free-form English facts auto-extracted from chat. Kept
+-- SEPARATE from `facts` so it carries no Narsese mirror constraint — anything the LLM decides
+-- to remember (preferences, tasks, self-facts) is durable here even when it has no clean ONA
+-- form. `_recall` merges this with `facts.english`. `text` is unique so identical saves dedup.
+CREATE TABLE IF NOT EXISTS memories (
+  id         INTEGER PRIMARY KEY,
+  text       TEXT    NOT NULL,
+  source     TEXT,
+  embedding  BLOB,
+  pinned     INTEGER NOT NULL DEFAULT 0,
+  use_count  INTEGER NOT NULL DEFAULT 1,
+  created_at REAL    NOT NULL,
+  updated_at REAL    NOT NULL,
+  last_used  REAL    NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_text ON memories(text);
 """
 
 _COLS = (
@@ -71,6 +88,42 @@ class MemoryStore:
             (narsese, english, frequency, confidence, pack_embedding(embedding), now, now, now),
         )
         self._db.commit()
+
+    # ── conversational memory (ADR-008) — guaranteed-recall English store ──────────────
+    def remember(self, text: str, source: str | None = None, now: float | None = None) -> None:
+        """Persist one auto-extracted English memory. Idempotent: identical text bumps usage/recency
+        instead of duplicating (the UNIQUE index on `text` does exact-match dedup)."""
+        now = time.time() if now is None else now
+        self._db.execute(
+            """INSERT INTO memories (text, source, use_count, created_at, updated_at, last_used)
+               VALUES (?,?,1,?,?,?)
+               ON CONFLICT(text) DO UPDATE SET
+                 source=COALESCE(excluded.source, memories.source),
+                 use_count=memories.use_count+1,
+                 updated_at=excluded.updated_at,
+                 last_used=excluded.last_used""",
+            (text, source, now, now, now),
+        )
+        self._db.commit()
+
+    def memories_for_recall(self, limit: int = 30) -> list[str]:
+        """English memories to inject as ground truth: pinned first, then most recently used."""
+        rows = self._db.execute(
+            "SELECT text FROM memories ORDER BY pinned DESC, last_used DESC LIMIT ?",
+            (limit,)).fetchall()
+        return [r[0] for r in rows]
+
+    def forget(self, text: str) -> int:
+        """Delete an exact-match memory (correction of a wrong auto-save). Returns rows removed."""
+        cur = self._db.execute("DELETE FROM memories WHERE text=?", (text,))
+        self._db.commit()
+        return cur.rowcount
+
+    def forget_like(self, pattern: str) -> int:
+        """Delete memories matching a SQL LIKE pattern (e.g. '%name%'). Returns rows removed."""
+        cur = self._db.execute("DELETE FROM memories WHERE text LIKE ?", (pattern,))
+        self._db.commit()
+        return cur.rowcount
 
     def touch_usage(self, narsese: str, use_count: int, last_used: float) -> None:
         """Snapshot reconciliation of usage/recency (use_count mirrors ONA's usage signal)."""

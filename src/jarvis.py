@@ -22,6 +22,8 @@ from language import (
     Voice,
     assess,
     back_render,
+    memory_acknowledgment,
+    split_memory_directives,
     to_narsese,
 )
 from memory import (
@@ -61,12 +63,22 @@ def _reject_outcome(res) -> tuple[str | None, str]:
 
 
 # The prompt inversion (ADR-007): the LLM is the brain, ONA-backed memory is ground truth.
+# Auto-memory (ADR-008): the assistant marks things worth remembering with a directive whose
+# syntax is owned by language.extract.REMEMBER_TAG — keep these two in lockstep.
 ASSISTANT_SYSTEM_PROMPT = (
     "You are JARVIS, a capable, concise local AI assistant running fully offline on the user's Mac. "
     "Answer the user's request directly, using your own knowledge to reason, explain, and write code. "
     "A 'Persistent memory' section may be provided with facts the user has taught you and their "
     "preferences — treat those as absolute ground truth and prefer them over your own knowledge when "
-    "they are relevant. If you are unsure, say so briefly rather than inventing specifics. Be direct."
+    "they are relevant. If you are unsure, say so briefly rather than inventing specifics. Be direct.\n\n"
+    "MEMORY: When the user tells you a durable fact about themselves (e.g. their name or role), states "
+    "a lasting preference, or explicitly asks you to remember something, record it by appending a "
+    "directive on its own line, exactly: [[REMEMBER: <concise third-person fact>]] — one per item. "
+    "Examples: user says 'my name is Ashkan' -> [[REMEMBER: the user's name is Ashkan]]; "
+    "'I prefer tabs over spaces' -> [[REMEMBER: the user prefers tabs over spaces]]. "
+    "Be conservative: do NOT emit it for questions, small talk, or transient details — only clear "
+    "personal facts, preferences, and explicit 'remember…' requests. Write your normal reply as "
+    "usual; do not mention or explain the directive — it is stripped before the user sees it."
 )
 
 
@@ -241,13 +253,43 @@ class Jarvis:
             reply = self._assistant.generate_text(ASSISTANT_SYSTEM_PROMPT, user, max_tokens=512)
         except Exception:  # noqa: BLE001 — a model hiccup degrades to the grounded path, never crashes
             return self._converse_grounded(question)
-        return reply.strip() or self._converse_grounded(question)
+        # Auto-memory (ADR-008): pull any [[REMEMBER: …]] directives the LLM emitted, persist them,
+        # show the cleaned reply, and confirm what was saved so a wrong save is visible/correctable.
+        clean, facts = split_memory_directives(reply)
+        clean = clean.strip()
+        if not clean:
+            return self._converse_grounded(question)
+        saved = self._remember_facts(facts, source=question) if facts else []
+        ack = memory_acknowledgment(saved)
+        return f"{clean}\n{ack}" if ack else clean
+
+    def _remember_facts(self, facts: list[str], *, source: str) -> list[str]:
+        """Persist auto-extracted memories (ADR-008). The English memory store is the system of
+        record (guaranteed recall); feeding ONA via `learn` is opportunistic — a gate rejection or
+        model hiccup must never block the save. Returns the facts actually stored, for the ack."""
+        saved: list[str] = []
+        for fact in facts:
+            self._store.remember(fact, source=source)  # ALWAYS — guaranteed recall
+            try:
+                self.learn(fact)  # best-effort: enrich ONA when the fact fits the claim schema
+            except Exception:  # noqa: BLE001 — gate/parse rejection or model hiccup never blocks
+                pass
+            saved.append(fact)
+        return saved
 
     def _recall(self, limit: int = 30) -> str:
-        """The persistent-memory bridge: the English facts the user has taught, injected as context.
+        """The persistent-memory bridge: the English facts injected as context. Merges what the user
+        explicitly taught (`facts.english`) with auto-extracted conversational memories (ADR-008).
         ONA/L2 is now a memory provider, not a gatekeeper."""
-        facts = self._store.facts_for_reload(limit=limit)
-        return "\n".join(f"- {f.english}" for f in facts if getattr(f, "english", None))
+        taught = [f.english for f in self._store.facts_for_reload(limit=limit)
+                  if getattr(f, "english", None)]
+        lines: list[str] = []
+        seen: set[str] = set()
+        for text in taught + self._store.memories_for_recall(limit=limit):
+            if text and text not in seen:
+                seen.add(text)
+                lines.append(f"- {text}")
+        return "\n".join(lines)
 
     def _converse_grounded(self, question: str) -> str:
         """Legacy hallucination-proof path: English -> ONA query -> cited verdict (no LLM knowledge)."""

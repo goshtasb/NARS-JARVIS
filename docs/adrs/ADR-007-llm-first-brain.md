@@ -39,9 +39,10 @@ value (memory injection); a code request → correct code.
   This was the project's original intellectual core; it is deliberately set aside for utility, with
   the grounded path retained as a fallback and a possible future "hybrid grounding" mode.
 - **Open / next:** v1 learns by explicit `learn` + injection of all recent taught facts. Future work:
-  (a) retrieval (embedding-ranked memory) instead of dumping recent facts; (b) auto-extracting
-  memorable facts from conversation; (c) injecting sentinel habits; (d) optional hybrid grounding
-  where ONA flags contradictions against the LLM's answer.
+  (a) retrieval (embedding-ranked memory) instead of dumping recent facts; (b) ~~auto-extracting
+  memorable facts from conversation~~ — **done, see [ADR-008](ADR-008-auto-memory-extraction.md)**;
+  (c) injecting sentinel habits; (d) optional hybrid grounding where ONA flags contradictions
+  against the LLM's answer.
 
 ## Alternatives Considered
 - **Keep symbolic-only:** rejected by the user — not useful as an assistant.
