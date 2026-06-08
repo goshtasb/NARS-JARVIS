@@ -11,6 +11,7 @@ import uuid
 from datetime import datetime
 from typing import Callable
 
+from actions import ActionRunner
 from brain import Brain
 from context import render_habits, render_live_context
 from execution import DecisionStats, build_air_gapped_executor, decide
@@ -50,7 +51,8 @@ class Session:
                               embedder=embedder,  # auto-memory semantic echo-guard (ADR-008)
                               context_provider=self._live_context,  # dynamic context (ADR-010)
                               habits_provider=self._learned_habits,  # learned sentinel habits (ADR-012)
-                              sentinel_beliefs_provider=self._sentinel_store.beliefs)  # grounding (ADR-013)
+                              sentinel_beliefs_provider=self._sentinel_store.beliefs,  # grounding (ADR-013)
+                              action_runner=ActionRunner())  # conversational Mac actions (ADR-019)
         # M2 system sentinel (CPU/mem surprise) feeds the knowledge brain; alerts push as events.
         narrator = Narrator(NoNarrationLLM(), on_alert=lambda t: self._emit("alert", {"text": "⚠  " + t}))
         self._sys_detector = SurpriseDetector(self._brain, threshold=0.5, on_surprise=narrator.narrate)

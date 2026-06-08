@@ -4,6 +4,7 @@ from language.extract import (
     filter_known,
     filter_semantic,
     memory_acknowledgment,
+    split_do_directives,
     split_forget_directives,
     split_memory_directives,
     strip_acknowledgment,
@@ -157,6 +158,37 @@ def test_remember_and_forget_coexist() -> None:
     assert clean2 == "Updated." and "[[" not in clean2
 
 
+def test_split_do_no_arg() -> None:
+    clean, actions = split_do_directives("Muted.\n[[DO: mute]]")
+    assert actions == [("mute", "")]
+    assert clean == "Muted." and "DO" not in clean
+
+
+def test_split_do_with_arg() -> None:
+    clean, actions = split_do_directives("Opening Google.\n[[DO: open_url: https://google.com]]")
+    assert actions == [("open_url", "https://google.com")]
+    assert clean == "Opening Google."
+
+
+def test_split_do_lowercases_name_keeps_arg_verbatim() -> None:
+    _clean, actions = split_do_directives("[[DO: Open_App: Google Chrome]]")
+    assert actions == [("open_app", "Google Chrome")]   # name normalized, arg preserved (incl. spaces)
+
+
+def test_split_do_coexists_with_remember() -> None:
+    reply = "On it.\n[[DO: dark_mode]]\n[[REMEMBER: the user likes dark mode]]"
+    clean, actions = split_do_directives(reply)
+    clean, facts = split_memory_directives(clean)
+    assert actions == [("dark_mode", "")]
+    assert facts == ["the user likes dark mode"]
+    assert clean == "On it." and "[[" not in clean
+
+
+def test_split_do_no_tag_passthrough() -> None:
+    clean, actions = split_do_directives("Just an answer.")
+    assert actions == [] and clean == "Just an answer."
+
+
 if __name__ == "__main__":
     test_no_tag_passthrough()
     test_single_own_line_tag()
@@ -179,4 +211,9 @@ if __name__ == "__main__":
     test_strip_acknowledgment_inverse_of_acknowledgment()
     test_split_forget_directives()
     test_remember_and_forget_coexist()
+    test_split_do_no_arg()
+    test_split_do_with_arg()
+    test_split_do_lowercases_name_keeps_arg_verbatim()
+    test_split_do_coexists_with_remember()
+    test_split_do_no_tag_passthrough()
     print("language/test_extract: OK")

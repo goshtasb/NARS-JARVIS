@@ -30,6 +30,10 @@ SEM_ECHO_THRESHOLD = 0.88
 REMEMBER_TAG = re.compile(r"\[\[\s*REMEMBER\s*:\s*(.+?)\s*\]\]", re.IGNORECASE)
 # Mirror of REMEMBER for explicit corrections / "forget that …" (ADR-009) — soft-deletes a memory.
 FORGET_TAG = re.compile(r"\[\[\s*FORGET\s*:\s*(.+?)\s*\]\]", re.IGNORECASE)
+# Conversational actions (ADR-019): the assistant requests a Mac action it wants to perform. The
+# captured item is `<action>` or `<action>: <argument>`; `split_do_directives` splits the two. The
+# action name is validated against the CLOSED actions catalog downstream — a bad name is a safe no-op.
+DO_TAG = re.compile(r"\[\[\s*DO\s*:\s*(.+?)\s*\]\]", re.IGNORECASE)
 
 MAX_FACTS = 3          # conservative cap per turn — a single utterance rarely teaches more
 MAX_FACT_LEN = 200     # a "fact" longer than this is almost certainly the model misusing the tag
@@ -57,6 +61,21 @@ def split_memory_directives(reply: str) -> tuple[str, list[str]]:
 def split_forget_directives(reply: str) -> tuple[str, list[str]]:
     """Split a reply into (user-facing text, facts to forget) from `[[FORGET: …]]` directives."""
     return _collect(reply, FORGET_TAG)
+
+
+def split_do_directives(reply: str) -> tuple[str, list[tuple[str, str]]]:
+    """Split a reply into (user-facing text, [(action_name, argument)]) from `[[DO: …]]` directives.
+    `[[DO: mute]]` -> ("mute", ""); `[[DO: open_url: https://x]]` -> ("open_url", "https://x"). The
+    name is lower-cased for catalog lookup; the argument is kept verbatim (its own validator runs
+    downstream). On no `[[DO]]` tag returns `(reply, [])`."""
+    clean, items = _collect(reply, DO_TAG)
+    return clean, [_split_action(item) for item in items]
+
+
+def _split_action(item: str) -> tuple[str, str]:
+    """Split one captured directive into (action_name, argument) on the first ':'."""
+    name, _sep, arg = item.partition(":")
+    return name.strip().lower(), arg.strip()
 
 
 def memory_acknowledgment(facts: list[str]) -> str:

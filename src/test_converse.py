@@ -422,6 +422,86 @@ def test_converse_formatter_hallucination_is_suppressed() -> None:
         assert "Tim is a bird" in out, out                       # fell back to the safe template
 
 
+class _FakeRunner:
+    """Stub action runner: records perform() calls and returns a canned result, so converse's action
+    routing is tested without touching the OS (mirrors the injected-spawn pattern in actions/)."""
+    def __init__(self, result: str = "(Done: mute)") -> None:
+        self.result = result
+        self.calls: list[tuple[str, str]] = []
+    def available(self) -> list[tuple[str, str]]:
+        return [("mute", "mute system audio"), ("report_system", "report system status")]
+    def perform(self, name: str, arg: str = "") -> str:
+        self.calls.append((name, arg))
+        return self.result
+
+
+def test_converse_runs_do_action_and_appends_result() -> None:
+    asst = _RememberLLM("Muted.\n[[DO: mute]]")
+    runner = _FakeRunner("(Done: mute system audio)")
+    with Brain(cycles_per_step=50) as brain:
+        j = Jarvis(Translator(asst), MemoryStore(), brain, assistant=asst, action_runner=runner)
+        out = j.converse("mute the volume")
+        assert runner.calls == [("mute", "")]                # action executed via the runner
+        assert "[[DO" not in out                             # directive stripped
+        assert "Muted." in out and "(Done: mute system audio)" in out  # prose + result both shown
+
+
+def test_converse_action_prompt_is_injected() -> None:
+    asst = _RememberLLM("ok")
+    runner = _FakeRunner()
+    with Brain(cycles_per_step=50) as brain:
+        j = Jarvis(Translator(asst), MemoryStore(), brain, assistant=asst, action_runner=runner)
+        j.converse("hello")
+        # The system prompt carries the action list; the stub records only the user msg, so assert via
+        # a second converse with a [[DO]] reply that the runner is actually reachable (above test) and
+        # here just that no action ran on small talk.
+        assert runner.calls == []                            # no [[DO]] in the reply -> nothing run
+
+
+def test_converse_directive_only_action_reply_returns_result() -> None:
+    # The 7B sometimes emits ONLY the [[DO]] tag (no prose) — must return the result, not fall back.
+    asst = _RememberLLM("[[DO: report_system]]")
+    runner = _FakeRunner("System report:\n- CPU: 12%")
+    with Brain(cycles_per_step=50) as brain:
+        j = Jarvis(Translator(asst), MemoryStore(), brain, assistant=asst, action_runner=runner)
+        out = j.converse("what's my cpu?")
+        assert out == "System report:\n- CPU: 12%"           # the result IS the reply
+        assert runner.calls == [("report_system", "")]
+
+
+def test_converse_unknown_action_is_safe_no_crash() -> None:
+    # An invalid [[DO]] must be handled by the runner (returns a refusal) and never crash converse.
+    asst = _RememberLLM("Sure.\n[[DO: nuke_everything]]")
+    runner = _FakeRunner("I don't know how to do that (nuke_everything).")
+    with Brain(cycles_per_step=50) as brain:
+        j = Jarvis(Translator(asst), MemoryStore(), brain, assistant=asst, action_runner=runner)
+        out = j.converse("destroy the system")
+        assert "Sure." in out and "don't know how" in out
+        assert runner.calls == [("nuke_everything", "")]     # routed to the runner, which refuses
+
+
+def test_converse_no_runner_ignores_do_tag() -> None:
+    # With no action runner wired (tests/offline), a [[DO]] tag is simply stripped — no action, no crash.
+    asst = _RememberLLM("Muted.\n[[DO: mute]]")
+    with Brain(cycles_per_step=50) as brain:
+        j = Jarvis(Translator(asst), MemoryStore(), brain, assistant=asst)   # no action_runner
+        out = j.converse("mute the volume")
+        assert out == "Muted." and "[[DO" not in out
+
+
+def test_converse_action_coexists_with_remember() -> None:
+    asst = _RememberLLM("Opening Chrome.\n[[DO: open_app: Google Chrome]]\n[[REMEMBER: the user uses Chrome]]")
+    runner = _FakeRunner("(Done: open an application by name — Google Chrome)")
+    with Brain(cycles_per_step=50) as brain:
+        store = MemoryStore()
+        j = Jarvis(Translator(asst), store, brain, assistant=asst, embedder=_FakeEmbedder(),
+                   action_runner=runner)
+        out = j.converse("open chrome")
+        assert runner.calls == [("open_app", "Google Chrome")]          # action ran with its arg
+        assert "the user uses Chrome" in store.memories_for_recall()    # memory saved
+        assert "Opening Chrome." in out and "(Done:" in out and "(Saved:" in out
+
+
 if __name__ == "__main__":
     test_converse_yes_with_cited_evidence()
     test_converse_llm_first_answers_and_injects_memory()
@@ -452,4 +532,10 @@ if __name__ == "__main__":
     test_converse_unknown_is_admitted_not_invented()
     test_converse_unreadable_question()
     test_converse_formatter_hallucination_is_suppressed()
+    test_converse_runs_do_action_and_appends_result()
+    test_converse_action_prompt_is_injected()
+    test_converse_directive_only_action_reply_returns_result()
+    test_converse_unknown_action_is_safe_no_crash()
+    test_converse_no_runner_ignores_do_tag()
+    test_converse_action_coexists_with_remember()
     print("test_converse: OK")

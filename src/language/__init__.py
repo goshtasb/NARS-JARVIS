@@ -10,11 +10,13 @@ Public interface (ADR-001: a Python module's surface is its `__init__.py` + `__a
 from .compiler import claims_to_narsese, to_narsese
 from .embed import LocalEmbedder
 from .extract import (
+    DO_TAG,
     FORGET_TAG,
     REMEMBER_TAG,
     filter_known,
     filter_semantic,
     memory_acknowledgment,
+    split_do_directives,
     split_forget_directives,
     split_memory_directives,
     strip_acknowledgment,
@@ -63,8 +65,10 @@ __all__ = [
     "claims_to_narsese",
     "REMEMBER_TAG",
     "FORGET_TAG",
+    "DO_TAG",
     "split_memory_directives",
     "split_forget_directives",
+    "split_do_directives",
     "memory_acknowledgment",
     "strip_acknowledgment",
     "filter_known",

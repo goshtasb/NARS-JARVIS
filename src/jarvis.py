@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Callable
 
+from actions import render_action_prompt
 from brain import Brain, canonical_input, input_accepted
 from context import (
     conflicting_habit,
@@ -32,6 +33,7 @@ from language import (
     filter_known,
     filter_semantic,
     memory_acknowledgment,
+    split_do_directives,
     split_forget_directives,
     split_memory_directives,
     to_narsese,
@@ -130,6 +132,7 @@ class Jarvis:
                  context_provider: Callable[[], str] | None = None,
                  habits_provider: Callable[[], str] | None = None,
                  sentinel_beliefs_provider: Callable[[], list[tuple[str, float, float]]] | None = None,
+                 action_runner: object | None = None,
                  ) -> None:
         self._translator = translator
         self._store = store
@@ -150,6 +153,12 @@ class Jarvis:
         # Pre-commit grounding (ADR-013): a callable returning the raw persisted sentinel beliefs, so
         # converse can drop conversational memories that try to control a sentinel-governed category.
         self._sentinel_beliefs_provider = sentinel_beliefs_provider
+        # Conversational Mac actions (ADR-019): a runner exposing available()/perform(name, arg). The
+        # LLM proposes a [[DO:]] action; the runner's CLOSED catalog validates + executes it. None =>
+        # no action surface (tests/offline) and no ACTIONS section in the prompt.
+        self._action_runner = (action_runner
+                               if (action_runner is not None and hasattr(action_runner, "perform"))
+                               else None)
         self._voice = voice or Voice()  # template-only by default; formatter LLM is optional
         # LLM-first brain (ADR-007): when a real model is wired, converse() lets the LLM answer from
         # its own knowledge with the user's persistent memory injected as ground truth. With no
@@ -312,13 +321,23 @@ class Jarvis:
                           + memory)
         blocks.append(f"User: {question}")
         user = "\n\n".join(blocks)
+        # Actions (ADR-019): when a runner is wired, teach the LLM the closed action set so it can
+        # request one with [[DO:]]. Appended to the base prompt so the rest of the protocol is intact.
+        system = ASSISTANT_SYSTEM_PROMPT
+        if self._action_runner is not None:
+            system = system + "\n\n" + render_action_prompt(self._action_runner.available())
         try:
-            reply = self._assistant.generate_text(ASSISTANT_SYSTEM_PROMPT, user, max_tokens=512)
+            reply = self._assistant.generate_text(system, user, max_tokens=512)
         except Exception:  # noqa: BLE001 — a model hiccup degrades to the grounded path, never crashes
             return self._converse_grounded(question)
+        # Actions (ADR-019): pull [[DO:]] directives and execute each via the runner's closed catalog
+        # (an unknown/unsafe action is a safe no-op string). Done first so the tags are stripped before
+        # the memory parsers run; results are appended to the reply below.
+        clean, actions = split_do_directives(reply)
+        action_results = self._run_actions(actions)
         # Auto-memory (ADR-008/009): pull [[REMEMBER]]/[[FORGET]] directives, persist them, show the
         # cleaned reply, and confirm changes so a wrong save/forget is visible and correctable.
-        clean, facts = split_memory_directives(reply)
+        clean, facts = split_memory_directives(clean)
         clean, forgets = split_forget_directives(clean)
         clean = clean.strip()
         if facts:  # guard the context-echo bug — but an UPDATE (same slot, new value) is not an echo
@@ -364,9 +383,25 @@ class Jarvis:
                 return correction_notice(hit[0], hit[1])
         acks = [a for a in (memory_acknowledgment(saved),
                             ("(Forgot: " + "; ".join(forgotten) + ")") if forgotten else "") if a]
-        if not clean:  # no prose: show the confirmation if we acted, else fall back to grounded
-            return " ".join(acks) if acks else self._converse_grounded(question)
-        return f"{clean}\n{' '.join(acks)}" if acks else clean
+        # Tail = action results (e.g. the system report or "(Done: …)") then the save/forget ack line.
+        tail = action_results + ([" ".join(acks)] if acks else [])
+        if not clean:  # no prose: show the action results / confirmation, else fall back to grounded
+            return "\n".join(tail) if tail else self._converse_grounded(question)
+        return "\n".join([clean, *tail]) if tail else clean
+
+    def _run_actions(self, actions: list[tuple[str, str]]) -> list[str]:
+        """Execute parsed [[DO:]] directives through the wired runner; return each result string. The
+        runner's closed catalog is the safety boundary — an unknown/unsafe action returns a refusal
+        string and never spawns. No runner (tests/offline) => no actions performed."""
+        if not actions or self._action_runner is None:
+            return []
+        results: list[str] = []
+        for name, arg in actions:
+            try:
+                results.append(self._action_runner.perform(name, arg))
+            except Exception:  # noqa: BLE001 — an action hiccup must never crash the turn
+                pass
+        return results
 
     def forget(self, text: str) -> list[str]:
         """Soft-delete a memory by exact text or nearest semantic match (ADR-009). Undoable via
