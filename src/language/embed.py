@@ -22,7 +22,10 @@ class LocalEmbedder:
             )
         from llama_cpp import Llama  # lazy
 
-        self._llm = Llama(model_path=path, embedding=True, verbose=False)
+        # Offload to the GPU like the chat model (ADR-018) — the embedder runs every turn for
+        # grounding/ranked-recall. NARS_JARVIS_GPU_LAYERS overrides (-1 = all layers, 0 = CPU).
+        n_gpu_layers = int(os.environ.get("NARS_JARVIS_GPU_LAYERS", "-1"))
+        self._llm = Llama(model_path=path, embedding=True, n_gpu_layers=n_gpu_layers, verbose=False)
 
     def embed(self, text: str) -> list[float]:
         return self._llm.embed(text)

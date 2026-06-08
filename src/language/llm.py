@@ -26,8 +26,13 @@ class LocalLLM:
             )
         from llama_cpp import Llama, LlamaGrammar  # lazy: keeps pure layers model-free
 
+        # Offload all layers to the GPU (Metal on Apple Silicon). The llama-cpp default is CPU-only
+        # (n_gpu_layers=0), which left the 7B running on CPU — ~14x slower to load and ~1.5x slower to
+        # generate on this M3 Pro. -1 = all layers; override with NARS_JARVIS_GPU_LAYERS (e.g. 0 to
+        # force CPU on a GPU-less host or if a model doesn't fit VRAM).
+        n_gpu_layers = int(os.environ.get("NARS_JARVIS_GPU_LAYERS", "-1"))
         self._grammar = LlamaGrammar.from_file(str(_GRAMMAR_PATH))
-        self._llm = Llama(model_path=path, n_ctx=n_ctx, verbose=False)
+        self._llm = Llama(model_path=path, n_ctx=n_ctx, n_gpu_layers=n_gpu_layers, verbose=False)
 
     def generate(self, system_prompt: str, sentence: str) -> str:
         """Generate the raw, GBNF-constrained claim JSON for one sentence (temp 0)."""
