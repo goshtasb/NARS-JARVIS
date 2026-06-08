@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import re
 
+from memory.slots import slot_of   # the single-valued-slot detector (ADR-009) — pure text fn
+
 from .habits import EXP_FLOOR, _FRIENDLY, _expectation
 
 # Category synonyms (reverse of habits._FRIENDLY) — the words a user might use for a governed bucket.
@@ -79,3 +81,47 @@ def grounding_notice(category: str, enabled: bool) -> str:
     return (f"Auto-hiding {friendly} apps is controlled by your learned settings — it's currently "
             f"{state}. I won't change that from a casual request; approve it when the sentinel next "
             f"offers, to {flip} it.")
+
+
+# ── ADR-014: OUTPUT grounding — catch self-fact hallucinations in the LLM's answer ──
+# slot_id -> human label for the visible correction notice.
+_SLOT_LABEL: dict[str, str] = {
+    "name": "name", "lives_in": "location", "age": "age", "employer": "employer",
+    "editor": "editor", "indentation_pref": "indentation preference", "timezone": "timezone",
+}
+
+_SENTENCE_SPLIT = re.compile(r"[.!?\n]+")
+
+
+def ground_answer(answer: str, held: list[tuple[str, str]]) -> tuple[str, str, str] | None:
+    """Detect a flagrant self-fact contradiction in `answer` against held single-valued facts.
+
+    `held` = `(slot_id, value)` pairs we hold (values already normalized by `slot_of`). Runs `slot_of`
+    over each sentence of the answer; if the answer asserts the SAME slot with a DIFFERENT value than a
+    held fact, returns `(slot_id, held_value, answer_value)` for the first such conflict, else None.
+    Pure, deterministic, no model. Bounded recall: only catches phrasings `slot_of` recognizes (fails
+    open — a missed contradiction passes through, same as pre-ADR-014)."""
+    if not held:
+        return None
+    held_by_slot = dict(held)  # one value per single-valued slot
+    for sentence in _SENTENCE_SPLIT.split(answer):
+        a = slot_of(sentence)
+        if a is None:
+            continue
+        slot_id, answer_value = a
+        held_value = held_by_slot.get(slot_id)
+        # Containment, not strict inequality: slot_of captures the value greedily ("london these
+        # days"), so require that NEITHER value contains the other before flagging — this avoids a
+        # false correction on agreement ("Los Angeles these days" ⊇ "los angeles") while still
+        # catching genuine divergence ("london …" vs "los angeles"). Fails open by design.
+        if held_value is not None and held_value not in answer_value and answer_value not in held_value:
+            return (slot_id, held_value, answer_value)
+    return None
+
+
+def correction_notice(slot_id: str, true_value: str) -> str:
+    """The visible, deterministic reply that REPLACES a hallucinated answer (the hallucination is
+    suppressed, never shown). Transparency: the user sees the grounded truth + that the guard fired."""
+    label = _SLOT_LABEL.get(slot_id, slot_id)
+    return (f"⚠ Correction: you've told me your {label} is \"{true_value}\" — I'll go with what "
+            f"you've taught me, not a guess.")

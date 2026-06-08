@@ -10,7 +10,13 @@ from dataclasses import dataclass, replace
 from typing import Callable
 
 from brain import Brain, canonical_input, input_accepted
-from context import conflicting_habit, grounding_notice, is_volatile
+from context import (
+    conflicting_habit,
+    correction_notice,
+    ground_answer,
+    grounding_notice,
+    is_volatile,
+)
 from contradiction import ContradictionGuard
 from execution import DecisionStats, Executor, decide
 from language import (
@@ -37,6 +43,7 @@ from memory import (
     observe,
     reload_into_brain,
     same_single_valued_slot,
+    slot_of,
     statement_term,
     statement_truth,
 )
@@ -348,6 +355,13 @@ class Jarvis:
         forgotten = self._forget_facts(forgets) if forgets else []
         if grounded is not None:  # control-plane conflict: deterministic layer OWNS the reply (ADR-013)
             return grounding_notice(*grounded)
+        # Output grounding (ADR-014): if the answer flagrantly contradicts a held single-valued
+        # self-fact, suppress the hallucination and return a visible correction. Relevance-gated:
+        # only runs when we actually hold self-facts (pure regex, no model, no ONA on the hot path).
+        if clean:
+            hit = ground_answer(clean, self._held_self_facts())
+            if hit is not None:
+                return correction_notice(hit[0], hit[1])
         acks = [a for a in (memory_acknowledgment(saved),
                             ("(Forgot: " + "; ".join(forgotten) + ")") if forgotten else "") if a]
         if not clean:  # no prose: show the confirmation if we acted, else fall back to grounded
@@ -401,6 +415,19 @@ class Jarvis:
             return self._embedder.embed(text)
         except Exception:  # noqa: BLE001
             return None
+
+    def _held_self_facts(self, limit: int = 40) -> list[tuple[str, str]]:
+        """The single-valued self-facts we hold (slot_id, value), for output grounding (ADR-014).
+        Drawn from taught facts + conversational memories; the most-protected value wins per slot."""
+        texts = [f.english for f in self._store.facts_for_reload(limit=limit)
+                 if getattr(f, "english", None)]
+        texts += self._store.memories_for_recall(limit=limit)
+        held: dict[str, str] = {}
+        for text in texts:
+            s = slot_of(text)
+            if s is not None:
+                held.setdefault(s[0], s[1])   # facts_for_reload is pinned/recent-first -> canonical wins
+        return list(held.items())
 
     def _recall(self, question: str = "", limit: int = 30) -> str:
         """The persistent-memory bridge: English facts injected as context. Merges what the user

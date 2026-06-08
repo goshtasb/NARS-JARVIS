@@ -339,6 +339,36 @@ def test_converse_unrelated_fact_not_grounded() -> None:
         assert "the user's name is Ashkan" in store.memories_for_recall()   # unrelated -> saved
 
 
+def test_converse_output_grounding_corrects_hallucination() -> None:
+    # ADR-014: the LLM contradicts a held self-fact -> hallucination suppressed, visible correction.
+    asst = _RememberLLM("You live in London.")
+    with Brain(cycles_per_step=50) as brain:
+        store = MemoryStore()
+        store.upsert("<user --> [in_los_angeles]>", 1.0, 0.9, english="the user lives in Los Angeles")
+        j = Jarvis(Translator(asst), store, brain, assistant=asst)
+        out = j.converse("Where do I live?")
+        assert "London" not in out, out                      # hallucination suppressed
+        assert "Correction" in out and "los angeles" in out.lower()
+
+
+def test_converse_output_grounding_leaves_unrelated_answers() -> None:
+    asst = _RememberLLM("Paris is the capital of France.")
+    with Brain(cycles_per_step=50) as brain:
+        store = MemoryStore()
+        store.upsert("<user --> [in_los_angeles]>", 1.0, 0.9, english="the user lives in Los Angeles")
+        j = Jarvis(Translator(asst), store, brain, assistant=asst)
+        out = j.converse("What is the capital of France?")
+        assert out == "Paris is the capital of France."      # untouched (no same-slot claim)
+
+
+def test_converse_output_grounding_skipped_without_self_facts() -> None:
+    asst = _RememberLLM("You live in London.")
+    with Brain(cycles_per_step=50) as brain:
+        j = Jarvis(Translator(asst), MemoryStore(), brain, assistant=asst)   # no held facts
+        out = j.converse("Where do I live?")
+        assert out == "You live in London."                  # pre-filter skip -> untouched
+
+
 def test_converse_falls_back_to_grounded_without_a_model() -> None:
     # No assistant wired (tests / offline) -> the legacy hallucination-proof ONA path still works.
     with Brain(cycles_per_step=200) as brain:

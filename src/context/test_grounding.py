@@ -1,5 +1,11 @@
-"""Unit tests for pre-commit hybrid grounding (ADR-013). Pure."""
-from context.grounding import _category_of, conflicting_habit, grounding_notice
+"""Unit tests for hybrid grounding (ADR-013 pre-commit + ADR-014 output). Pure."""
+from context.grounding import (
+    _category_of,
+    conflicting_habit,
+    correction_notice,
+    ground_answer,
+    grounding_notice,
+)
 
 
 def _approved(cat: str) -> str:
@@ -42,10 +48,49 @@ def test_grounding_notice_wording() -> None:
     assert "chat/messaging apps" in enabled and "enabled" in enabled and "disable it" in enabled
 
 
+# ── ADR-014: output grounding ──
+def test_ground_answer_flags_contradiction() -> None:
+    held = [("lives_in", "los angeles")]
+    hit = ground_answer("You live in London these days.", held)
+    assert hit is not None and hit[0] == "lives_in" and hit[1] == "los angeles" and "london" in hit[2]
+
+
+def test_ground_answer_agrees_no_flag() -> None:
+    held = [("lives_in", "los angeles")]
+    assert ground_answer("You live in Los Angeles.", held) is None
+    # greedy capture must not falsely flag agreement with trailing words
+    assert ground_answer("You live in Los Angeles these days.", held) is None
+
+
+def test_ground_answer_unrelated_answer() -> None:
+    held = [("lives_in", "los angeles")]
+    assert ground_answer("Paris is the capital of France.", held) is None
+
+
+def test_ground_answer_no_held_facts() -> None:
+    assert ground_answer("You live in London.", []) is None
+
+
+def test_ground_answer_name_slot() -> None:
+    held = [("name", "ashkan")]
+    assert ground_answer("Your name is Sam.", held) == ("name", "ashkan", "sam")
+
+
+def test_correction_notice_wording() -> None:
+    n = correction_notice("lives_in", "los angeles")
+    assert "location" in n and "los angeles" in n and n.startswith("⚠ Correction")
+
+
 if __name__ == "__main__":
     test_category_of_detects_autohide_intent()
     test_category_of_ignores_non_control_text()
     test_conflicting_habit_requires_a_confident_governing_habit()
     test_conflicting_habit_none_for_non_control_fact()
     test_grounding_notice_wording()
+    test_ground_answer_flags_contradiction()
+    test_ground_answer_agrees_no_flag()
+    test_ground_answer_unrelated_answer()
+    test_ground_answer_no_held_facts()
+    test_ground_answer_name_slot()
+    test_correction_notice_wording()
     print("context/test_grounding: OK")

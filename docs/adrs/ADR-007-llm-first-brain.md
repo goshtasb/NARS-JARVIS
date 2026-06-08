@@ -44,8 +44,11 @@ value (memory injection); a code request → correct code.
   **done, see [ADR-008](ADR-008-auto-memory-extraction.md)**; (c) ~~injecting sentinel habits~~ —
   **done**: sentinel **state** as live context ([ADR-010](ADR-010-dynamic-context.md)), beliefs
   **persist** across restarts ([ADR-011](ADR-011-sentinel-persistence.md)), and learned **habits** are
-  now translated + injected ([ADR-012](ADR-012-inject-sentinel-habits.md)); (d) optional hybrid grounding
-  where ONA flags contradictions against the LLM's answer.
+  now translated + injected ([ADR-012](ADR-012-inject-sentinel-habits.md)); (d) ~~hybrid grounding
+  where the symbolic layer flags contradictions~~ — **done for self-facts**: pre-commit memory
+  grounding ([ADR-013](ADR-013-hybrid-grounding.md)) + output grounding that corrects self-fact
+  hallucinations before they're shown ([ADR-014](ADR-014-output-grounding.md)). *Remaining: higher
+  recall (GBNF extraction), polarity-class + general world-knowledge grounding.*
 
 ## Alternatives Considered
 - **Keep symbolic-only:** rejected by the user — not useful as an assistant.
