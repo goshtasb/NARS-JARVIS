@@ -51,7 +51,9 @@ and never blocks the save or crashes `converse`. We deliberately did **not** rel
   can be corrected (`MemoryStore.forget` / `forget_like` are provided). `MemoryStore.remember`
   returns whether the memory was newly created, so revisiting a known fact (e.g. a recall question
   the model re-tags) saves silently — no spurious `(Saved: …)`. Matches the "no silent behavior"
-  rule without nagging.
+  rule without nagging. On the **voice** path the suffix is shown on-screen but NOT spoken:
+  `language.strip_acknowledgment` removes it from the TTS payload only (`say` would otherwise read
+  "…Saved the user's name is Ashkan" aloud, breaking the conversational illusion).
 
 ## Live validation (Qwen2.5-7B, real daemon over IPC, 2026-06-07)
 Verified end-to-end through the actual daemon: a pure question saves nothing; "My name is Ashkan."
