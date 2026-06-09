@@ -15,6 +15,8 @@ import re
 from dataclasses import dataclass
 from urllib.parse import quote
 
+from .recipes import nav_actions, recipe_for
+
 
 @dataclass(frozen=True)
 class Action:
@@ -48,10 +50,14 @@ _ACTIONS: tuple[Action, ...] = (
     # focused window (not a static enum); they run in JARVIS.app, never via safespawn. Consent-gated.
     Action("ax_press", "click a UI control", "ax", takes_arg=True, confirm=True),
     Action("ax_set_value", "set a UI control's value (e.g. a slider)", "ax", takes_arg=True, confirm=True),
-    # High-level navigation recipes (ADR-022): kind="nav". The daemon opens the right surface itself,
-    # waits for it, and actuates — so they work from ANYWHERE, no pre-opened page. Curated + safe, so
-    # no consent gate (unlike the general ax_* verbs). Always available (not DOM-dependent).
-    Action("set_brightness", "set the display brightness (0-100)", "nav", takes_arg=True),
+)
+
+# High-level navigation recipes (kind="nav", ADR-022/023) are GENERATED from the declarative RECIPES
+# table — the daemon opens the right surface itself and actuates, so they work from anywhere. Adding a
+# system domain is a data row in recipes.py, never a code change here. The recipe's data also decides
+# FRICTIONLESS vs GATED downstream; here they are just listed in the prompt (always available).
+_ACTIONS = _ACTIONS + tuple(
+    Action(name, label, "nav", takes_arg=recipe_for(name).takes_value) for name, label in nav_actions()
 )
 
 # The closed set of GUI-actuation verbs (ADR-021). Validated here; executed in the app.

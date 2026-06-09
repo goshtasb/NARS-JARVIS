@@ -12,7 +12,7 @@ import uuid
 from datetime import datetime
 from typing import Callable
 
-from actions import ActionRunner
+from actions import ActionRunner, recipe_for, should_gate
 from brain import Brain
 from context import render_habits, render_live_context
 from execution import DecisionStats, build_air_gapped_executor, decide
@@ -32,9 +32,7 @@ from .wiring import NoNarrationLLM, make_claim_source, make_embedder
 
 _STRONG = DecisionStats(0.95, 0.97, 30, 12)  # an explicit REPL `act` is a high-confidence request
 EventSink = Callable[[str, dict], None]
-# ADR-022 navigation recipe: the System Settings → Displays pane (holds the Brightness slider).
-_DISPLAYS_DEEPLINK = "x-apple.systempreferences:com.apple.Displays-Settings.extension"
-_NAV_TIMEOUT = 8.0   # seconds to wait for the opened surface's controls to arrive
+_NAV_TIMEOUT = 8.0   # ADR-023: seconds to wait for an opened surface's controls to arrive (else give up)
 
 
 class Session:
@@ -96,6 +94,7 @@ class Session:
             "intervene": self._intervene, "voice": self._voice,  # intervene: Sentinel auto-mode undo
             "forget": self._forget, "restore": self._restore,
             "ax_context": self._ax_context, "ax_result": self._ax_result,  # GUI actuation (ADR-021)
+            "axdump": self._axdump,  # ADR-023: inspect the captured control tree (recipe-matcher authoring)
             "shutdown": self._do_shutdown,
         }.get(cmd)
         if handler is None:
@@ -241,42 +240,71 @@ class Session:
         return True, {"ok": True}
 
     def _nav_dispatch(self, name: str, arg: str) -> str:
-        """Navigation recipe (ADR-022): open the right surface and actuate, regardless of what's
-        focused. `set_brightness <0-100>` is safe + reversible -> no consent gate."""
-        if name != "set_brightness":
-            return f"I don't know how to do that ({name})."
-        try:
-            value = float(str(arg).strip().rstrip("%").strip())
-        except ValueError:
-            return f"I can't read {arg!r} as a brightness level."
-        sid = find_control_id(self._ax_dom, "AXSlider", "brightness")
+        """Generic, table-driven navigation recipe (ADR-023): look up the intent in the declarative
+        RECIPES table, open its surface if needed, find its control, and actuate per the row's friction
+        policy. No per-domain branch logic — adding a domain is a data row in actions/recipes.py. An
+        unknown intent fails safe (the general, always-gated ax_* verbs handle anything off-table)."""
+        r = recipe_for(name)
+        if r is None:
+            return f"I can't do that ({name})."
+        value: float | None = None
+        if r.takes_value:
+            try:
+                value = float(str(arg).strip().rstrip("%").strip())
+            except ValueError:
+                return f"I can't read {arg!r} as a value."
+        sid = find_control_id(self._ax_dom, r.role, r.title)
         if sid is not None:                       # already on screen -> act now
-            self._emit_actuate(self._ax_epoch, sid, "ax_set_value", {"value": value})
-            return f"Setting brightness to {int(value)}%."
-        try:                                      # else open Displays ourselves, act when it arrives
-            safespawn.run(["open", _DISPLAYS_DEEPLINK], capture_output=True, text=True, timeout=10)
-        except Exception as exc:  # noqa: BLE001
-            return f"Couldn't open Displays settings: {exc}"
-        self._pending_nav = {"value": value, "deadline": time.time() + _NAV_TIMEOUT}
-        return f"Opening Displays to set brightness to {int(value)}%…"
+            return self._actuate_recipe(r, sid, value)
+        if r.surface:                             # else open the surface, act when its controls arrive
+            try:
+                safespawn.run(["open", r.surface], capture_output=True, text=True, timeout=10)
+            except Exception as exc:  # noqa: BLE001
+                return f"Couldn't open the settings for that: {exc}"
+            self._pending_nav = {"recipe": r, "value": value, "deadline": time.time() + _NAV_TIMEOUT}
+            return f"Opening settings to {r.label.split(' (')[0]}…"
+        return f"I couldn't find the control for {name}."
 
     def _fulfill_pending_nav(self) -> None:
-        """When the opened surface's controls arrive, complete the pending recipe (ADR-022)."""
+        """When the opened surface's controls arrive (a fresh ax_context), complete the pending recipe
+        by re-matching ITS (role, title) and actuating (ADR-023)."""
         if self._pending_nav is None:
             return
-        sid = find_control_id(self._ax_dom, "AXSlider", "brightness")
+        r, value = self._pending_nav["recipe"], self._pending_nav["value"]
+        sid = find_control_id(self._ax_dom, r.role, r.title)
         if sid is None:
-            return                                # not this snapshot; keep waiting (until tick expires it)
-        value = self._pending_nav["value"]
-        self._emit_actuate(self._ax_epoch, sid, "ax_set_value", {"value": value})
-        self._emit("answer", {"text": f"Setting brightness to {int(value)}%."})
+            return                                # not this snapshot; keep waiting (tick expires it)
+        self._emit("answer", {"text": self._actuate_recipe(r, sid, value)})
         self._pending_nav = None
+
+    def _actuate_recipe(self, r, sid: str, value: float | None) -> str:
+        """The single friction decision (ADR-023): `should_gate(r)` — read from the recipe's DATA, never
+        the LLM. FRICTIONLESS -> emit the actuate directly; GATED -> route through the consent gate."""
+        if should_gate(r):
+            ax_arg = sid if r.verb == "ax_press" else f"{sid} {value}"
+            return dispatch_ax(self._consent, self._emit_actuate, self._ax_ids, self._ax_epoch, r.verb, ax_arg)
+        args = {"value": value} if r.verb == "ax_set_value" else {}
+        self._emit_actuate(self._ax_epoch, sid, r.verb, args)
+        return self._recipe_done_msg(r, value)
+
+    @staticmethod
+    def _recipe_done_msg(r, value: float | None) -> str:
+        if r.takes_value and value is not None:
+            noun = r.intent.removeprefix("set_").replace("_", " ")
+            return f"Setting {noun} to {int(value)}%."
+        return f"Done — {r.intent.replace('_', ' ')}."
 
     def _ax_result(self, arg: object) -> tuple[bool, object]:
         """The app reports an actuation outcome; surface it to the user as an answer event."""
         if isinstance(arg, dict):
             self._emit("answer", {"text": str(arg.get("detail", "done."))})
         return True, {"ok": True}
+
+    def _axdump(self, arg: object) -> tuple[bool, object]:
+        """Return the focused window's captured control tree (ADR-023) — to author/verify recipe
+        matchers (role + title) against what macOS actually exposes, rather than guessing."""
+        return True, {"text": (f"[{self._ax_app} epoch {self._ax_epoch}]\n" + self._ax_dom)
+                              if self._ax_dom else "no controls captured yet (focus a window)."}
 
     def _ax_provider(self) -> str:
         """The focused-window controls block injected into the converse prompt (ADR-021). Empty when

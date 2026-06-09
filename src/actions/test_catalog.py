@@ -85,6 +85,16 @@ def test_set_brightness_is_a_listed_nav_recipe() -> None:
     assert "set_brightness" in {name for name, _ in catalog.available()}
 
 
+def test_nav_actions_are_generated_from_the_recipe_table() -> None:
+    # ADR-023: nav Actions are data-driven from RECIPES (not hard-coded) — adding a domain is a row.
+    from actions.recipes import RECIPES
+    listed = {name for name, _ in catalog.available()}
+    for r in RECIPES:                                      # every recipe row surfaces as a nav action
+        assert r.intent in listed
+        a = catalog.resolve(r.intent)
+        assert a is not None and a.kind == "nav" and a.takes_arg == r.takes_value
+
+
 def test_render_action_prompt_forbids_improvising_unavailable_actions() -> None:
     # Honesty fix: lacking a contrast action, the 7B improvised open_app cascades + claimed success.
     # The prompt must forbid improvising and faking unavailable capabilities.

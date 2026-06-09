@@ -9,6 +9,7 @@ Public interface (ADR-001: a module's surface is its `__init__.py` + `__all__`).
 """
 from .catalog import AX_VERBS, Action, argv_for, available, render_action_prompt, resolve
 from .diagnostics import anomaly_flags, system_report
+from .recipes import FRICTIONLESS, GATED, Recipe, nav_actions, recipe_for, should_gate
 from .run import ActionRunner, ConsentSpec, perform
 
 __all__ = [
@@ -23,4 +24,10 @@ __all__ = [
     "ActionRunner",
     "ConsentSpec",
     "perform",
+    "Recipe",
+    "recipe_for",
+    "nav_actions",
+    "should_gate",
+    "FRICTIONLESS",
+    "GATED",
 ]
