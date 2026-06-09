@@ -153,6 +153,7 @@ class Jarvis:
                  nav_dispatch: Callable[[str, str], str] | None = None,
                  navigate: Callable[[str, str], str] | None = None,
                  habit_observer: Callable[[str, str, str], None] | None = None,
+                 habit_admin: Callable[[str, str], str] | None = None,
                  ) -> None:
         self._translator = translator
         self._store = store
@@ -197,6 +198,8 @@ class Jarvis:
         # Habit Brain (ADR-026): a callable (action, arg, outcome) that records an executed action as NARS
         # evidence so recurring patterns become proposable habits. None => no habit learning (tests).
         self._habit_observer = habit_observer
+        # Habit introspection/pruning (ADR-027): (verb, arg) -> finished text (list_habits/forget_habit).
+        self._habit_admin = habit_admin
         self._voice = voice or Voice()  # template-only by default; formatter LLM is optional
         # LLM-first brain (ADR-007): when a real model is wired, converse() lets the LLM answer from
         # its own knowledge with the user's persistent memory injected as ground truth. With no
@@ -484,6 +487,15 @@ class Jarvis:
                         results.append(f"Couldn't act on the screen ({name}).")
                 else:
                     results.append(f"I can't control on-screen elements here ({name}).")
+                continue
+            if act is not None and act.kind == "habit":        # ADR-027: introspection / pruning
+                if self._habit_admin is not None:
+                    try:
+                        results.append(self._habit_admin(name, arg))
+                    except Exception:  # noqa: BLE001
+                        results.append("Couldn't read the habit list right now.")
+                else:
+                    results.append("Habit tracking isn't available here.")
                 continue
             if act is not None and act.kind == "nav":          # ADR-022: self-navigating recipe
                 if self._nav_dispatch is not None:

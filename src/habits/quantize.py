@@ -52,6 +52,32 @@ def habit_evidence(key: str, approved: bool) -> str:
     return f"{habit_term(key)}. {{{freq:.1f} {conf:.1f}}}"
 
 
+def bucket_label(bucket: str) -> str:
+    """Render an hour bucket as a human time, e.g. 'h09' -> '9:00 AM', 'h14' -> '2:00 PM' (ADR-027)."""
+    try:
+        h = int(bucket.lstrip("h"))
+    except ValueError:
+        return bucket
+    suffix = "AM" if h < 12 else "PM"
+    return f"{(h % 12) or 12}:00 {suffix}"
+
+
+def evidence_count(confidence: float) -> int:
+    """Approximate confirmations behind a confidence: ONA c = w/(w+1) ⇒ w ≈ c/(1-c). For honest,
+    probability-free progress reporting ('seen ~4×') — never shown as a percentage (ADR-027)."""
+    if confidence >= 1.0:
+        return 999
+    return round(confidence / (1.0 - confidence))
+
+
+def describe_habit(action: str, arg: str, bucket: str) -> str:
+    """Human phrase for a habit, e.g. ('set_brightness','100','h09') -> 'set brightness 100 around 9:00 AM'."""
+    verb = action.replace("_", " ").strip()
+    arg = (arg or "").strip()
+    phrase = f"{verb} {arg}".strip() if arg else verb
+    return f"{phrase} around {bucket_label(bucket)}"
+
+
 def eligible(action: str) -> bool:
     """Only safe, repeatable state-changers form habits: actuations (`argv`/`nav`) that are NOT
     destructive (`confirm`) and NOT read-only (`diag`/`query`). Auto-proposing a search (`find_file`) or

@@ -1,7 +1,16 @@
 """Unit tests for habit quantization (ADR-026). Pure — bucketing, term-safe keys, eligibility."""
 from datetime import datetime
 
-from habits import eligible, habit_evidence, habit_key, habit_term, time_bucket
+from habits import (
+    bucket_label,
+    describe_habit,
+    eligible,
+    evidence_count,
+    habit_evidence,
+    habit_key,
+    habit_term,
+    time_bucket,
+)
 
 
 def test_time_bucket_is_hour_of_day() -> None:
@@ -30,8 +39,30 @@ def test_eligible_only_safe_repeatable_state_changers() -> None:
     assert not eligible("nonexistent")
 
 
+def test_bucket_label_is_12_hour() -> None:
+    assert bucket_label("h09") == "9:00 AM"
+    assert bucket_label("h14") == "2:00 PM"
+    assert bucket_label("h00") == "12:00 AM"
+    assert bucket_label("h12") == "12:00 PM"
+
+
+def test_evidence_count_from_confidence() -> None:
+    # ONA c = w/(w+1) -> w ≈ c/(1-c); honest count, never a probability.
+    assert evidence_count(0.5) == 1
+    assert evidence_count(0.833) == 5
+    assert evidence_count(0.857) == 6
+
+
+def test_describe_habit_is_human_readable() -> None:
+    assert describe_habit("set_brightness", "100", "h09") == "set brightness 100 around 9:00 AM"
+    assert describe_habit("mute", "", "h14") == "mute around 2:00 PM"
+
+
 if __name__ == "__main__":
     test_time_bucket_is_hour_of_day()
+    test_bucket_label_is_12_hour()
+    test_evidence_count_from_confidence()
+    test_describe_habit_is_human_readable()
     test_habit_key_is_canonical_and_term_safe()
     test_habit_evidence_uses_asymmetric_weights()
     test_eligible_only_safe_repeatable_state_changers()

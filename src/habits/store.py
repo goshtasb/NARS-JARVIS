@@ -53,6 +53,18 @@ class HabitStore:
         return [(k, f, c) for (k, f, c) in
                 self._db.execute("SELECT key,frequency,confidence FROM habits").fetchall()]
 
+    def list_all(self) -> list[dict]:
+        """Full rows for every tracked habit (ADR-027 introspection)."""
+        rows = self._db.execute(
+            "SELECT key,bucket,action,arg,frequency,confidence FROM habits ORDER BY bucket").fetchall()
+        return [{"key": k, "bucket": b, "action": a, "arg": g, "frequency": f, "confidence": c}
+                for (k, b, a, g, f, c) in rows]
+
+    def delete(self, key: str) -> None:
+        """Purge a habit (ADR-027 pruning)."""
+        self._db.execute("DELETE FROM habits WHERE key=?", (key,))
+        self._db.commit()
+
     def mark_proposed(self, key: str, day_bucket: str) -> None:
         """Record that this habit was proposed for this day-bucket (cooldown: at most once per occurrence)."""
         self._db.execute("UPDATE habits SET last_proposed=? WHERE key=?", (day_bucket, key))

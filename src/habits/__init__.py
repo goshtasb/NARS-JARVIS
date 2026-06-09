@@ -7,7 +7,18 @@ is reused verbatim from `service.autonomy` (the Sentinel's verified ramp).
 
 Public interface (ADR-001).
 """
-from .quantize import NO, YES, eligible, habit_evidence, habit_key, habit_term, time_bucket
+from .quantize import (
+    NO,
+    YES,
+    bucket_label,
+    describe_habit,
+    eligible,
+    evidence_count,
+    habit_evidence,
+    habit_key,
+    habit_term,
+    time_bucket,
+)
 from .store import HabitStore
 
 __all__ = [
@@ -16,6 +27,9 @@ __all__ = [
     "habit_term",
     "habit_evidence",
     "eligible",
+    "bucket_label",
+    "evidence_count",
+    "describe_habit",
     "YES",
     "NO",
     "HabitStore",

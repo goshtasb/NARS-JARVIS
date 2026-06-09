@@ -621,6 +621,18 @@ def test_converse_records_eligible_action_as_habit_evidence() -> None:
         assert ("mute", "", "did") in calls
 
 
+def test_converse_routes_habit_admin() -> None:
+    # ADR-027: list_habits/forget_habit route to the injected habit_admin (introspection/pruning).
+    calls: list[tuple[str, str]] = []
+    asst = _RememberLLM("Sure.\n[[DO: list_habits]]")
+    with Brain(cycles_per_step=50) as brain:
+        j = Jarvis(Translator(asst), MemoryStore(), brain, assistant=asst,
+                   habit_admin=lambda v, a: calls.append((v, a)) or "Habits I'm tracking:\n• mute around 9:00 AM — [Armed]")
+        out = j.converse("what habits are you tracking?")
+        assert calls == [("list_habits", "")]
+        assert "[Armed]" in out
+
+
 def test_converse_no_habit_observer_is_safe() -> None:
     asst = _RememberLLM("Muted.\n[[DO: mute]]")
     with Brain(cycles_per_step=50) as brain:
@@ -668,6 +680,7 @@ if __name__ == "__main__":
     test_converse_destructive_action_routes_to_consent()
     test_converse_destructive_action_refused_without_consent_channel()
     test_converse_records_eligible_action_as_habit_evidence()
+    test_converse_routes_habit_admin()
     test_converse_no_habit_observer_is_safe()
     test_converse_injects_ax_dom()
     test_converse_routes_ax_verb_to_dispatch()

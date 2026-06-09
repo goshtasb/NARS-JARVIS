@@ -12,9 +12,17 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Callable
 
-from habits import eligible, habit_evidence, habit_key, habit_term, time_bucket
+from habits import (
+    describe_habit,
+    eligible,
+    evidence_count,
+    habit_evidence,
+    habit_key,
+    habit_term,
+    time_bucket,
+)
 
-from .autonomy import gate_passes
+from .autonomy import CONF_FLOOR, gate_passes
 
 
 def _default_clock() -> datetime:
@@ -57,6 +65,45 @@ class HabitLoop:
         ans = self._brain.ask(habit_term(key) + "?")
         if ans is not None and ans.truth is not None:
             self._store.record(key, bucket, action, arg, ans.truth.frequency, ans.truth.confidence)
+
+    # ── introspection & pruning (ADR-027) — math encapsulated; returns finished text the LLM relays ──
+    def describe(self) -> str:
+        """A human-readable list of tracked habits + state (no raw NARS numbers to the model)."""
+        rows = self._store.list_all()
+        if not rows:
+            return "I'm not tracking any habits yet."
+        arms_at = evidence_count(CONF_FLOOR)
+        lines = ["Habits I'm tracking:"]
+        for r in rows:
+            desc = describe_habit(r["action"], r["arg"], r["bucket"])
+            if gate_passes(r["frequency"], r["confidence"]):
+                lines.append(f"• {desc} — [Armed] (I may offer this)")
+            else:
+                lines.append(f"• {desc} — [Learning] (seen ~{evidence_count(r['confidence'])}×, "
+                             f"arms at ~{arms_at})")
+        return "\n".join(lines)
+
+    def forget(self, query: str) -> str:
+        """Stop tracking habit(s) matching `query`: crater the ONA term (absolute negative) AND purge
+        the row. Safe + reversible (JARVIS re-learns if the behaviour recurs)."""
+        q = (query or "").strip().lower()
+        if not q:
+            return "Which habit should I forget?"
+        rows = self._store.list_all()
+        matches = [r for r in rows if q == r["key"].lower() or q in r["key"].lower()
+                   or q in r["action"].lower() or q in (r["arg"] or "").lower()
+                   or q in describe_habit(r["action"], r["arg"], r["bucket"]).lower()]
+        if not matches:
+            return f"No habit matches {query!r}."
+        forgotten = []
+        for r in matches:
+            try:
+                self._brain.add_belief(habit_evidence(r["key"], approved=False))  # crater {0.0 0.9}
+            except Exception:  # noqa: BLE001
+                pass
+            self._store.delete(r["key"])
+            forgotten.append(describe_habit(r["action"], r["arg"], r["bucket"]))
+        return "Forgotten: " + "; ".join(forgotten) + "."
 
     # ── proposal: NARS decides, consent gates ──
     def propose_due(self, now: datetime | None = None) -> None:

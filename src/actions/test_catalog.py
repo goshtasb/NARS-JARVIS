@@ -22,6 +22,16 @@ def test_find_file_is_a_listed_readonly_query_action() -> None:
     assert "find_file" in {name for name, _ in catalog.available()}   # surfaced in the prompt
 
 
+def test_habit_admin_actions_listed_and_not_self_habit_forming() -> None:
+    from habits import eligible
+    listed = {name for name, _ in catalog.available()}
+    for n in ("list_habits", "forget_habit"):
+        a = catalog.resolve(n)
+        assert a is not None and a.kind == "habit"
+        assert n in listed                 # surfaced in the prompt
+        assert not eligible(n)             # asking about habits never becomes a habit (ADR-027)
+
+
 def test_ax_verbs_are_closed_confirm_and_hidden_from_prompt_list() -> None:
     # ADR-021: ax verbs are a closed set, kind="ax", consent-gated, and EXCLUDED from the static
     # prompt list (surfaced contextually alongside the live AX DOM instead).

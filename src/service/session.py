@@ -74,6 +74,7 @@ class Session:
                               sentinel_beliefs_provider=self._sentinel_store.beliefs,  # grounding (ADR-013)
                               action_runner=self._actions,  # conversational Mac actions (ADR-019)
                               habit_observer=self._habit_loop.observe,  # execution -> habit evidence (ADR-026)
+                              habit_admin=self._habit_admin,  # list/forget habits (ADR-027)
                               consent_opener=self._open_action_consent,  # destructive-action consent (ADR-020)
                               ax_provider=self._ax_provider,  # GUI actuation: focused-window DOM (ADR-021)
                               ax_dispatch=self._ax_dispatch_verb,  # GUI actuation: verb -> consent -> actuate
@@ -319,6 +320,12 @@ class Session:
         if a is not None and a.kind == "nav":
             return self._nav_dispatch(action, arg)
         return self._actions.perform(action, arg)
+
+    def _habit_admin(self, verb: str, arg: str) -> str:
+        """Habit introspection/pruning (ADR-027): list what's learned or forget a habit."""
+        if verb == "forget_habit":
+            return self._habit_loop.forget(arg)
+        return self._habit_loop.describe()
 
     def _ax_result(self, arg: object) -> tuple[bool, object]:
         """The app reports an actuation outcome; surface it to the user as an answer event."""

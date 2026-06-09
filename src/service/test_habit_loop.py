@@ -41,6 +41,10 @@ class _Store:
         self.records.append((key, f, c))
     def for_bucket(self, b):
         return [r for r in self.rows.values() if r["bucket"] == b]
+    def list_all(self):
+        return list(self.rows.values())
+    def delete(self, key):
+        self.rows.pop(key, None)
     def mark_proposed(self, key, day):
         self.rows[key]["last_proposed"] = day
 
@@ -89,6 +93,37 @@ def test_propose_due_silent_when_not_armed() -> None:
     con = _Consent()
     HabitLoop(_Brain(_Truth(1.0, 0.5)), s, con, lambda a, g: "", clock=_CLOCK).propose_due()
     assert con.requests == []
+
+
+def test_describe_lists_armed_and_learning_without_raw_math() -> None:
+    s = _Store()
+    s.record("h09_mute", "h09", "mute", "", 1.0, 0.9)           # armed (E 0.95)
+    s.record("h14_dark_mode", "h14", "dark_mode", "", 1.0, 0.5)  # learning (E 0.75)
+    out = HabitLoop(_Brain(), s, _Consent(), lambda a, g: "", clock=_CLOCK).describe()
+    assert "mute around 9:00 AM — [Armed]" in out
+    assert "dark mode around 2:00 PM — [Learning]" in out and "seen ~1×" in out
+    assert "0.9" not in out and "conf" not in out               # no raw NARS numbers leak to the user
+
+
+def test_describe_empty() -> None:
+    out = HabitLoop(_Brain(), _Store(), _Consent(), lambda a, g: "", clock=_CLOCK).describe()
+    assert "not tracking any habits" in out
+
+
+def test_forget_craters_and_deletes() -> None:
+    s = _Store()
+    s.record("h09_mute", "h09", "mute", "", 1.0, 0.9)
+    b = _Brain()
+    out = HabitLoop(b, s, _Consent(), lambda a, g: "", clock=_CLOCK).forget("mute")
+    assert "Forgotten" in out and s.list_all() == []            # purged
+    assert any("{0.0 0.9}" in x for x in b.added)               # cratered with absolute negative
+
+
+def test_forget_no_match() -> None:
+    s = _Store()
+    s.record("h09_mute", "h09", "mute", "", 1.0, 0.9)
+    out = HabitLoop(_Brain(), s, _Consent(), lambda a, g: "", clock=_CLOCK).forget("brightness")
+    assert "No habit matches" in out and len(s.list_all()) == 1
 
 
 if __name__ == "__main__":
