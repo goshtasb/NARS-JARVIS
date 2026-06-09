@@ -13,6 +13,9 @@ from datetime import datetime
 from typing import Callable
 
 from habits import (
+    app_slug,
+    context_key,
+    day_type,
     describe_habit,
     eligible,
     evidence_count,
@@ -31,12 +34,14 @@ def _default_clock() -> datetime:
 
 class HabitLoop:
     def __init__(self, brain, store, consent, actuate: Callable[[str, str], object],
-                 clock: Callable[[], datetime] = _default_clock) -> None:
+                 clock: Callable[[], datetime] = _default_clock,
+                 foreground: Callable[[], str] = lambda: "") -> None:
         self._brain = brain
         self._store = store
         self._consent = consent
         self._actuate = actuate            # (action, arg) -> runs the action for real (on approval)
         self._clock = clock
+        self._foreground = foreground      # () -> current focused app name ('' if unknown) (ADR-028)
         self._replay()
 
     def _replay(self) -> None:
@@ -49,22 +54,28 @@ class HabitLoop:
 
     # ── telemetry: execution -> NARS evidence ──
     def observe(self, action: str, arg: str = "", outcome: str = "did") -> None:
-        """Record an action as evidence. outcome: 'did'/'approved' -> YES, 'denied' -> NO. Non-eligible
-        actions (read-only / destructive) are ignored, so they never become habits."""
+        """Record an action as evidence at TWO independent grains (ADR-028) so neither starves: the base
+        temporal term (tendency) always, and the full-context term (habit) when the foreground app is
+        known. outcome: 'did'/'approved' -> YES, 'denied' -> NO. Non-eligible actions are ignored."""
         if not eligible(action):
             return
-        bucket = time_bucket(self._clock())
-        key = habit_key(bucket, action, arg)
+        now = self._clock()
+        bucket, dt, app = time_bucket(now), day_type(now), app_slug(self._foreground())
+        approved = outcome != "denied"
+        self._feed(habit_key(bucket, action, arg), approved, bucket, action, arg, "", "", "base")
+        if app:   # contextual habit only when we actually know the foreground app
+            self._feed(context_key(bucket, action, arg, dt, app), approved, bucket, action, arg, dt, app, "context")
+
+    def _feed(self, key: str, approved: bool, bucket: str, action: str, arg: str,
+              dt: str, app: str, scope: str) -> None:
         try:
-            self._brain.add_belief(habit_evidence(key, approved=outcome != "denied"))
+            self._brain.add_belief(habit_evidence(key, approved))
         except Exception:  # noqa: BLE001
             return
-        self._persist(key, bucket, action, arg)
-
-    def _persist(self, key: str, bucket: str, action: str, arg: str) -> None:
         ans = self._brain.ask(habit_term(key) + "?")
         if ans is not None and ans.truth is not None:
-            self._store.record(key, bucket, action, arg, ans.truth.frequency, ans.truth.confidence)
+            self._store.record(key, bucket, action, arg, ans.truth.frequency, ans.truth.confidence,
+                               day_type=dt, app=app, scope=scope)
 
     # ── introspection & pruning (ADR-027) — math encapsulated; returns finished text the LLM relays ──
     def describe(self) -> str:
@@ -75,13 +86,18 @@ class HabitLoop:
         arms_at = evidence_count(CONF_FLOOR)
         lines = ["Habits I'm tracking:"]
         for r in rows:
-            desc = describe_habit(r["action"], r["arg"], r["bucket"])
+            desc = self._describe_row(r)
+            label = "habit" if r.get("scope") == "context" else "tendency"
             if gate_passes(r["frequency"], r["confidence"]):
-                lines.append(f"• {desc} — [Armed] (I may offer this)")
+                lines.append(f"• [{label}] {desc} — [Armed] (I may offer this)")
             else:
-                lines.append(f"• {desc} — [Learning] (seen ~{evidence_count(r['confidence'])}×, "
+                lines.append(f"• [{label}] {desc} — [Learning] (seen ~{evidence_count(r['confidence'])}×, "
                              f"arms at ~{arms_at})")
         return "\n".join(lines)
+
+    @staticmethod
+    def _describe_row(r: dict) -> str:
+        return describe_habit(r["action"], r["arg"], r["bucket"], r.get("day_type", ""), r.get("app", ""))
 
     def forget(self, query: str) -> str:
         """Stop tracking habit(s) matching `query`: crater the ONA term (absolute negative) AND purge
@@ -92,7 +108,7 @@ class HabitLoop:
         rows = self._store.list_all()
         matches = [r for r in rows if q == r["key"].lower() or q in r["key"].lower()
                    or q in r["action"].lower() or q in (r["arg"] or "").lower()
-                   or q in describe_habit(r["action"], r["arg"], r["bucket"]).lower()]
+                   or q in self._describe_row(r).lower()]
         if not matches:
             return f"No habit matches {query!r}."
         forgotten = []
@@ -102,7 +118,7 @@ class HabitLoop:
             except Exception:  # noqa: BLE001
                 pass
             self._store.delete(r["key"])
-            forgotten.append(describe_habit(r["action"], r["arg"], r["bucket"]))
+            forgotten.append(self._describe_row(r))
         return "Forgotten: " + "; ".join(forgotten) + "."
 
     # ── proposal: NARS decides, consent gates ──
@@ -110,9 +126,14 @@ class HabitLoop:
         """For the current bucket, propose any armed habit (gate_passes) not yet proposed this occurrence.
         Driven from the daemon tick. Opens an ADR-020 consent; never auto-acts."""
         now = now or self._clock()
-        bucket = time_bucket(now)
+        bucket, dt, app = time_bucket(now), day_type(now), app_slug(self._foreground())
         day_bucket = now.strftime("%Y-%m-%d") + bucket
-        for row in self._store.for_bucket(bucket):
+        # Specificity-gated (ADR-028): when the foreground app is known, ONLY context habits matching
+        # the current (bucket, day_type, app) are candidates — so a Zoom habit can't fire in Spotify.
+        # When the app is unknown, fall back to base temporal habits (ADR-026 behaviour preserved).
+        rows = (self._store.for_context(bucket, dt, app) if app
+                else [r for r in self._store.for_bucket(bucket) if r.get("scope") == "base"])
+        for row in rows:
             if row["last_proposed"] == day_bucket:
                 continue                                  # cooldown: once per occurrence
             ans = self._brain.ask(habit_term(row["key"]) + "?")

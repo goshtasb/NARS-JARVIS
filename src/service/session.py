@@ -63,7 +63,8 @@ class Session:
         self._actions = ActionRunner()
         # Habit Brain (ADR-026): execution -> NARS evidence; armed habits propose via the consent gate.
         self._habit_store = HabitStore(db_path)
-        self._habit_loop = HabitLoop(self._brain, self._habit_store, self._consent, self._habit_actuate)
+        self._habit_loop = HabitLoop(self._brain, self._habit_store, self._consent, self._habit_actuate,
+                                     foreground=lambda: self._ax_app)  # ADR-028: app context for habits
         voice = Voice(formatter=llm if hasattr(llm, "generate_text") else None)
         self._jarvis = Jarvis(Translator(llm, embedder=embedder, cache=grounding),
                               self._store, self._brain, executor=self._executor, gate=gate,

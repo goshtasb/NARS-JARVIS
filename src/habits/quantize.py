@@ -70,12 +70,35 @@ def evidence_count(confidence: float) -> int:
     return round(confidence / (1.0 - confidence))
 
 
-def describe_habit(action: str, arg: str, bucket: str) -> str:
-    """Human phrase for a habit, e.g. ('set_brightness','100','h09') -> 'set brightness 100 around 9:00 AM'."""
+def day_type(now: datetime) -> str:
+    """Binary weekday/weekend (ADR-028). Coarse on purpose — clustering days makes the same context
+    recur quickly enough to cross the floor; per-day (mon/tue/…) would fragment the evidence."""
+    return "weekday" if now.weekday() < 5 else "weekend"
+
+
+def app_slug(app: str) -> str:
+    """A term-safe app identifier, e.g. 'Google Chrome' -> 'app_google_chrome'; '' if unknown."""
+    s = _slug(app)
+    return f"app_{s}" if s else ""
+
+
+def context_key(bucket: str, action: str, arg: str, day_type_: str, app: str) -> str:
+    """The full contextual habit key, e.g. 'h16_mute_weekday_app_zoom' (extends the base temporal key
+    with coarse, recurring context). `app` is an app_slug; both context parts are required."""
+    return f"{habit_key(bucket, action, arg)}_{day_type_}_{app}"
+
+
+def _app_name(app: str) -> str:
+    return app.removeprefix("app_").replace("_", " ").title() if app else ""
+
+
+def describe_habit(action: str, arg: str, bucket: str, day_type_: str = "", app: str = "") -> str:
+    """Human phrase. Base: 'mute around 4:00 PM'. Contextual: 'mute in Zoom on weekdays around 4:00 PM'."""
     verb = action.replace("_", " ").strip()
     arg = (arg or "").strip()
     phrase = f"{verb} {arg}".strip() if arg else verb
-    return f"{phrase} around {bucket_label(bucket)}"
+    ctx = (f" in {_app_name(app)}" if app else "") + (f" on {day_type_}s" if day_type_ else "")
+    return f"{phrase}{ctx} around {bucket_label(bucket)}"
 
 
 def eligible(action: str) -> bool:

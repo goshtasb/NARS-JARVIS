@@ -2,7 +2,10 @@
 from datetime import datetime
 
 from habits import (
+    app_slug,
     bucket_label,
+    context_key,
+    day_type,
     describe_habit,
     eligible,
     evidence_count,
@@ -58,11 +61,38 @@ def test_describe_habit_is_human_readable() -> None:
     assert describe_habit("mute", "", "h14") == "mute around 2:00 PM"
 
 
+def test_day_type_is_binary() -> None:
+    assert day_type(datetime(2026, 6, 8)) == "weekday"   # Monday
+    assert day_type(datetime(2026, 6, 12)) == "weekday"  # Friday
+    assert day_type(datetime(2026, 6, 13)) == "weekend"  # Saturday
+    assert day_type(datetime(2026, 6, 14)) == "weekend"  # Sunday
+
+
+def test_app_slug_sanitizes() -> None:
+    assert app_slug("Zoom") == "app_zoom"
+    assert app_slug("Google Chrome") == "app_google_chrome"
+    assert app_slug("") == ""
+
+
+def test_context_key_extends_base_and_is_term_safe() -> None:
+    k = context_key("h16", "mute", "", "weekday", "app_zoom")
+    assert k == "h16_mute_weekday_app_zoom"
+    assert habit_term(k).startswith("<habit_h16_mute_weekday_app_zoom")
+
+
+def test_describe_habit_with_context() -> None:
+    assert describe_habit("mute", "", "h16", "weekday", "app_zoom") == "mute in Zoom on weekdays around 4:00 PM"
+
+
 if __name__ == "__main__":
     test_time_bucket_is_hour_of_day()
     test_bucket_label_is_12_hour()
     test_evidence_count_from_confidence()
     test_describe_habit_is_human_readable()
+    test_day_type_is_binary()
+    test_app_slug_sanitizes()
+    test_context_key_extends_base_and_is_term_safe()
+    test_describe_habit_with_context()
     test_habit_key_is_canonical_and_term_safe()
     test_habit_evidence_uses_asymmetric_weights()
     test_eligible_only_safe_repeatable_state_changers()

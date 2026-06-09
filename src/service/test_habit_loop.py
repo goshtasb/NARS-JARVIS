@@ -35,12 +35,16 @@ class _Store:
         self.records = []
     def all(self):
         return [(k, r["frequency"], r["confidence"]) for k, r in self.rows.items()]
-    def record(self, key, bucket, action, arg, f, c, now=None):
+    def record(self, key, bucket, action, arg, f, c, now=None, day_type="", app="", scope="base"):
         self.rows[key] = {"key": key, "bucket": bucket, "action": action, "arg": arg,
-                          "frequency": f, "confidence": c, "last_proposed": ""}
-        self.records.append((key, f, c))
+                          "frequency": f, "confidence": c, "last_proposed": "",
+                          "day_type": day_type, "app": app, "scope": scope}
+        self.records.append((key, f, c, scope))
     def for_bucket(self, b):
         return [r for r in self.rows.values() if r["bucket"] == b]
+    def for_context(self, b, dt, app):
+        return [r for r in self.rows.values()
+                if r["bucket"] == b and r["day_type"] == dt and r["app"] == app and r["scope"] == "context"]
     def list_all(self):
         return list(self.rows.values())
     def delete(self, key):
@@ -93,6 +97,43 @@ def test_propose_due_silent_when_not_armed() -> None:
     con = _Consent()
     HabitLoop(_Brain(_Truth(1.0, 0.5)), s, con, lambda a, g: "", clock=_CLOCK).propose_due()
     assert con.requests == []
+
+
+def test_observe_records_both_grains_when_app_known() -> None:
+    # ADR-028 no-starving: one event writes a base (tendency) row AND a context (habit) row.
+    b, s = _Brain(_Truth(1.0, 0.5)), _Store()
+    loop = HabitLoop(b, s, _Consent(), lambda a, g: "", clock=_CLOCK, foreground=lambda: "Zoom")
+    loop.observe("mute", "", "did")
+    scopes = {r["scope"] for r in s.list_all()}
+    assert scopes == {"base", "context"}
+    ctx = [r for r in s.list_all() if r["scope"] == "context"][0]
+    assert ctx["app"] == "app_zoom" and ctx["day_type"] in ("weekday", "weekend")
+
+
+def test_context_habit_fires_in_matching_app_only() -> None:
+    # ADR-028 marquee: a habit armed for Zoom proposes in Zoom, NOT in Spotify.
+    s = _Store()
+    s.record("h09_mute_weekday_app_zoom", "h09", "mute", "", 1.0, 0.9,
+             day_type="weekday", app="app_zoom", scope="context")
+    b = _Brain(_Truth(1.0, 0.9))                 # armed
+    # _CLOCK is 2026-06-09 (a Tuesday -> weekday); foreground=Zoom -> matches
+    con_zoom = _Consent()
+    HabitLoop(b, s, con_zoom, lambda a, g: "done", clock=_CLOCK, foreground=lambda: "Zoom").propose_due()
+    assert len(con_zoom.requests) == 1           # proposed in Zoom
+
+    s.rows["h09_mute_weekday_app_zoom"]["last_proposed"] = ""   # reset cooldown for the 2nd check
+    con_spotify = _Consent()
+    HabitLoop(b, s, con_spotify, lambda a, g: "done", clock=_CLOCK, foreground=lambda: "Spotify").propose_due()
+    assert con_spotify.requests == []            # SILENT in Spotify (the whole point)
+
+
+def test_unknown_app_falls_back_to_base_temporal() -> None:
+    # ADR-026 behaviour preserved when there's no app signal.
+    s = _Store()
+    s.record("h09_mute", "h09", "mute", "", 1.0, 0.9, scope="base")
+    con = _Consent()
+    HabitLoop(_Brain(_Truth(1.0, 0.9)), s, con, lambda a, g: "", clock=_CLOCK, foreground=lambda: "").propose_due()
+    assert len(con.requests) == 1                # base temporal habit still fires when app unknown
 
 
 def test_describe_lists_armed_and_learning_without_raw_math() -> None:
