@@ -38,9 +38,17 @@ def perform(name: str, arg: str = "", *, spawn: Callable = safespawn.run) -> str
     if argv is None:
         return f"I can't do that — {arg!r} isn't a safe argument for {action.name}."
     try:
-        spawn(argv, capture_output=True, text=True, timeout=_TIMEOUT)
+        result = spawn(argv, capture_output=True, text=True, timeout=_TIMEOUT)
     except Exception as exc:  # noqa: BLE001 — a failed command reports, never crashes the turn
         return f"Tried to {action.label}, but it failed: {exc}"
+    # Honesty (ADR-019 follow-up): a child that exits non-zero does NOT raise — we must check the
+    # return code, or we'd report "(Done:)" for a command that actually failed (e.g. `open -a
+    # Accessibility` exits 1, "Unable to find application named 'Accessibility'"). Report the truth.
+    rc = getattr(result, "returncode", 0) or 0
+    if rc != 0:
+        stderr = (getattr(result, "stderr", "") or "").strip().splitlines()
+        why = stderr[-1] if stderr else f"exit code {rc}"
+        return f"Couldn't {action.label}{f' ({arg})' if action.takes_arg and arg else ''} — {why}"
     if action.takes_arg:
         return f"(Done: {action.label} — {arg})"
     return f"(Done: {action.label})"

@@ -5,13 +5,16 @@ from actions.run import ConsentSpec, perform
 
 
 class _FakeSpawn:
-    """Records argv instead of running it — proves what would execute with zero side effects."""
-    def __init__(self) -> None:
+    """Records argv instead of running it — proves what would execute with zero side effects. By
+    default simulates success (returncode 0); pass returncode/stderr to simulate a failed command."""
+    def __init__(self, returncode: int = 0, stderr: str = "") -> None:
         self.calls: list[list[str]] = []
+        self._rc = returncode
+        self._stderr = stderr
 
     def __call__(self, argv, **kwargs):
         self.calls.append(list(argv))
-        return None
+        return type("R", (), {"returncode": self._rc, "stderr": self._stderr})()
 
 
 def test_static_action_builds_and_runs_vetted_argv() -> None:
@@ -55,6 +58,22 @@ def test_unsafe_arg_never_spawns() -> None:
         out = perform(name, bad, spawn=fake)
         assert "can't do that" in out.lower(), (name, bad, out)
     assert fake.calls == []                     # nothing spawned across all rejects
+
+
+def test_nonzero_exit_reports_failure_not_done() -> None:
+    # ADR-019 follow-up: a child that exits non-zero (e.g. `open -a Accessibility` -> exit 1) must be
+    # reported truthfully, not as "(Done:)". The spawn does not raise on non-zero — perform checks rc.
+    fake = _FakeSpawn(returncode=1, stderr="Unable to find application named 'Accessibility'")
+    out = perform("open_app", "Accessibility", spawn=fake)
+    assert fake.calls == [["open", "-a", "Accessibility"]]      # it did attempt it
+    assert "Done" not in out                                    # but never claims success
+    assert "Couldn't" in out and "Unable to find application named 'Accessibility'" in out
+
+
+def test_nonzero_exit_without_stderr_reports_exit_code() -> None:
+    fake = _FakeSpawn(returncode=2, stderr="")
+    out = perform("mute", spawn=fake)
+    assert "Done" not in out and "exit code 2" in out
 
 
 def test_report_system_returns_a_report_without_spawning() -> None:

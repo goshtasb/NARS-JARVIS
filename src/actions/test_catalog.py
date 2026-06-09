@@ -63,3 +63,10 @@ def test_render_action_prompt_forbids_guessing_metrics() -> None:
     # defer to the appended deterministic report (the live "your CPU is 0%" vs real 11% discrepancy).
     text = catalog.render_action_prompt(catalog.available())
     assert "do NOT state or guess any system metric" in text
+
+
+def test_render_action_prompt_forbids_improvising_unavailable_actions() -> None:
+    # Honesty fix: lacking a contrast action, the 7B improvised open_app cascades + claimed success.
+    # The prompt must forbid improvising and faking unavailable capabilities.
+    text = catalog.render_action_prompt(catalog.available())
+    assert "Do NOT improvise" in text and "NEVER claim to have changed a setting" in text
