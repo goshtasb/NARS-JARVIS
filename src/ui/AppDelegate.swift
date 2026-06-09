@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // in the app, never on the wire), and a monotonically increasing epoch.
     private var axSnapshot: AXSnapshot?
     private var axEpoch = 0
+    private var lastAxDom = ""                // dedup: only push when the control set actually changes
 
     func applicationDidFinishLaunching(_ note: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -62,11 +63,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
               app.bundleIdentifier != Bundle.main.bundleIdentifier,   // skip ourselves
               AXPermission.trusted() else { return }
+        let pid = app.processIdentifier
+        let name = app.localizedName ?? ""
+        serializeAndPush(pid, name)
+        // ADR-022 race fix: panes can render after the activation event. Re-read briefly and push only
+        // if the controls changed — so a late-arriving slider/button is still captured (one-shot).
+        for delay in [0.2, 0.5, 0.9] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return }
+                self?.serializeAndPush(pid, name)
+            }
+        }
+    }
+
+    /// Serialize the target app's focused window and push it to the daemon — but only when the control
+    /// set differs from the last push (avoids churn from the repeated post-activation re-reads).
+    private func serializeAndPush(_ pid: pid_t, _ name: String) {
+        let snap = AXSerializer.serialize(pid: pid, epoch: axEpoch + 1)
+        guard snap.dom != lastAxDom else { return }
         axEpoch += 1
-        let snap = AXSerializer.serialize(pid: app.processIdentifier, epoch: axEpoch)
         axSnapshot = snap
+        lastAxDom = snap.dom
         client?.call("ax_context", ["epoch": snap.epoch, "dom": snap.dom, "ids": snap.ids,
-                                    "app": app.localizedName ?? ""]) { _, _ in }
+                                    "app": name]) { _, _ in }
     }
 
     // ── ADR-017: resilient connect — retry with backoff, survive daemon restarts ──
