@@ -132,11 +132,13 @@ def render_action_prompt(actions: list[tuple[str, str]]) -> str:
         "[[DO: <action>]]   — or for an action that takes an argument —   [[DO: <action>: <argument>]]",
         "Use ONLY an action from the list above; never invent one. You may both answer and act in the "
         "same message. Never mention or explain the tag — it is stripped before the user sees it.",
-        "To change display brightness use the set_brightness action (it opens Displays itself). If the "
-        "user asks for something with NO matching action (e.g. display contrast, Do-Not-Disturb), say "
-        "plainly that you can't do that yet. Do NOT improvise by opening apps or System Settings panes "
-        "to work around a missing capability, and NEVER claim to have changed a setting you have no "
-        "action for.",
+        "To change display brightness, ALWAYS use the set_brightness action — even if a 'Brightness' "
+        "slider appears in the on-screen controls, do NOT use ax_set_value on it (set_brightness opens "
+        "Displays itself and needs no confirmation; ax_set_value would pointlessly ask the user to "
+        "approve). If the user asks for something with NO matching action (e.g. display contrast, "
+        "Do-Not-Disturb), say plainly that you can't do that yet. Do NOT improvise by opening apps or "
+        "System Settings panes to work around a missing capability, and NEVER claim to have changed a "
+        "setting you have no action for.",
         "When you emit [[DO: report_system]], do NOT state or guess any system metric (CPU, memory, "
         "disk, battery) in your prose — the real report is appended automatically below your reply; "
         "defer to it entirely (e.g. say 'Let me check.' not 'Your CPU is at 0%').",
