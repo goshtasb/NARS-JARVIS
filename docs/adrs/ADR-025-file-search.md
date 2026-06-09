@@ -1,8 +1,8 @@
 # ADR-025: File search (`find_file`) — JARVIS sees the filesystem
 
 ## Status
-Accepted & live-verified. First filesystem capability: read-only Spotlight search. Suite 363 → **368**.
-Post-v1.0.0 feature (candidate v1.1.0).
+Accepted & live-verified. First filesystem capability: read-only Spotlight search, with human-context
+ranking (blacklist noise + boost user folders). Suite 363 → **371**. Tagged **v1.1.0**.
 
 ## Context
 A live request — "**find** a file called Jarvis" (Whisper mis-transcribed it as "define", but the root
@@ -28,11 +28,16 @@ Add a read-only **`find_file`** action backed by macOS Spotlight.
 - **Tests:** +5 (`actions/test_files.py` — argv shape, top-N cap + remainder note, no-match, empty-query
   no-spawn; all via injected fake spawn → no real OS) + a catalog assertion. Suite **368** green.
   Live-verified end-to-end through the 7B.
+- **Signal > noise (implemented):** the OS does the index lookup (one spawn, full recall); Python
+  applies context `mdfind` can't — a HARD blacklist of dev/system/cache paths (`node_modules`, `.git`,
+  `Library`, caches, `/usr`, `/private`, …) and a SOFT rank boosting `~/Desktop|Documents|Downloads`
+  and shallower paths. Live: "resume" went from 5 `node_modules` icons → an honest "only system/cache
+  files match"; "Jarvis" → 3 clean user files. `-onlyin` was rejected (one dir per spawn + kills
+  recall); whitelist is a boost, not a cage.
 - **Honest limits:**
-  - **Spotlight returns noise** — `node_modules`, caches, system paths all match. v1 returns raw top-5
-    by Spotlight's order; ranking/filtering (prefer ~/Desktop, ~/Documents; drop `node_modules`) is a
-    clean follow-on.
   - **Name-only** (`-name`); content search (`mdfind "<text>"`) and richer filters are future rows.
+  - **Aggressive blacklist** — a file genuinely living under `/usr`/`/opt` won't surface (acceptable
+    for "find my file"; rare for a normal user).
   - **Read-only by design** — create/move/delete files are separate, more-sensitive capabilities (the
     latter two would be GATED), deliberately not in this ADR.
 - **STT note:** "find"→"define" was a Whisper error; orthogonal to this ADR but worth logging as a

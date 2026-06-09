@@ -31,6 +31,35 @@ def test_no_matches() -> None:
     assert "No files found" in find_file("nope", spawn=_Spawn(""))
 
 
+def test_blacklist_drops_dev_and_system_noise() -> None:
+    import os
+    home = os.path.expanduser("~")
+    out = find_file("resume", spawn=_Spawn(
+        f"{home}/projects/app/node_modules/x/resume.png\n"
+        f"{home}/Library/Caches/resume.tmp\n"
+        f"{home}/Documents/resume.pdf\n"))
+    assert "resume.pdf" in out and "node_modules" not in out and "Library" not in out
+    assert "Found 1 file" in out                              # only the real one survived
+
+
+def test_ranking_prefers_primary_folders_and_shallow() -> None:
+    import os
+    home = os.path.expanduser("~")
+    out = find_file("notes", spawn=_Spawn(
+        f"{home}/some/deep/archive/folder/notes.txt\n"
+        f"{home}/Desktop/notes.txt\n"))
+    # the Desktop hit must be listed first
+    body = out.splitlines()
+    assert body[1] == f"- {home}/Desktop/notes.txt"
+
+
+def test_all_noise_is_reported_honestly() -> None:
+    import os
+    home = os.path.expanduser("~")
+    out = find_file("x", spawn=_Spawn(f"{home}/p/node_modules/x\n{home}/Library/x\n"))
+    assert "Only system/cache files" in out
+
+
 def test_empty_query_does_not_search() -> None:
     s = _Spawn("anything")
     out = find_file("   ", spawn=s)
@@ -41,5 +70,8 @@ if __name__ == "__main__":
     test_runs_mdfind_with_argv_query()
     test_caps_results_and_notes_remainder()
     test_no_matches()
+    test_blacklist_drops_dev_and_system_noise()
+    test_ranking_prefers_primary_folders_and_shallow()
+    test_all_noise_is_reported_honestly()
     test_empty_query_does_not_search()
     print("actions/test_files: OK")
