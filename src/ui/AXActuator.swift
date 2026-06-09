@@ -36,6 +36,18 @@ enum AXActuator {
             let err = AXUIElementSetAttributeValue(target, kAXValueAttribute as CFString, num)
             return err == .success ? (true, "set \(label(bound)) to \(Int(v * 100))%")
                                    : (false, "couldn't set \(label(bound)) (AX error \(err.rawValue))")
+        case "ax_set_checked":
+            // ADR-024 v1.0 polish: set-to-state, idempotent. Read the checkbox's current value and
+            // press ONLY if it differs from the desired state — "turn on" means on, never a blind flip.
+            guard let desired = doubleArg(args["value"]).map({ Int($0) }) else { return (false, "no target state") }
+            var cv: CFTypeRef?
+            let current: Int? = AXUIElementCopyAttributeValue(target, kAXValueAttribute as CFString, &cv) == .success
+                ? (cv as? NSNumber)?.intValue : nil
+            let on = desired == 1 ? "on" : "off"
+            if current == desired { return (true, "\(label(bound)) is already \(on)") }
+            let err = AXUIElementPerformAction(target, kAXPressAction as CFString)
+            return err == .success ? (true, "turned \(label(bound)) \(on)")
+                                   : (false, "couldn't set \(label(bound)) (AX error \(err.rawValue))")
         default:
             return (false, "unknown UI action: \(verb)")
         }

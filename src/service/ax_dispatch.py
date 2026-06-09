@@ -43,9 +43,9 @@ def dispatch_ax(consent, emit_actuate: EmitActuate, ids: set[str], epoch: int,
                 "(the view may have changed; ask me again).")
 
     args: dict = {}
-    if verb == "ax_set_value":
+    if verb in ("ax_set_value", "ax_set_checked"):
         if not rest:
-            return "I can't do that — ax_set_value needs a value (e.g. 45)."
+            return f"I can't do that — {verb} needs a value (e.g. 45, or 1/0 for a toggle)."
         try:
             args["value"] = float(rest[0])
         except ValueError:

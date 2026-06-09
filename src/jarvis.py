@@ -128,6 +128,7 @@ AGENT_STEP_PROMPT = (
     "on screen. Emit EXACTLY ONE directive and nothing else:\n"
     "- [[DO: ax_press: <id>]] to click the control that fulfills the goal,\n"
     "- [[DO: ax_set_value: <id> <value>]] to set a slider/field,\n"
+    "- [[DO: ax_set_checked: <id> 1]] (or 0) to turn a checkbox/toggle on (or off),\n"
     "- [[DO: navigate: <app or settings pane>]] if the needed control is NOT in the list,\n"
     "- or reply 'cannot' if it isn't possible. Use an id from the list verbatim; never invent one."
 )

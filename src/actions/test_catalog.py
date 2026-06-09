@@ -19,7 +19,7 @@ def test_available_lists_every_action() -> None:
 def test_ax_verbs_are_closed_confirm_and_hidden_from_prompt_list() -> None:
     # ADR-021: ax verbs are a closed set, kind="ax", consent-gated, and EXCLUDED from the static
     # prompt list (surfaced contextually alongside the live AX DOM instead).
-    assert catalog.AX_VERBS == frozenset({"ax_press", "ax_set_value"})
+    assert catalog.AX_VERBS == frozenset({"ax_press", "ax_set_value", "ax_set_checked"})
     for v in catalog.AX_VERBS:
         a = catalog.resolve(v)
         assert a is not None and a.kind == "ax" and a.confirm is True

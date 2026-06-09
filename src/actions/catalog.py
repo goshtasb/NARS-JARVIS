@@ -50,6 +50,8 @@ _ACTIONS: tuple[Action, ...] = (
     # focused window (not a static enum); they run in JARVIS.app, never via safespawn. Consent-gated.
     Action("ax_press", "click a UI control", "ax", takes_arg=True, confirm=True),
     Action("ax_set_value", "set a UI control's value (e.g. a slider)", "ax", takes_arg=True, confirm=True),
+    Action("ax_set_checked", "set a checkbox/toggle on (1) or off (0) — idempotent", "ax",
+           takes_arg=True, confirm=True),
     # Bounded agent loop (ADR-024 Phase 2): open an app/Settings pane to reach a control that isn't on
     # screen, then JARVIS re-perceives and acts. kind="agent"; the daemon validates the target to a
     # safe open and bounds the chain to a few hops. Listed so the model can propose it.
@@ -143,6 +145,9 @@ def render_action_prompt(actions: list[tuple[str, str]]) -> str:
         "[[DO: <action>]]   — or for an action that takes an argument —   [[DO: <action>: <argument>]]",
         "Use ONLY an action from the list above; never invent one. You may both answer and act in the "
         "same message. Never mention or explain the tag — it is stripped before the user sees it.",
+        "If a listed action above matches the request (e.g. set_brightness, increase_contrast), ALWAYS "
+        "use it — even if the same control is visible in the on-screen list — never an ax_* verb on it "
+        "(the listed action is smoother and needs no confirmation).",
         "Use ax_press / ax_set_value ONLY with an id that appears in the on-screen controls list. If "
         "the control the user wants is NOT in that list (e.g. a System Settings toggle while you're in "
         "another app), do NOT guess an id — emit [[DO: navigate: <app or pane>]] FIRST to open it, and "

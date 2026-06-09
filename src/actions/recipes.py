@@ -33,9 +33,10 @@ class Recipe:
     surface: str | None   # deep link to open first, or None if the control is already reachable
     role: str             # AX role of the target, e.g. "AXSlider" / "AXCheckBox"
     title: str            # AX title/desc substring (case-insensitive) identifying the control
-    verb: str             # "ax_set_value" (sliders) | "ax_press" (toggles/buttons)
+    verb: str             # "ax_set_value" (sliders) | "ax_press" | "ax_set_checked" (idempotent toggle)
     friction: str         # FRICTIONLESS | GATED
-    takes_value: bool     # True if the intent carries a value (sliders); False for toggles
+    takes_value: bool     # True if the intent carries a value (sliders); False for fixed-state toggles
+    fixed_value: float | None = None  # the desired state for an ax_set_checked recipe (1=on, 0=off)
 
 
 # The closed table. ADR-024's serializer label-enrichment now recovers labels that live in a separate
@@ -44,10 +45,12 @@ class Recipe:
 RECIPES: tuple[Recipe, ...] = (
     Recipe("set_brightness", "set the display brightness (0-100)",
            _DISPLAYS, "AXSlider", "brightness", "ax_set_value", FRICTIONLESS, takes_value=True),
-    # ADR-024: now reachable via label enrichment (was deferred in ADR-023). Verified live —
-    # `[checkbox_2] AXCheckBox "Increase contrast"` in the Accessibility → Display pane. ax_press toggles.
-    Recipe("increase_contrast", "toggle 'Increase contrast' (Accessibility → Display)",
-           _A11Y_DISPLAY, "AXCheckBox", "increase contrast", "ax_press", FRICTIONLESS, takes_value=False),
+    # ADR-024: reachable via label enrichment. Verified live — `[checkbox_2] AXCheckBox "Increase
+    # contrast"` (Accessibility → Display). ax_set_checked is idempotent: "increase contrast" => ON,
+    # pressing only if it isn't already on (v1.0 set-to-state polish).
+    Recipe("increase_contrast", "turn on 'Increase contrast' (Accessibility → Display)",
+           _A11Y_DISPLAY, "AXCheckBox", "increase contrast", "ax_set_checked", FRICTIONLESS,
+           takes_value=False, fixed_value=1.0),
 )
 
 _BY_INTENT: dict[str, Recipe] = {r.intent: r for r in RECIPES}

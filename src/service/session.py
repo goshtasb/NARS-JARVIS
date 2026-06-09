@@ -261,6 +261,8 @@ class Session:
                 value = float(str(arg).strip().rstrip("%").strip())
             except ValueError:
                 return f"I can't read {arg!r} as a value."
+        else:
+            value = r.fixed_value     # e.g. an idempotent toggle's desired state (1=on)
         sid = find_control_id(self._ax_dom, r.role, r.title)
         if sid is not None:                       # already on screen -> act now
             return self._actuate_recipe(r, sid, value)
@@ -291,7 +293,7 @@ class Session:
         if should_gate(r):
             ax_arg = sid if r.verb == "ax_press" else f"{sid} {value}"
             return dispatch_ax(self._consent, self._emit_actuate, self._ax_ids, self._ax_epoch, r.verb, ax_arg)
-        args = {"value": value} if r.verb == "ax_set_value" else {}
+        args = {"value": value} if r.verb in ("ax_set_value", "ax_set_checked") else {}
         self._emit_actuate(self._ax_epoch, sid, r.verb, args)
         return self._recipe_done_msg(r, value)
 
@@ -375,8 +377,9 @@ class Session:
             return ""
         return ("On-screen controls (focused window — you may act on these):\n"
                 f"{self._ax_dom}\n"
-                "To act, end your reply with [[DO: ax_press: <id>]] or "
-                "[[DO: ax_set_value: <id> <value>]] using an id from the list above.")
+                "To act, end your reply with [[DO: ax_press: <id>]], "
+                "[[DO: ax_set_value: <id> <value>]], or [[DO: ax_set_checked: <id> 1]] (1=on, 0=off) "
+                "using an id from the list above.")
 
     def _ax_dispatch_verb(self, verb: str, arg: str) -> str:
         """Validate a [[DO: ax_*]] verb against the current epoch + closed catalog, then consent-gate
@@ -500,7 +503,7 @@ class Session:
         expiry sweep (ADR-020): overdue requests default-resolve and emit `consent_closed`."""
         self._consent.sweep(time.time())
         if self._pending_nav is not None and time.time() > self._pending_nav["deadline"]:
-            self._emit("answer", {"text": "I couldn't find the brightness control to set."})
+            self._emit("answer", {"text": "I couldn't find that control to set."})
             self._pending_nav = None
         self._drive_agent()   # ADR-024 P2: advance an active agent loop on the settled DOM
         try:

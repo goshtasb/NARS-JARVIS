@@ -54,6 +54,14 @@ def test_set_value_parses_and_carries_value() -> None:
     assert emitted == [(2, "sld_1", "ax_set_value", {"value": 45.0})]
 
 
+def test_set_checked_parses_desired_state() -> None:
+    consent, emit, events, emitted = _setup()
+    dispatch_ax(consent, emit, ids={"chk_1"}, epoch=1, verb="ax_set_checked", arg="chk_1 1")
+    cid = [b["id"] for k, b in events if k == "consent_request"][0]
+    consent.resolve(cid, accepted=True)
+    assert emitted == [(1, "chk_1", "ax_set_checked", {"value": 1.0})]
+
+
 def test_unknown_verb_refused_no_consent() -> None:
     consent, emit, events, _ = _setup()
     out = dispatch_ax(consent, emit, ids={"btn_1"}, epoch=1, verb="ax_drag", arg="btn_1")

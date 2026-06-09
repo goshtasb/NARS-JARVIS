@@ -21,7 +21,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var consentTimers: [Int: Timer] = [:]
     // ADR-021 GUI actuation: the latest focused-window AX snapshot (the id->element map lives here,
     // in the app, never on the wire), and a monotonically increasing epoch.
-    private var axSnapshot: AXSnapshot?
+    // Recent snapshots keyed by epoch (ADR-024 v1.0): the daemon may actuate against a slightly older
+    // epoch than the latest (the post-activation re-reads bump the epoch after a push). Retaining a few
+    // lets us resolve an actuate by ITS epoch's id→descriptor map (ids are epoch-scoped); the
+    // descriptor then re-resolves to the live element. Avoids spurious "screen changed" rejections.
+    private var axSnapshots: [Int: AXSnapshot] = [:]
     private var axEpoch = 0
     private var lastAxDom = ""                // dedup: only push when the control set actually changes
 
@@ -82,7 +86,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let snap = AXSerializer.serialize(pid: pid, epoch: axEpoch + 1)
         guard snap.dom != lastAxDom else { return }
         axEpoch += 1
-        axSnapshot = snap
+        axSnapshots[snap.epoch] = snap
+        for old in axSnapshots.keys where old < snap.epoch - 3 { axSnapshots[old] = nil }  // keep last few
         lastAxDom = snap.dom
         client?.call("ax_context", ["epoch": snap.epoch, "dom": snap.dom, "ids": snap.ids,
                                     "app": name]) { _, _ in }
@@ -216,9 +221,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         case "consent_sync":                                 // (re)connect -> reconcile against the server
             reconcileConsents(body)
         case "actuate":                                      // ADR-021: an approved GUI action to perform
+            let ep = body["epoch"] as? Int ?? -1
             let (ok, detail) = AXActuator.actuate(
-                snapshot: axSnapshot,
-                epoch: body["epoch"] as? Int ?? -1,
+                snapshot: axSnapshots[ep],                   // resolve against THIS epoch's map (v1.0 fix)
+                epoch: ep,
                 id: body["id"] as? String ?? "",
                 verb: body["verb"] as? String ?? "",
                 args: body["args"] as? [String: Any] ?? [:])

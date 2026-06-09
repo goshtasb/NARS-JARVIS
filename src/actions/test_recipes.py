@@ -6,11 +6,14 @@ from actions.recipes import RECIPES
 
 def test_every_recipe_is_well_formed() -> None:
     for r in RECIPES:
-        assert r.verb in {"ax_set_value", "ax_press"}, r
+        assert r.verb in {"ax_set_value", "ax_press", "ax_set_checked"}, r
         assert r.friction in {FRICTIONLESS, GATED}, r
         assert r.intent and r.label and r.role and r.title, r
-        # a value-taking recipe sets a slider; a no-value recipe presses a toggle/button
+        # ax_set_value takes a user value (slider); ax_set_checked carries a fixed desired state
+        # (idempotent toggle); ax_press takes neither.
         assert (r.verb == "ax_set_value") == r.takes_value, r
+        if r.verb == "ax_set_checked":
+            assert r.fixed_value in (0.0, 1.0) and not r.takes_value, r
 
 
 def test_recipe_for_known_and_unknown() -> None:
@@ -26,6 +29,12 @@ def test_should_gate_reads_friction_from_data() -> None:
     ga = Recipe("b", "b", None, "AXButton", "b", "ax_press", GATED, False)
     assert should_gate(fr) is False
     assert should_gate(ga) is True
+
+
+def test_increase_contrast_is_idempotent_set_on() -> None:
+    # v1.0 polish: "increase contrast" means ON (set-to-state), not a blind toggle.
+    r = recipe_for("increase_contrast")
+    assert r.verb == "ax_set_checked" and r.fixed_value == 1.0 and r.takes_value is False
 
 
 def test_v1_recipes_are_frictionless() -> None:
