@@ -12,6 +12,11 @@ final class ChatViewController: NSViewController {
     private let transcript = NSTextView()
     private let input = NSTextField()
     private let voiceButton = NSButton()
+    // ADR-021: inline consent (Approve/Deny) so approval never depends on a notification banner.
+    private let consentBar = NSView()
+    private let consentLabel = NSTextField(labelWithString: "")
+    private var consentId: Int?
+    var onConsent: ((Int, Bool) -> Void)?    // (consent id, approved) -> AppDelegate sends consent_resolve
     // Command words routed to the daemon as-is; anything else is treated as a question (`ask`).
     // Must track the daemon's dispatch + the console (`sentinel`/`forget`/`restore` were missing,
     // so "sentinel on" was being sent to the LLM as chat). `act` is intentionally NOT here — its
@@ -33,7 +38,7 @@ final class ChatViewController: NSViewController {
         title.alignment = .center
         title.textColor = .secondaryLabelColor
 
-        let scroll = NSScrollView(frame: NSRect(x: 8, y: 40, width: 404, height: 240))
+        let scroll = NSScrollView(frame: NSRect(x: 8, y: 72, width: 404, height: 208))
         scroll.hasVerticalScroller = true
         scroll.borderType = .bezelBorder
         transcript.isEditable = false
@@ -41,6 +46,26 @@ final class ChatViewController: NSViewController {
         transcript.autoresizingMask = [.width]
         transcript.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
         scroll.documentView = transcript
+
+        // Inline consent bar (hidden until a consent_request arrives): "<prompt>  [Approve] [Deny]".
+        consentBar.frame = NSRect(x: 8, y: 38, width: 404, height: 30)
+        consentBar.wantsLayer = true
+        consentBar.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.15).cgColor
+        consentBar.layer?.cornerRadius = 5
+        consentBar.isHidden = true
+        consentLabel.frame = NSRect(x: 8, y: 6, width: 250, height: 18)
+        consentLabel.font = NSFont.systemFont(ofSize: 11)
+        consentLabel.lineBreakMode = .byTruncatingTail
+        let approve = NSButton(title: "Approve", target: self, action: #selector(approveConsent))
+        approve.frame = NSRect(x: 262, y: 2, width: 72, height: 26)
+        approve.bezelColor = NSColor.systemGreen
+        approve.keyEquivalent = "\r"                      // Enter approves
+        let deny = NSButton(title: "Deny", target: self, action: #selector(denyConsent))
+        deny.frame = NSRect(x: 336, y: 2, width: 64, height: 26)
+        consentBar.addSubview(consentLabel)
+        consentBar.addSubview(approve)
+        consentBar.addSubview(deny)
+
         input.frame = NSRect(x: 8, y: 8, width: 312, height: 24)
         input.placeholderString = "learn / ask / tell …"
         input.target = self
@@ -54,6 +79,7 @@ final class ChatViewController: NSViewController {
         container.addSubview(quit)
         container.addSubview(title)
         container.addSubview(scroll)
+        container.addSubview(consentBar)
         container.addSubview(input)
         container.addSubview(voiceButton)
         self.view = container
@@ -62,6 +88,25 @@ final class ChatViewController: NSViewController {
     @objc private func quit() { onQuit?() }
     @objc private func stopAll() { onStop?() }
     @objc private func toggleVoice() { onToggleVoice?() }
+
+    // ── ADR-021 inline consent ──
+    /// Show the Approve/Deny bar for a pending consent request.
+    func showConsent(_ id: Int, _ prompt: String) {
+        consentId = id
+        consentLabel.stringValue = prompt
+        consentBar.isHidden = false
+    }
+    /// Hide the bar if it's showing this id (resolved elsewhere / expired).
+    func clearConsent(_ id: Int) {
+        if consentId == id { consentId = nil; consentBar.isHidden = true }
+    }
+    @objc private func approveConsent() { resolveConsent(true) }
+    @objc private func denyConsent() { resolveConsent(false) }
+    private func resolveConsent(_ approved: Bool) {
+        guard let id = consentId else { return }
+        consentId = nil; consentBar.isHidden = true
+        onConsent?(id, approved)
+    }
 
     /// AppDelegate flips this when recording starts/stops so the button reflects state.
     func setRecording(_ on: Bool) {

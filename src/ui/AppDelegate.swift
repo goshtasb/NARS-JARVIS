@@ -35,6 +35,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         popover.contentSize = NSSize(width: 420, height: 320)
         chat.onQuit = { NSApp.terminate(nil) }
         chat.onStop = { [weak self] in self?.emergencyStop() }
+        chat.onConsent = { [weak self] id, approved in    // ADR-021: inline Approve/Deny -> daemon
+            self?.client?.call("consent_resolve", ["id": id, "accepted": approved]) { _, body in
+                DispatchQueue.main.async { self?.chat.append(body["text"] as? String ?? "") }
+            }
+        }
 
         let path = ProcessInfo.processInfo.environment["NARS_JARVIS_SOCK"]
             ?? "\(NSTemporaryDirectory())nars-jarvis.sock"
@@ -271,6 +276,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         guard id >= 0 else { return }
         let prompt = (body["prompt"] as? String) ?? (body["label"] as? String) ?? "Approve this action?"
         chat.append("⏳ " + prompt)
+        chat.showConsent(id, prompt)                     // ADR-021: inline Approve/Deny in the window
         liveConsents.insert(id)
         postNotification(id: id, identifier: "consent-\(id)", title: "JARVIS needs your OK",
                          body: prompt, category: "CONSENT")
@@ -290,6 +296,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func withdrawConsent(_ id: Int) {
         guard id >= 0 else { return }
         liveConsents.remove(id)
+        chat.clearConsent(id)                            // ADR-021: hide the inline bar too
         consentTimers.removeValue(forKey: id)?.invalidate()
         let center = UNUserNotificationCenter.current()
         center.removeDeliveredNotifications(withIdentifiers: ["consent-\(id)"])
