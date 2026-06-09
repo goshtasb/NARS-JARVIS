@@ -22,6 +22,7 @@ from memory import MemoryStore, MetricsStore, SqliteGroundingStore
 from sentinel import SentinelStore, SurpriseDetector, SystemSentinel
 from sentinel.narrate import Narrator
 
+from .ax_dispatch import dispatch_ax
 from .consent_service import ConsentService
 from .sentinel_loop import SentinelLoop
 from .voice import WhisperJob, speak, whisper_available
@@ -58,12 +59,18 @@ class Session:
                               habits_provider=self._learned_habits,  # learned sentinel habits (ADR-012)
                               sentinel_beliefs_provider=self._sentinel_store.beliefs,  # grounding (ADR-013)
                               action_runner=ActionRunner(),  # conversational Mac actions (ADR-019)
-                              consent_opener=self._open_action_consent)  # destructive-action consent (ADR-020)
+                              consent_opener=self._open_action_consent,  # destructive-action consent (ADR-020)
+                              ax_provider=self._ax_provider,  # GUI actuation: focused-window DOM (ADR-021)
+                              ax_dispatch=self._ax_dispatch_verb)  # GUI actuation: verb -> consent -> actuate
         # M2 system sentinel (CPU/mem surprise) feeds the knowledge brain; alerts push as events.
         narrator = Narrator(NoNarrationLLM(), on_alert=lambda t: self._emit("alert", {"text": "⚠  " + t}))
         self._sys_detector = SurpriseDetector(self._brain, threshold=0.5, on_surprise=narrator.narrate)
         self._sys_sentinel = SystemSentinel(sink=self._sys_detector.observe, poll_interval=2.0)
         self._last = "no poll yet"
+        # ADR-021 GUI actuation: latest focused-window accessibility snapshot pushed by JARVIS.app.
+        self._ax_epoch = 0
+        self._ax_ids: set[str] = set()
+        self._ax_dom = ""
         # ADR-020: the Sentinel asks for consent through the same machine (ask-mode prompts).
         self._flow = SentinelLoop(db_path, self._emit, consent_request=self._consent.request)
         self._pending_learn: dict[str, dict] = {}
@@ -80,6 +87,7 @@ class Session:
             "status": self._status, "health": self._health, "sentinel": self._sentinel,
             "intervene": self._intervene, "voice": self._voice,  # intervene: Sentinel auto-mode undo
             "forget": self._forget, "restore": self._restore,
+            "ax_context": self._ax_context, "ax_result": self._ax_result,  # GUI actuation (ADR-021)
             "shutdown": self._do_shutdown,
         }.get(cmd)
         if handler is None:
@@ -210,6 +218,41 @@ class Session:
         """The open-consent set + server clock, unicast to a (re)connecting client so it reconciles
         its cards and recomputes TTLs (ADR-020 no-hung-card guarantee)."""
         return self._consent.snapshot()
+
+    # ── GUI actuation plane (ADR-021): JARVIS.app is the eyes+hands; the daemon never holds refs ──
+    def _ax_context(self, arg: object) -> tuple[bool, object]:
+        """The app pushes the focused window's pruned accessibility DOM + the valid element ids under
+        an epoch. We cache only strings; the id->element map stays in the app."""
+        if not isinstance(arg, dict):
+            return False, {"text": "ax_context expects {epoch, dom, ids}"}
+        self._ax_epoch = int(arg.get("epoch", 0))
+        self._ax_dom = str(arg.get("dom", ""))
+        self._ax_ids = {str(i) for i in (arg.get("ids") or [])}
+        return True, {"ok": True}
+
+    def _ax_result(self, arg: object) -> tuple[bool, object]:
+        """The app reports an actuation outcome; surface it to the user as an answer event."""
+        if isinstance(arg, dict):
+            self._emit("answer", {"text": str(arg.get("detail", "done."))})
+        return True, {"ok": True}
+
+    def _ax_provider(self) -> str:
+        """The focused-window controls block injected into the converse prompt (ADR-021). Empty when
+        no app has pushed a snapshot (non-app clients / nothing focused)."""
+        if not self._ax_dom:
+            return ""
+        return ("On-screen controls (focused window — you may act on these):\n"
+                f"{self._ax_dom}\n"
+                "To act, end your reply with [[DO: ax_press: <id>]] or "
+                "[[DO: ax_set_value: <id> <value>]] using an id from the list above.")
+
+    def _ax_dispatch_verb(self, verb: str, arg: str) -> str:
+        """Validate a [[DO: ax_*]] verb against the current epoch + closed catalog, then consent-gate
+        it; on approval it emits the `actuate` event to the app (ADR-021)."""
+        return dispatch_ax(self._consent, self._emit_actuate, self._ax_ids, self._ax_epoch, verb, arg)
+
+    def _emit_actuate(self, epoch: int, element_id: str, verb: str, args: dict) -> None:
+        self._emit("actuate", {"epoch": epoch, "id": element_id, "verb": verb, "args": args})
 
     def _status(self, arg: object) -> tuple[bool, object]:
         return True, {"text": f"last poll: {self._last} | L2 facts: {self._store.count()}"}

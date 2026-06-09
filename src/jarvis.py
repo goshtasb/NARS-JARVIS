@@ -10,6 +10,7 @@ from dataclasses import dataclass, replace
 from typing import Callable
 
 from actions import render_action_prompt
+from actions import resolve as _resolve_action
 from brain import Brain, canonical_input, input_accepted
 from context import (
     conflicting_habit,
@@ -134,6 +135,8 @@ class Jarvis:
                  sentinel_beliefs_provider: Callable[[], list[tuple[str, float, float]]] | None = None,
                  action_runner: object | None = None,
                  consent_opener: Callable[[str, Callable[[], object]], object] | None = None,
+                 ax_provider: Callable[[], str] | None = None,
+                 ax_dispatch: Callable[[str, str], str] | None = None,
                  ) -> None:
         self._translator = translator
         self._store = store
@@ -164,6 +167,11 @@ class Jarvis:
         # request for a destructive action and runs on_approve only on the human's approval. None =>
         # destructive actions are safely refused (tests/offline), never run unconfirmed.
         self._consent_opener = consent_opener
+        # GUI actuation (ADR-021): ax_provider injects the focused window's accessibility DOM into the
+        # prompt; ax_dispatch(verb, arg) validates+consent-gates a [[DO: ax_*]] verb and emits the
+        # actuate event to the app. None => no GUI control surface (tests/offline; non-app clients).
+        self._ax_provider = ax_provider
+        self._ax_dispatch = ax_dispatch
         self._voice = voice or Voice()  # template-only by default; formatter LLM is optional
         # LLM-first brain (ADR-007): when a real model is wired, converse() lets the LLM answer from
         # its own knowledge with the user's persistent memory injected as ground truth. With no
@@ -316,11 +324,14 @@ class Jarvis:
         memory = self._recall(question)
         live = self._context_provider() if self._context_provider is not None else ""
         habits = self._habits_provider() if self._habits_provider is not None else ""
+        ax = self._ax_provider() if self._ax_provider is not None else ""
         blocks: list[str] = []
         if live:
             blocks.append(live)
         if habits:                                            # ADR-012: learned preferences to respect
             blocks.append(habits)
+        if ax:                                                # ADR-021: on-screen controls to act on
+            blocks.append(ax)
         if memory:
             blocks.append("Persistent memory (the user taught you these; treat as ground truth):\n"
                           + memory)
@@ -400,10 +411,22 @@ class Jarvis:
         consent gate (ADR-020) and only acknowledged here — it runs on approval. The closed catalog is
         the safety boundary: unknown/unsafe actions return a refusal and never spawn. No runner
         (tests/offline) => no actions performed; no consent channel => destructive actions refused."""
-        if not actions or self._action_runner is None:
+        if not actions:
             return []
         results: list[str] = []
         for name, arg in actions:
+            act = _resolve_action(name)
+            if act is not None and act.kind == "ax":           # ADR-021: GUI actuation verb
+                if self._ax_dispatch is not None:
+                    try:
+                        results.append(self._ax_dispatch(name, arg))
+                    except Exception:  # noqa: BLE001
+                        results.append(f"Couldn't act on the screen ({name}).")
+                else:
+                    results.append(f"I can't control on-screen elements here ({name}).")
+                continue
+            if self._action_runner is None:
+                continue
             try:
                 result, spec = self._action_runner.propose(name, arg)
             except Exception:  # noqa: BLE001 — an action hiccup must never crash the turn

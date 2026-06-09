@@ -16,6 +16,18 @@ def test_available_lists_every_action() -> None:
     assert all(label for _name, label in catalog.available())  # every action is described
 
 
+def test_ax_verbs_are_closed_confirm_and_hidden_from_prompt_list() -> None:
+    # ADR-021: ax verbs are a closed set, kind="ax", consent-gated, and EXCLUDED from the static
+    # prompt list (surfaced contextually alongside the live AX DOM instead).
+    assert catalog.AX_VERBS == frozenset({"ax_press", "ax_set_value"})
+    for v in catalog.AX_VERBS:
+        a = catalog.resolve(v)
+        assert a is not None and a.kind == "ax" and a.confirm is True
+    listed = {name for name, _ in catalog.available()}
+    assert not (catalog.AX_VERBS & listed)               # not in the static action list
+    assert catalog.argv_for(catalog.resolve("ax_press"), "btn_1") is None  # never argv/safespawn
+
+
 def test_static_action_builds_fixed_argv() -> None:
     argv = catalog.argv_for(catalog.resolve("mute"))
     assert argv == ["osascript", "-e", "set volume output muted true"]

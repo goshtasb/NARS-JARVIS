@@ -19,6 +19,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // timers (so a card self-dismisses offline at the daemon-supplied deadline).
     private var liveConsents: Set<Int> = []
     private var consentTimers: [Int: Timer] = [:]
+    // ADR-021 GUI actuation: the latest focused-window AX snapshot (the id->element map lives here,
+    // in the app, never on the wire), and a monotonically increasing epoch.
+    private var axSnapshot: AXSnapshot?
+    private var axEpoch = 0
 
     func applicationDidFinishLaunching(_ note: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -37,7 +41,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         sockPath = path
         setupNotifications()
         setupVoice()
+        setupAX()                   // ADR-021: watch focus changes, serialize the focused window
         connect(reconnect: false)   // ADR-017: retry until up, and auto-reconnect on a daemon restart
+    }
+
+    // ── ADR-021: GUI actuation — eyes (serialize focused window) + hands (actuate on approval) ──
+    private func setupAX() {
+        AXPermission.requestIfNeeded()   // surfaces JARVIS in the Accessibility list for one-time grant
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self, selector: #selector(appActivated(_:)),
+            name: NSWorkspace.didActivateApplicationNotification, object: nil)
+    }
+
+    @objc private func appActivated(_ note: Notification) {
+        guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+              app.bundleIdentifier != Bundle.main.bundleIdentifier,   // skip ourselves
+              AXPermission.trusted() else { return }
+        axEpoch += 1
+        let snap = AXSerializer.serialize(pid: app.processIdentifier, epoch: axEpoch)
+        axSnapshot = snap
+        client?.call("ax_context", ["epoch": snap.epoch, "dom": snap.dom, "ids": snap.ids]) { _, _ in }
     }
 
     // ── ADR-017: resilient connect — retry with backoff, survive daemon restarts ──
@@ -167,6 +190,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             withdrawConsent(body["id"] as? Int ?? -1)
         case "consent_sync":                                 // (re)connect -> reconcile against the server
             reconcileConsents(body)
+        case "actuate":                                      // ADR-021: an approved GUI action to perform
+            let (ok, detail) = AXActuator.actuate(
+                snapshot: axSnapshot,
+                epoch: body["epoch"] as? Int ?? -1,
+                id: body["id"] as? String ?? "",
+                verb: body["verb"] as? String ?? "",
+                args: body["args"] as? [String: Any] ?? [:])
+            chat.append((ok ? "🤖 " : "⚠ ") + detail)
+            client?.call("ax_result", ["id": body["id"] as? String ?? "", "ok": ok, "detail": detail]) { _, _ in }
         case "intervention":
             let id = body["id"] as? Int ?? -1
             let prompt = body["prompt"] as? String ?? "Focus intervention"

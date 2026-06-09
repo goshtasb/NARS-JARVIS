@@ -537,6 +537,38 @@ def test_converse_destructive_action_refused_without_consent_channel() -> None:
         assert "needs confirmation" in out.lower()
 
 
+def test_converse_injects_ax_dom() -> None:
+    # ADR-021: when an ax_provider supplies a focused-window DOM, it's injected into the prompt.
+    asst = _RememberLLM("ok")
+    dom = ("On-screen controls (focused window — you may act on these):\n"
+           "[sld_1] AXSlider \"Brightness\" = 0.6")
+    with Brain(cycles_per_step=50) as brain:
+        j = Jarvis(Translator(asst), MemoryStore(), brain, assistant=asst,
+                   ax_provider=lambda: dom)
+        j.converse("how bright is my screen?")
+        assert "[sld_1] AXSlider \"Brightness\"" in asst.last_user      # AX DOM injected
+
+
+def test_converse_routes_ax_verb_to_dispatch() -> None:
+    # An ax verb [[DO:]] must route to ax_dispatch (not the action runner / safespawn).
+    calls: list[tuple[str, str]] = []
+    asst = _RememberLLM("On it.\n[[DO: ax_set_value: sld_1 45]]")
+    with Brain(cycles_per_step=50) as brain:
+        j = Jarvis(Translator(asst), MemoryStore(), brain, assistant=asst,
+                   ax_dispatch=lambda verb, arg: calls.append((verb, arg)) or "⏳ Awaiting your approval: set sld_1 to 45")
+        out = j.converse("set brightness to 45%")
+        assert calls == [("ax_set_value", "sld_1 45")]
+        assert "Awaiting your approval" in out
+
+
+def test_converse_ax_verb_without_dispatch_is_safe() -> None:
+    asst = _RememberLLM("On it.\n[[DO: ax_press: btn_1]]")
+    with Brain(cycles_per_step=50) as brain:
+        j = Jarvis(Translator(asst), MemoryStore(), brain, assistant=asst)   # no ax_dispatch
+        out = j.converse("click it")
+        assert "can't control on-screen elements" in out and "On it." in out
+
+
 if __name__ == "__main__":
     test_converse_yes_with_cited_evidence()
     test_converse_llm_first_answers_and_injects_memory()
@@ -575,4 +607,7 @@ if __name__ == "__main__":
     test_converse_action_coexists_with_remember()
     test_converse_destructive_action_routes_to_consent()
     test_converse_destructive_action_refused_without_consent_channel()
+    test_converse_injects_ax_dom()
+    test_converse_routes_ax_verb_to_dispatch()
+    test_converse_ax_verb_without_dispatch_is_safe()
     print("test_converse: OK")

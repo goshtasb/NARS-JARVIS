@@ -44,7 +44,14 @@ _ACTIONS: tuple[Action, ...] = (
     Action("web_search", "search the web for a query", "argv", takes_arg=True),
     # Destructive / irreversible -> gated behind interactive consent (ADR-020).
     Action("empty_trash", "empty the Trash (permanently delete its contents)", "argv", confirm=True),
+    # GUI actuation verbs (ADR-021): kind="ax". Targets are LIVE accessibility-element ids from the
+    # focused window (not a static enum); they run in JARVIS.app, never via safespawn. Consent-gated.
+    Action("ax_press", "click a UI control", "ax", takes_arg=True, confirm=True),
+    Action("ax_set_value", "set a UI control's value (e.g. a slider)", "ax", takes_arg=True, confirm=True),
 )
+
+# The closed set of GUI-actuation verbs (ADR-021). Validated here; executed in the app.
+AX_VERBS: frozenset[str] = frozenset(a.name for a in _ACTIONS if a.kind == "ax")
 
 _REGISTRY: dict[str, Action] = {a.name: a for a in _ACTIONS}
 
@@ -79,8 +86,10 @@ def resolve(name: str) -> Action | None:
 
 
 def available() -> list[tuple[str, str]]:
-    """(name, label) for every action — the source for the prompt's action list."""
-    return [(a.name, a.label) for a in _ACTIONS]
+    """(name, label) for the conversational actions shown in the prompt. EXCLUDES the AX verbs
+    (ADR-021): those only make sense with a live on-screen element tree, so they are surfaced
+    contextually alongside the AX DOM, not in the static action list."""
+    return [(a.name, a.label) for a in _ACTIONS if a.kind != "ax"]
 
 
 def _valid_app(name: str) -> bool:
