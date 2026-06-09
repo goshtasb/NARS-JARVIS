@@ -46,6 +46,8 @@ _ACTIONS: tuple[Action, ...] = (
     Action("web_search", "search the web for a query", "argv", takes_arg=True),
     # Destructive / irreversible -> gated behind interactive consent (ADR-020).
     Action("empty_trash", "empty the Trash (permanently delete its contents)", "argv", confirm=True),
+    # Read-only file search (ADR-025): Spotlight by name. Returns text; mutates nothing -> frictionless.
+    Action("find_file", "find files by name (Spotlight search)", "query", takes_arg=True),
     # GUI actuation verbs (ADR-021): kind="ax". Targets are LIVE accessibility-element ids from the
     # focused window (not a static enum); they run in JARVIS.app, never via safespawn. Consent-gated.
     Action("ax_press", "click a UI control", "ax", takes_arg=True, confirm=True),

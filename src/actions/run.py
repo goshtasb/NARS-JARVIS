@@ -14,6 +14,7 @@ import safespawn
 
 from . import catalog
 from .diagnostics import system_report
+from .files import find_file
 
 _TIMEOUT = 15  # seconds — these are quick system commands; never hang the converse turn
 
@@ -34,6 +35,8 @@ def perform(name: str, arg: str = "", *, spawn: Callable = safespawn.run) -> str
         return f"I don't know how to do that ({name})."
     if action.kind == "diag":
         return system_report()
+    if action.kind == "query":           # read-only search (e.g. find_file via Spotlight)
+        return find_file(arg, spawn=spawn)
     argv = catalog.argv_for(action, arg)
     if argv is None:
         return f"I can't do that — {arg!r} isn't a safe argument for {action.name}."

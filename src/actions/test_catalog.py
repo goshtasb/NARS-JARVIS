@@ -16,6 +16,12 @@ def test_available_lists_every_action() -> None:
     assert all(label for _name, label in catalog.available())  # every action is described
 
 
+def test_find_file_is_a_listed_readonly_query_action() -> None:
+    a = catalog.resolve("find_file")
+    assert a is not None and a.kind == "query" and a.takes_arg and a.confirm is False
+    assert "find_file" in {name for name, _ in catalog.available()}   # surfaced in the prompt
+
+
 def test_ax_verbs_are_closed_confirm_and_hidden_from_prompt_list() -> None:
     # ADR-021: ax verbs are a closed set, kind="ax", consent-gated, and EXCLUDED from the static
     # prompt list (surfaced contextually alongside the live AX DOM instead).
