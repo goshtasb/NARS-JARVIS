@@ -152,6 +152,7 @@ class Jarvis:
                  ax_dispatch: Callable[[str, str], str] | None = None,
                  nav_dispatch: Callable[[str, str], str] | None = None,
                  navigate: Callable[[str, str], str] | None = None,
+                 habit_observer: Callable[[str, str, str], None] | None = None,
                  ) -> None:
         self._translator = translator
         self._store = store
@@ -193,6 +194,9 @@ class Jarvis:
         # Bounded agent loop (ADR-024 Phase 2): a callable (target, question) -> str that opens a surface
         # and arms the navigate→re-perceive→act loop in the daemon. None => no agent loop (tests/offline).
         self._navigate_cb = navigate
+        # Habit Brain (ADR-026): a callable (action, arg, outcome) that records an executed action as NARS
+        # evidence so recurring patterns become proposable habits. None => no habit learning (tests).
+        self._habit_observer = habit_observer
         self._voice = voice or Voice()  # template-only by default; formatter LLM is optional
         # LLM-first brain (ADR-007): when a real model is wired, converse() lets the LLM answer from
         # its own knowledge with the user's persistent memory injected as ground truth. With no
@@ -426,6 +430,15 @@ class Jarvis:
             return "\n".join(tail) if tail else self._converse_grounded(question)
         return "\n".join([clean, *tail]) if tail else clean
 
+    def _record_habit(self, action: str, arg: str) -> None:
+        """Feed an executed action to the Habit Brain (ADR-026); the observer ignores non-eligible
+        (read-only/destructive) actions, so only safe repeatable state-changers form habits."""
+        if self._habit_observer is not None:
+            try:
+                self._habit_observer(action, arg, "did")
+            except Exception:  # noqa: BLE001 — habit telemetry must never break the turn
+                pass
+
     def agent_step(self, request: str) -> list[tuple[str, str]]:
         """One bounded-agent-loop step (ADR-024 Phase 2): show the model the goal + the current
         on-screen controls and PARSE (not execute) its single directive. The daemon routes the result
@@ -476,6 +489,7 @@ class Jarvis:
                 if self._nav_dispatch is not None:
                     try:
                         results.append(self._nav_dispatch(name, arg))
+                        self._record_habit(name, arg)          # ADR-026: user-asked -> habit evidence
                     except Exception:  # noqa: BLE001
                         results.append(f"Couldn't do that ({name}).")
                 else:
@@ -490,6 +504,7 @@ class Jarvis:
             if spec is None:
                 if result is not None:
                     results.append(result)
+                    self._record_habit(name, arg)          # ADR-026: user-asked -> habit evidence
             elif self._consent_opener is not None:                 # destructive -> gate it
                 try:
                     self._consent_opener(spec.label, spec.on_approve)

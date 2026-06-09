@@ -12,8 +12,9 @@ import uuid
 from datetime import datetime
 from typing import Callable
 
-from actions import ActionRunner, recipe_for, should_gate
+from actions import ActionRunner, recipe_for, resolve as resolve_action, should_gate
 from brain import Brain
+from habits import HabitStore
 from context import render_habits, render_live_context
 from execution import DecisionStats, build_air_gapped_executor, decide
 from jarvis import Jarvis
@@ -27,6 +28,7 @@ import safespawn
 from .agent_loop import agent_route, resolve_surface
 from .ax_dispatch import dispatch_ax, find_control_id
 from .consent_service import ConsentService
+from .habit_loop import HabitLoop
 from .sentinel_loop import SentinelLoop
 from .voice import WhisperJob, speak, whisper_available
 from .wiring import NoNarrationLLM, make_claim_source, make_embedder
@@ -57,6 +59,11 @@ class Session:
         # Unified interactive consent (ADR-020): the single owner of "ask the human, then act" for
         # destructive actions, executor confirmation, and Sentinel training.
         self._consent = ConsentService(self._emit)
+        # Conversational Mac actions (ADR-019) — one instance, reused by converse + habit actuation.
+        self._actions = ActionRunner()
+        # Habit Brain (ADR-026): execution -> NARS evidence; armed habits propose via the consent gate.
+        self._habit_store = HabitStore(db_path)
+        self._habit_loop = HabitLoop(self._brain, self._habit_store, self._consent, self._habit_actuate)
         voice = Voice(formatter=llm if hasattr(llm, "generate_text") else None)
         self._jarvis = Jarvis(Translator(llm, embedder=embedder, cache=grounding),
                               self._store, self._brain, executor=self._executor, gate=gate,
@@ -65,7 +72,8 @@ class Session:
                               context_provider=self._live_context,  # dynamic context (ADR-010)
                               habits_provider=self._learned_habits,  # learned sentinel habits (ADR-012)
                               sentinel_beliefs_provider=self._sentinel_store.beliefs,  # grounding (ADR-013)
-                              action_runner=ActionRunner(),  # conversational Mac actions (ADR-019)
+                              action_runner=self._actions,  # conversational Mac actions (ADR-019)
+                              habit_observer=self._habit_loop.observe,  # execution -> habit evidence (ADR-026)
                               consent_opener=self._open_action_consent,  # destructive-action consent (ADR-020)
                               ax_provider=self._ax_provider,  # GUI actuation: focused-window DOM (ADR-021)
                               ax_dispatch=self._ax_dispatch_verb,  # GUI actuation: verb -> consent -> actuate
@@ -304,6 +312,14 @@ class Session:
             return f"Setting {noun} to {int(value)}%."
         return f"Done — {r.intent.replace('_', ' ')}."
 
+    def _habit_actuate(self, action: str, arg: str) -> str:
+        """Run an approved habit for real (ADR-026) — route like converse: a recipe via nav, else the
+        action runner. Reached only after the human approves the proposal."""
+        a = resolve_action(action)
+        if a is not None and a.kind == "nav":
+            return self._nav_dispatch(action, arg)
+        return self._actions.perform(action, arg)
+
     def _ax_result(self, arg: object) -> tuple[bool, object]:
         """The app reports an actuation outcome; surface it to the user as an answer event."""
         if isinstance(arg, dict):
@@ -507,6 +523,10 @@ class Session:
             self._pending_nav = None
         self._drive_agent()   # ADR-024 P2: advance an active agent loop on the settled DOM
         try:
+            self._habit_loop.propose_due()   # ADR-026: offer an armed habit for the current hour-bucket
+        except Exception as exc:  # noqa: BLE001 — a habit-tick hiccup must never kill the loop
+            self._emit("alert", {"text": f"[habit error] {exc}"})
+        try:
             self._sys_sentinel.run_once()
             import psutil
             self._last = f"cpu={psutil.cpu_percent():.0f}% mem={psutil.virtual_memory().percent:.0f}%"
@@ -517,6 +537,7 @@ class Session:
         self._flow.close()
         self._brain.close()
         self._sentinel_store.close()
+        self._habit_store.close()
 
 
 def _ingestion_health(s: dict) -> list[str]:

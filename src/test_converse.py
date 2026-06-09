@@ -609,6 +609,26 @@ def test_converse_ax_verb_without_dispatch_is_safe() -> None:
         assert "can't control on-screen elements" in out and "On it." in out
 
 
+def test_converse_records_eligible_action_as_habit_evidence() -> None:
+    # ADR-026: an executed action is reported to the Habit Brain (the loop filters eligibility).
+    calls: list[tuple[str, str, str]] = []
+    asst = _RememberLLM("Muted.\n[[DO: mute]]")
+    runner = _FakeRunner()
+    with Brain(cycles_per_step=50) as brain:
+        j = Jarvis(Translator(asst), MemoryStore(), brain, assistant=asst, action_runner=runner,
+                   habit_observer=lambda a, g, o: calls.append((a, g, o)))
+        j.converse("mute the volume")
+        assert ("mute", "", "did") in calls
+
+
+def test_converse_no_habit_observer_is_safe() -> None:
+    asst = _RememberLLM("Muted.\n[[DO: mute]]")
+    with Brain(cycles_per_step=50) as brain:
+        j = Jarvis(Translator(asst), MemoryStore(), brain, assistant=asst, action_runner=_FakeRunner())
+        out = j.converse("mute the volume")          # no habit_observer wired -> no crash
+        assert "Muted." in out
+
+
 if __name__ == "__main__":
     test_converse_yes_with_cited_evidence()
     test_converse_llm_first_answers_and_injects_memory()
@@ -647,6 +667,8 @@ if __name__ == "__main__":
     test_converse_action_coexists_with_remember()
     test_converse_destructive_action_routes_to_consent()
     test_converse_destructive_action_refused_without_consent_channel()
+    test_converse_records_eligible_action_as_habit_evidence()
+    test_converse_no_habit_observer_is_safe()
     test_converse_injects_ax_dom()
     test_converse_routes_ax_verb_to_dispatch()
     test_converse_routes_nav_verb_to_nav_dispatch()
