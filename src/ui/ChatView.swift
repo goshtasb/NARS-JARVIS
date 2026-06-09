@@ -83,8 +83,9 @@ final class ChatViewController: NSViewController {
         input.stringValue = ""
         append("» " + line)
         let parts = line.split(separator: " ", maxSplits: 1).map(String.init)
-        let known = Self.known.contains(parts[0])
-        let cmd = known ? parts[0] : "ask"                       // bare text -> a question
+        let head = parts[0].lowercased()                         // commands are case-insensitive
+        let known = Self.known.contains(head)
+        let cmd = known ? head : "ask"                           // bare text -> a question
         let arg = known ? (parts.count > 1 ? parts[1] : "") : line
         client.call(cmd, arg) { [weak self] ok, body in
             DispatchQueue.main.async { self?.render(cmd, ok, body) }
