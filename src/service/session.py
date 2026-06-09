@@ -71,6 +71,7 @@ class Session:
         self._ax_epoch = 0
         self._ax_ids: set[str] = set()
         self._ax_dom = ""
+        self._ax_app = ""
         # ADR-020: the Sentinel asks for consent through the same machine (ask-mode prompts).
         self._flow = SentinelLoop(db_path, self._emit, consent_request=self._consent.request)
         self._pending_learn: dict[str, dict] = {}
@@ -228,6 +229,7 @@ class Session:
         self._ax_epoch = int(arg.get("epoch", 0))
         self._ax_dom = str(arg.get("dom", ""))
         self._ax_ids = {str(i) for i in (arg.get("ids") or [])}
+        self._ax_app = str(arg.get("app", ""))
         return True, {"ok": True}
 
     def _ax_result(self, arg: object) -> tuple[bool, object]:
@@ -255,7 +257,13 @@ class Session:
         self._emit("actuate", {"epoch": epoch, "id": element_id, "verb": verb, "args": args})
 
     def _status(self, arg: object) -> tuple[bool, object]:
-        return True, {"text": f"last poll: {self._last} | L2 facts: {self._store.count()}"}
+        # ADR-021 visibility: surface what the app's "eyes" last captured, so a failed actuation is
+        # debuggable (no AX read at all => Accessibility not granted or nothing focused).
+        if self._ax_ids:
+            ax = f" | AX: {len(self._ax_ids)} controls from {self._ax_app or '?'} (epoch {self._ax_epoch})"
+        else:
+            ax = " | AX: no window captured yet (grant Accessibility to JARVIS + focus a window)"
+        return True, {"text": f"last poll: {self._last} | L2 facts: {self._store.count()}{ax}"}
 
     def _live_context(self) -> str:
         """Fresh live-facts block for each converse turn (ADR-010): real local date/time, the latest

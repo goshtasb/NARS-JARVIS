@@ -60,7 +60,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         axEpoch += 1
         let snap = AXSerializer.serialize(pid: app.processIdentifier, epoch: axEpoch)
         axSnapshot = snap
-        client?.call("ax_context", ["epoch": snap.epoch, "dom": snap.dom, "ids": snap.ids]) { _, _ in }
+        client?.call("ax_context", ["epoch": snap.epoch, "dom": snap.dom, "ids": snap.ids,
+                                    "app": app.localizedName ?? ""]) { _, _ in }
     }
 
     // ── ADR-017: resilient connect — retry with backoff, survive daemon restarts ──
