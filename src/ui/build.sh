@@ -32,7 +32,18 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 </dict></plist>
 PLIST
 
-# Ad-hoc sign so the bundle has an identity (UNUserNotificationCenter needs one). Best-effort.
-codesign --force --deep --sign - "$app" 2>/dev/null \
-  || echo "[warn] ad-hoc codesign failed; notifications may require manual approval"
+# Sign with a STABLE self-signed identity (ADR-021) so the app's Designated Requirement is identity-
+# based and constant across rebuilds — this keeps the macOS Accessibility (TCC) grant valid every
+# rebuild instead of dying each time (the ad-hoc churn that broke GUI actuation repeatedly). Falls
+# back to ad-hoc on a machine without the cert; run ui/setup-signing.sh once to create it.
+IDENTITY="JARVIS Self-Signed"
+if security find-identity -p codesigning 2>/dev/null | grep -q "$IDENTITY"; then
+  codesign --force --deep --sign "$IDENTITY" "$app" 2>/dev/null \
+    && echo "[sign] $IDENTITY — stable; Accessibility grant persists across rebuilds" \
+    || echo "[warn] codesign with '$IDENTITY' failed"
+else
+  codesign --force --deep --sign - "$app" 2>/dev/null \
+    || echo "[warn] ad-hoc codesign failed; notifications may require manual approval"
+  echo "[sign] ad-hoc — run ui/setup-signing.sh once so the Accessibility grant survives rebuilds"
+fi
 echo "built $app"
