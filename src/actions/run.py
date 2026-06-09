@@ -7,6 +7,7 @@ argv with **no real side effects**. `ActionRunner` is the small object injected 
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Callable
 
 import safespawn
@@ -15,6 +16,15 @@ from . import catalog
 from .diagnostics import system_report
 
 _TIMEOUT = 15  # seconds — these are quick system commands; never hang the converse turn
+
+
+@dataclass(frozen=True)
+class ConsentSpec:
+    """A destructive action's deferred execution (ADR-020): a human label + the on-approve thunk that
+    actually runs it. `propose` returns one instead of executing; the consent gate runs the thunk only
+    on the user's explicit approval. The thunk is held server-side — never serialized to a client."""
+    label: str
+    on_approve: Callable[[], str]
 
 
 def perform(name: str, arg: str = "", *, spawn: Callable = safespawn.run) -> str:
@@ -49,3 +59,18 @@ class ActionRunner:
 
     def perform(self, name: str, arg: str = "") -> str:
         return perform(name, arg, spawn=self._spawn)
+
+    def propose(self, name: str, arg: str = "") -> tuple[str | None, ConsentSpec | None]:
+        """Policy layer over `perform` (ADR-020): a reversible action runs immediately and returns
+        `(result, None)`; a `confirm` action validates its argument now, then returns `(None,
+        ConsentSpec)` WITHOUT executing — the caller routes the spec through the consent gate. An
+        unknown name or unsafe argument returns `(refusal, None)` and never opens a consent."""
+        action = catalog.resolve(name)
+        if action is None:
+            return (f"I don't know how to do that ({name}).", None)
+        if not action.confirm:
+            return (self.perform(name, arg), None)
+        if action.kind == "argv" and catalog.argv_for(action, arg) is None:
+            return (f"I can't do that — {arg!r} isn't a safe argument for {action.name}.", None)
+        label = action.label + (f": {arg}" if action.takes_arg and arg else "")
+        return (None, ConsentSpec(label=label, on_approve=lambda: self.perform(name, arg)))

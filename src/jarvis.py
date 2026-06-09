@@ -133,6 +133,7 @@ class Jarvis:
                  habits_provider: Callable[[], str] | None = None,
                  sentinel_beliefs_provider: Callable[[], list[tuple[str, float, float]]] | None = None,
                  action_runner: object | None = None,
+                 consent_opener: Callable[[str, Callable[[], object]], object] | None = None,
                  ) -> None:
         self._translator = translator
         self._store = store
@@ -159,6 +160,10 @@ class Jarvis:
         self._action_runner = (action_runner
                                if (action_runner is not None and hasattr(action_runner, "perform"))
                                else None)
+        # Interactive consent (ADR-020): a callable (label, on_approve) -> id that opens a consent
+        # request for a destructive action and runs on_approve only on the human's approval. None =>
+        # destructive actions are safely refused (tests/offline), never run unconfirmed.
+        self._consent_opener = consent_opener
         self._voice = voice or Voice()  # template-only by default; formatter LLM is optional
         # LLM-first brain (ADR-007): when a real model is wired, converse() lets the LLM answer from
         # its own knowledge with the user's persistent memory injected as ground truth. With no
@@ -390,17 +395,30 @@ class Jarvis:
         return "\n".join([clean, *tail]) if tail else clean
 
     def _run_actions(self, actions: list[tuple[str, str]]) -> list[str]:
-        """Execute parsed [[DO:]] directives through the wired runner; return each result string. The
-        runner's closed catalog is the safety boundary — an unknown/unsafe action returns a refusal
-        string and never spawns. No runner (tests/offline) => no actions performed."""
+        """Execute parsed [[DO:]] directives through the wired runner; return each result string. A
+        reversible action runs immediately; a destructive (`confirm`) action is routed through the
+        consent gate (ADR-020) and only acknowledged here — it runs on approval. The closed catalog is
+        the safety boundary: unknown/unsafe actions return a refusal and never spawn. No runner
+        (tests/offline) => no actions performed; no consent channel => destructive actions refused."""
         if not actions or self._action_runner is None:
             return []
         results: list[str] = []
         for name, arg in actions:
             try:
-                results.append(self._action_runner.perform(name, arg))
+                result, spec = self._action_runner.propose(name, arg)
             except Exception:  # noqa: BLE001 — an action hiccup must never crash the turn
-                pass
+                continue
+            if spec is None:
+                if result is not None:
+                    results.append(result)
+            elif self._consent_opener is not None:                 # destructive -> gate it
+                try:
+                    self._consent_opener(spec.label, spec.on_approve)
+                    results.append(f"⏳ Awaiting your approval: {spec.label}")
+                except Exception:  # noqa: BLE001
+                    results.append(f"Couldn't request approval for: {spec.label}")
+            else:                                                  # no consent channel -> never run it
+                results.append(f"That needs confirmation, which isn't available here: {spec.label}")
         return results
 
     def forget(self, text: str) -> list[str]:

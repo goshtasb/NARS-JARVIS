@@ -90,10 +90,16 @@ class Console:
         self._w("\r\x1b[K" + PROMPT + self._buf)
 
     def _on_event(self, kind: str, body: dict) -> None:
-        if kind == "intervention":
+        if kind == "consent_request":          # ADR-020: unified approve/deny prompt
+            self._pending = {"id": body.get("id"), "consent": True}
+            self._emit((body.get("prompt", "") or body.get("label", "")) + "  [y/n]")
+        elif kind == "consent_closed":         # expired/resolved elsewhere -> drop a stale prompt
+            if self._pending is not None and self._pending.get("id") == body.get("id"):
+                self._pending = None
+        elif kind == "intervention":           # legacy Sentinel path (no consent wired)
             self._pending = {"id": body.get("id")}
             self._emit(body.get("prompt", ""))
-        else:                                  # "alert"
+        else:                                  # "alert" / "acted" / "answer" / "transcript"
             self._emit(body.get("text", ""))
 
     # ── main loop ─────────────────────────────────────────────────────
@@ -200,15 +206,18 @@ class Console:
         if not ok:
             return self._render(body)
         self._render(body)
-        if body.get("needs_confirm") and body.get("token"):
-            if self._confirm("approve and run now?"):
-                _, more = self._client.call("act_confirm", {"token": body["token"]})
-                self._render(more)
+        if body.get("needs_confirm") and body.get("consent_id") is not None:   # ADR-020
+            accepted = self._confirm("approve and run now?")
+            _, more = self._client.call("consent_resolve",
+                                        {"id": body["consent_id"], "accepted": accepted})
+            self._render(more)
 
     def _resolve_intervention(self, line: str) -> None:
         pend, self._pending = self._pending, None
         accepted = line.strip().lower() in ("y", "yes")
-        _, body = self._client.call("intervene", {"id": pend["id"], "accepted": accepted})
+        # ADR-020: a consent prompt resolves via the unified command; legacy intervention via `intervene`.
+        cmd = "consent_resolve" if pend.get("consent") else "intervene"
+        _, body = self._client.call(cmd, {"id": pend["id"], "accepted": accepted})
         self._render(body)
 
     def _confirm(self, question: str) -> bool:

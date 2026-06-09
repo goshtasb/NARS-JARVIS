@@ -59,16 +59,21 @@ EventSink = Callable[[str, dict], None]
 
 
 class SentinelLoop:
-    def __init__(self, db_path: str, on_event: EventSink) -> None:
+    def __init__(self, db_path: str, on_event: EventSink,
+                 consent_request: Callable | None = None) -> None:
         self._db_path = db_path
         self._emit = on_event
+        # ADR-020: ask-mode prompts go through the unified consent machine when wired (the daemon
+        # injects ConsentService.request). None => legacy `intervention` event path (tests/offline).
+        self._consent_request = consent_request
         self._sensor: Sensor | None = None
         self._brain: Brain | None = None
         self._store: SentinelStore | None = None
         self._detector: SurpriseDetector | None = None
         self._ring, self._frag, self._level = RingState(), DiscState(), None
         self._block, self._recent = BlockState(), []
-        self._pending: dict | None = None       # {id, bundles} — one in-flight intervention
+        self._pending: dict | None = None       # {id, bundles} — one in-flight AUTO-mode undo
+        self._ask_open: int | None = None       # consent id of an in-flight ASK-mode prompt (ADR-020)
         self._next_id = 1
         self._started, self._obs, self._burnin = 0.0, 0, False
         self._events, self._last = 0, None
@@ -117,6 +122,7 @@ class SentinelLoop:
                                           on_surprise=self._on_surprise, min_confidence=_BURNIN_FLOOR)
         self._ring, self._frag, self._level = RingState(), DiscState(), None
         self._block, self._recent, self._pending = BlockState(), [], None
+        self._ask_open = None
         self._started, self._obs = time.monotonic(), 0
         # If the baseline already crossed the floor in a prior session, we're armed immediately.
         self._burnin = self._store.calib()["burnin_observations"] is not None
@@ -221,7 +227,7 @@ class SentinelLoop:
                 pass
 
     def _on_surprise(self, ev) -> None:
-        if ev.actual_expectation >= 0.5 or self._pending is not None:
+        if ev.actual_expectation >= 0.5 or self._pending is not None or self._ask_open is not None:
             return
         bundles = list(dict.fromkeys(b for b, _ in self._recent))
         cats = sorted({k for _, k in self._recent})
@@ -240,9 +246,42 @@ class SentinelLoop:
                     if self._dry_run
                     else f"Hid {', '.join(cats)} apps — you were fragmenting. (Undo?)")
             self._emit("acted", {"id": iid, "text": text})
+        elif self._consent_request is not None:
+            # ADR-020: ask the human through the unified consent machine. The continuation hides +
+            # trains the gate on approval, and trains negative on deny/expiry (default-deny).
+            self._open_ask_consent(cats, bundles)
         else:
+            # Legacy path (no consent wired — tests/offline): the bespoke intervention event.
             self._pending = {"id": iid, "bundles": bundles, "cats": cats, "ts": time.time(), "mode": "ask"}
             self._emit("intervention", {"id": iid, "prompt": intervention_prompt(self._level or "fragmented", cats)})
+
+    def _open_ask_consent(self, cats: list[str], bundles: list[str]) -> None:
+        """Open an ASK-mode consent request (ADR-020). Approval hides the apps and feeds positive
+        evidence (training the autonomy gate); deny/expiry feeds heavy negative evidence."""
+        ts = time.time()
+
+        def _approve() -> str:
+            if self._sensor is not None:
+                for bundle in bundles:
+                    self._sensor.hide(bundle)
+            self._feed_consent(cats, approved=True)
+            if self._store is not None:
+                self._store.record_intervention(ts, True)
+            self._ask_open = None
+            return f"✓ hidden: {', '.join(bundles) or '(none running)'}"
+
+        def _deny() -> str:
+            self._feed_consent(cats, approved=False)
+            if self._store is not None:
+                self._store.record_intervention(ts, False)
+            self._ask_open = None
+            return "ok — I won't hide those."
+
+        self._ask_open = self._consent_request(
+            kind="intervention",
+            prompt=intervention_prompt(self._level or "fragmented", cats),
+            label="hide " + ", ".join(cats) + " apps",
+            on_approve=_approve, on_negative=_deny, expiry_default="deny")
 
     def resolve_intervention(self, iid: int, accepted: bool) -> str:
         if self._pending is None or self._pending["id"] != iid:

@@ -1,7 +1,7 @@
 """Unit tests for action execution (ADR-019). A recording fake replaces the spawn, so NO real OS
 side effect occurs — we assert the argv that *would* run, and that rejected args never spawn at all."""
 from actions import ActionRunner
-from actions.run import perform
+from actions.run import ConsentSpec, perform
 
 
 class _FakeSpawn:
@@ -70,3 +70,28 @@ def test_action_runner_exposes_available_and_perform() -> None:
     assert any(name == "mute" for name, _label in runner.available())
     runner.perform("mute")
     assert fake.calls == [["osascript", "-e", "set volume output muted true"]]
+
+
+def test_propose_reversible_runs_immediately() -> None:
+    fake = _FakeSpawn()
+    result, spec = ActionRunner(spawn=fake).propose("mute")
+    assert spec is None and "Done" in result          # reversible -> ran now, no consent
+    assert fake.calls == [["osascript", "-e", "set volume output muted true"]]
+
+
+def test_propose_destructive_defers_to_consent() -> None:
+    # empty_trash is confirm=True -> propose returns a ConsentSpec and does NOT spawn until approved.
+    fake = _FakeSpawn()
+    runner = ActionRunner(spawn=fake)
+    result, spec = runner.propose("empty_trash")
+    assert result is None and isinstance(spec, ConsentSpec)
+    assert fake.calls == []                            # nothing ran yet
+    out = spec.on_approve()                            # the consent gate would call this on approval
+    assert fake.calls == [["osascript", "-e", 'tell application "Finder" to empty trash']]
+    assert "Done" in out
+
+
+def test_propose_unknown_action_no_spec_no_spawn() -> None:
+    fake = _FakeSpawn()
+    result, spec = ActionRunner(spawn=fake).propose("nuke")
+    assert spec is None and "don't know" in result.lower() and fake.calls == []

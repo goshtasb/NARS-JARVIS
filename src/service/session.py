@@ -7,6 +7,7 @@ clients of this same surface, so reasoning logic can never be polluted by — or
 """
 from __future__ import annotations
 
+import time
 import uuid
 from datetime import datetime
 from typing import Callable
@@ -21,6 +22,7 @@ from memory import MemoryStore, MetricsStore, SqliteGroundingStore
 from sentinel import SentinelStore, SurpriseDetector, SystemSentinel
 from sentinel.narrate import Narrator
 
+from .consent_service import ConsentService
 from .sentinel_loop import SentinelLoop
 from .voice import WhisperJob, speak, whisper_available
 from .wiring import NoNarrationLLM, make_claim_source, make_embedder
@@ -44,6 +46,9 @@ class Session:
         # Read-only handle on the sentinel's persisted beliefs, so learned habits inject even when the
         # Flow Sentinel loop is OFF (ADR-012). Separate connection from the loop's write-store.
         self._sentinel_store = SentinelStore(db_path)
+        # Unified interactive consent (ADR-020): the single owner of "ask the human, then act" for
+        # destructive actions, executor confirmation, and Sentinel training.
+        self._consent = ConsentService(self._emit)
         voice = Voice(formatter=llm if hasattr(llm, "generate_text") else None)
         self._jarvis = Jarvis(Translator(llm, embedder=embedder, cache=grounding),
                               self._store, self._brain, executor=self._executor, gate=gate,
@@ -52,15 +57,16 @@ class Session:
                               context_provider=self._live_context,  # dynamic context (ADR-010)
                               habits_provider=self._learned_habits,  # learned sentinel habits (ADR-012)
                               sentinel_beliefs_provider=self._sentinel_store.beliefs,  # grounding (ADR-013)
-                              action_runner=ActionRunner())  # conversational Mac actions (ADR-019)
+                              action_runner=ActionRunner(),  # conversational Mac actions (ADR-019)
+                              consent_opener=self._open_action_consent)  # destructive-action consent (ADR-020)
         # M2 system sentinel (CPU/mem surprise) feeds the knowledge brain; alerts push as events.
         narrator = Narrator(NoNarrationLLM(), on_alert=lambda t: self._emit("alert", {"text": "⚠  " + t}))
         self._sys_detector = SurpriseDetector(self._brain, threshold=0.5, on_surprise=narrator.narrate)
         self._sys_sentinel = SystemSentinel(sink=self._sys_detector.observe, poll_interval=2.0)
         self._last = "no poll yet"
-        self._flow = SentinelLoop(db_path, self._emit)
+        # ADR-020: the Sentinel asks for consent through the same machine (ask-mode prompts).
+        self._flow = SentinelLoop(db_path, self._emit, consent_request=self._consent.request)
         self._pending_learn: dict[str, dict] = {}
-        self._pending_act: dict[str, object] = {}
         self._voice_jobs: dict[int, WhisperJob] = {}   # fd -> in-flight transcription
         self._token = 0
         self._shutdown = False                          # set by the `shutdown` command (kill switch)
@@ -69,9 +75,10 @@ class Session:
     def dispatch(self, cmd: str, arg: object = "") -> tuple[bool, object]:
         handler = {
             "ask": self._ask, "tell": self._tell, "learn": self._learn,
-            "learn_resolve": self._learn_resolve, "act": self._act, "act_confirm": self._act_confirm,
+            "learn_resolve": self._learn_resolve, "act": self._act,
+            "consent_resolve": self._consent_resolve,  # ADR-020: unified approve/deny
             "status": self._status, "health": self._health, "sentinel": self._sentinel,
-            "intervene": self._intervene, "voice": self._voice,
+            "intervene": self._intervene, "voice": self._voice,  # intervene: Sentinel auto-mode undo
             "forget": self._forget, "restore": self._restore,
             "shutdown": self._do_shutdown,
         }.get(cmd)
@@ -162,26 +169,47 @@ class Session:
             return False, {"text": f"rejected: {exc}"}
         self._act_buf = []
         try:
-            self._executor.execute(proposal)
+            self._executor.execute(proposal)            # simulate/preview pass (fills _act_buf)
         except Exception as exc:  # noqa: BLE001
             return False, {"text": f"execution error: {exc}"}
         needs = not (proposal.autonomous and self._executor.is_live_eligible(proposal.operation))
-        token = ""
-        if needs:
-            self._token += 1; token = f"A{self._token}"
-            self._pending_act[token] = proposal
-        return True, {"lines": list(self._act_buf), "needs_confirm": needs, "token": token}
+        if not needs:
+            return True, {"lines": list(self._act_buf), "needs_confirm": False, "consent_id": None}
+        # ADR-020: state-changing action -> open a consent request; it runs only on approval. The
+        # validated proposal stays server-side (opaque-id boundary); the client gets just the id.
+        cid = self._consent.request(kind="action",
+                                    prompt=f"Approve and run: {parts[0]} {parts[1]}?",
+                                    label=f"{parts[0]} {parts[1]}",
+                                    on_approve=lambda p=proposal: self._execute_approved(p),
+                                    expiry_default="deny")
+        return True, {"lines": list(self._act_buf), "needs_confirm": True, "consent_id": cid}
 
-    def _act_confirm(self, arg: object) -> tuple[bool, object]:
-        proposal = self._pending_act.pop(arg.get("token", "") if isinstance(arg, dict) else "", None)
-        if proposal is None:
-            return False, {"text": "unknown action token"}
+    def _execute_approved(self, proposal: object) -> str:
+        """Consent continuation for an `act` proposal: run it for real, return the actuator output."""
         self._act_buf = []
         try:
             self._executor.execute_approved(proposal)
         except Exception as exc:  # noqa: BLE001
-            return False, {"text": f"execution error: {exc}"}
-        return True, {"lines": list(self._act_buf)}
+            return f"execution error: {exc}"
+        return "\n".join(self._act_buf) or "done."
+
+    def _open_action_consent(self, label: str, on_approve: Callable[[], object]) -> int:
+        """Consent opener injected into Jarvis (ADR-020): gate a destructive [[DO:]] action."""
+        return self._consent.request(kind="action", prompt=f"Run: {label}?", label=label,
+                                     on_approve=on_approve, expiry_default="deny")
+
+    def _consent_resolve(self, arg: object) -> tuple[bool, object]:
+        """Unified approve/deny for any pending consent (ADR-020). The client sends only {id,
+        accepted}; the daemon runs the matching server-side continuation exactly once."""
+        if not isinstance(arg, dict):
+            return False, {"text": "consent_resolve expects {id, accepted}"}
+        msg = self._consent.resolve(int(arg.get("id", -1)), bool(arg.get("accepted")))
+        return True, {"text": msg}
+
+    def consent_snapshot(self) -> dict:
+        """The open-consent set + server clock, unicast to a (re)connecting client so it reconciles
+        its cards and recomputes TTLs (ADR-020 no-hung-card guarantee)."""
+        return self._consent.snapshot()
 
     def _status(self, arg: object) -> tuple[bool, object]:
         return True, {"text": f"last poll: {self._last} | L2 facts: {self._store.count()}"}
@@ -287,7 +315,9 @@ class Session:
             self._flow.read()
 
     def tick(self) -> None:
-        """Periodic M2 system-sentinel poll (CPU/mem -> surprise -> alert event)."""
+        """Periodic M2 system-sentinel poll (CPU/mem -> surprise -> alert event), plus the consent
+        expiry sweep (ADR-020): overdue requests default-resolve and emit `consent_closed`."""
+        self._consent.sweep(time.time())
         try:
             self._sys_sentinel.run_once()
             import psutil

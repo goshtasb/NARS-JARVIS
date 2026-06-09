@@ -9,7 +9,7 @@ Public interface (ADR-001: a module's surface is its `__init__.py` + `__all__`).
 """
 from .catalog import Action, argv_for, available, render_action_prompt, resolve
 from .diagnostics import anomaly_flags, system_report
-from .run import ActionRunner, perform
+from .run import ActionRunner, ConsentSpec, perform
 
 __all__ = [
     "Action",
@@ -20,5 +20,6 @@ __all__ = [
     "system_report",
     "anomaly_flags",
     "ActionRunner",
+    "ConsentSpec",
     "perform",
 ]

@@ -50,9 +50,10 @@ def test_voice_pipeline_transcribes_routes_and_answers() -> None:
         c.set_event_handler(lambda kind, body: events.append((kind, body)))
         ok, body = c.call("voice", {"path": wav})
         assert ok and body.get("status") == "transcribing", body
-        # the transcript + answer arrive asynchronously as events; pump until we have both
+        # the transcript + answer arrive asynchronously as events; pump until we have both. (Use
+        # subset-present, not proper-subset: the daemon also pushes a consent_sync on connect — ADR-020.)
         deadline = time.monotonic() + 10
-        while time.monotonic() < deadline and {k for k, _ in events} < {"transcript", "answer"}:
+        while time.monotonic() < deadline and not {"transcript", "answer"} <= {k for k, _ in events}:
             c.pump()
         kinds = {k: b for k, b in events}
         assert "transcript" in kinds and kinds["transcript"]["text"] == "tell <a --> b>.", events

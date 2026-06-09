@@ -15,6 +15,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private let recorder = AudioRecorder()
     private var failsafe: Timer?                 // force-stops a runaway recording
     private static let maxRecordSeconds = 30.0
+    // ADR-020 interactive consent: which consent ids currently have a card, and their local TTL
+    // timers (so a card self-dismisses offline at the daemon-supplied deadline).
+    private var liveConsents: Set<Int> = []
+    private var consentTimers: [Int: Timer] = [:]
 
     func applicationDidFinishLaunching(_ note: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -157,6 +161,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     private func handleEvent(_ kind: String, _ body: [String: Any]) {
         switch kind {
+        case "consent_request":                              // ADR-020: unified Approve/Deny prompt
+            consentRequested(body)
+        case "consent_closed":                               // resolved/expired -> withdraw the card
+            withdrawConsent(body["id"] as? Int ?? -1)
+        case "consent_sync":                                 // (re)connect -> reconcile against the server
+            reconcileConsents(body)
         case "intervention":
             let id = body["id"] as? Int ?? -1
             let prompt = body["prompt"] as? String ?? "Focus intervention"
@@ -191,7 +201,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let keep = UNNotificationAction(identifier: "KEEP", title: "Keep", options: [])
         let acted = UNNotificationCategory(
             identifier: "ACTED", actions: [undo, keep], intentIdentifiers: [], options: [])
-        center.setNotificationCategories([intervention, acted])
+        // ADR-020: a generic Approve/Deny category for any unified consent request (the prompt text
+        // carries the specifics). Deny is destructive-styled so the safe choice reads as such.
+        let approve = UNNotificationAction(identifier: "APPROVE", title: "Approve", options: [])
+        let deny = UNNotificationAction(identifier: "DENY", title: "Deny", options: [.destructive])
+        let consent = UNNotificationCategory(
+            identifier: "CONSENT", actions: [approve, deny], intentIdentifiers: [], options: [])
+        center.setNotificationCategories([intervention, acted, consent])
         center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
 
@@ -214,6 +230,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                          body: text, category: "ACTED")
     }
 
+    // ── ADR-020 interactive consent ──
+    /// Render a consent card and arm a LOCAL TTL timer so it self-dismisses even with zero
+    /// connectivity. The deadline is computed as a duration (expires_at − server_now) to dodge clock skew.
+    private func consentRequested(_ body: [String: Any]) {
+        let id = body["id"] as? Int ?? -1
+        guard id >= 0 else { return }
+        let prompt = (body["prompt"] as? String) ?? (body["label"] as? String) ?? "Approve this action?"
+        chat.append("⏳ " + prompt)
+        liveConsents.insert(id)
+        postNotification(id: id, identifier: "consent-\(id)", title: "JARVIS needs your OK",
+                         body: prompt, category: "CONSENT")
+        if let expires = body["expires_at"] as? Double, let now = body["server_now"] as? Double {
+            armConsentTTL(id, after: max(0, expires - now))
+        }
+    }
+
+    private func armConsentTTL(_ id: Int, after seconds: Double) {
+        consentTimers[id]?.invalidate()
+        consentTimers[id] = Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) {
+            [weak self] _ in self?.withdrawConsent(id)       // offline self-dismiss (server is authoritative)
+        }
+    }
+
+    /// Remove a consent card + its timer. Idempotent — safe for closed/expired/synced-away ids.
+    private func withdrawConsent(_ id: Int) {
+        guard id >= 0 else { return }
+        liveConsents.remove(id)
+        consentTimers.removeValue(forKey: id)?.invalidate()
+        let center = UNUserNotificationCenter.current()
+        center.removeDeliveredNotifications(withIdentifiers: ["consent-\(id)"])
+        center.removePendingNotificationRequests(withIdentifiers: ["consent-\(id)"])
+    }
+
+    /// Reconcile our cards against the daemon's authoritative open-set (on reconnect): drop any card
+    /// the server no longer holds (already expired/resolved while we were away), render any we're
+    /// missing. This is what makes a permanently-hung card structurally impossible.
+    private func reconcileConsents(_ body: [String: Any]) {
+        let requests = body["requests"] as? [[String: Any]] ?? []
+        let serverNow = body["server_now"] as? Double
+        let openIds = Set(requests.compactMap { $0["id"] as? Int })
+        for stale in liveConsents.subtracting(openIds) { withdrawConsent(stale) }
+        for var req in requests where !liveConsents.contains((req["id"] as? Int) ?? -1) {
+            if req["server_now"] == nil, let serverNow { req["server_now"] = serverNow }  // arm TTL
+            consentRequested(req)
+        }
+    }
+
     private func postNotification(id: Int, identifier: String, title: String, body: String, category: String) {
         let content = UNMutableNotificationContent()
         content.title = title
@@ -224,14 +287,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             UNNotificationRequest(identifier: identifier, content: content, trigger: nil))
     }
 
-    // Tapping a notification action replies to the daemon. HIDE/KEEP -> accepted; DISMISS/UNDO -> not.
+    // Tapping a notification action replies to the daemon. For unified consent (ADR-020): APPROVE ->
+    // accepted, DENY -> not, via `consent_resolve`. Legacy Sentinel auto-mode: HIDE/KEEP -> accepted,
+    // DISMISS/UNDO -> not, via `intervene`.
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 didReceive response: UNNotificationResponse,
                                 withCompletionHandler completion: @escaping () -> Void) {
         let id = response.notification.request.content.userInfo["id"] as? Int ?? -1
-        let accepted = ["HIDE", "KEEP"].contains(response.actionIdentifier)
-        client?.call("intervene", ["id": id, "accepted": accepted]) { [weak self] _, body in
-            DispatchQueue.main.async { self?.chat.append(body["text"] as? String ?? "") }
+        let action = response.actionIdentifier
+        let isConsent = response.notification.request.content.categoryIdentifier == "CONSENT"
+        if isConsent {
+            withdrawConsent(id)                              // clear local card + TTL immediately
+            let accepted = (action == "APPROVE")            // default tap / DENY -> not accepted
+            client?.call("consent_resolve", ["id": id, "accepted": accepted]) { [weak self] _, body in
+                DispatchQueue.main.async { self?.chat.append(body["text"] as? String ?? "") }
+            }
+        } else {
+            let accepted = ["HIDE", "KEEP"].contains(action)
+            client?.call("intervene", ["id": id, "accepted": accepted]) { [weak self] _, body in
+                DispatchQueue.main.async { self?.chat.append(body["text"] as? String ?? "") }
+            }
         }
         completion()
     }

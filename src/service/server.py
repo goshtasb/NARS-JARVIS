@@ -69,6 +69,12 @@ class Daemon:
     def _accept(self) -> None:
         sock, _ = self._srv.accept()
         self._clients[sock] = protocol.LineBuffer()
+        # ADR-020: unicast the open-consent set to JUST this client so a (re)connecting app reconciles
+        # its cards against the authoritative state (no hung [Approve/Deny] card after a reconnect).
+        try:
+            sock.sendall(protocol.encode(protocol.event("consent_sync", self._session.consent_snapshot())))
+        except OSError:
+            self._drop(sock)
 
     def _drop(self, sock: socket.socket) -> None:
         self._clients.pop(sock, None)

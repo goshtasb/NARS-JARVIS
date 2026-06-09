@@ -19,11 +19,14 @@ from urllib.parse import quote
 @dataclass(frozen=True)
 class Action:
     """One catalog entry. `kind` is 'argv' (runs a vetted command) or 'diag' (a read-only report).
-    `takes_arg` marks the parameterized actions whose argument must pass a validator."""
+    `takes_arg` marks the parameterized actions whose argument must pass a validator. `confirm` marks
+    destructive/irreversible actions that must clear the interactive consent gate (ADR-020) before
+    they run — the runner returns a ConsentSpec instead of executing."""
     name: str
     label: str            # short human description — used in the prompt list and the "(Done: …)" ack
     kind: str             # "argv" | "diag"
     takes_arg: bool = False
+    confirm: bool = False
 
 
 # Closed registry, in display order. Argv templates for the non-parameterized actions live in
@@ -39,6 +42,8 @@ _ACTIONS: tuple[Action, ...] = (
     Action("open_app", "open an application by name", "argv", takes_arg=True),
     Action("open_url", "open a web address in the browser", "argv", takes_arg=True),
     Action("web_search", "search the web for a query", "argv", takes_arg=True),
+    # Destructive / irreversible -> gated behind interactive consent (ADR-020).
+    Action("empty_trash", "empty the Trash (permanently delete its contents)", "argv", confirm=True),
 )
 
 _REGISTRY: dict[str, Action] = {a.name: a for a in _ACTIONS}
@@ -56,6 +61,7 @@ _STATIC_ARGV: dict[str, tuple[str, ...]] = {
     "mute": ("osascript", "-e", "set volume output muted true"),
     "unmute": ("osascript", "-e", "set volume output muted false"),
     "lock_screen": ("pmset", "displaysleepnow"),
+    "empty_trash": ("osascript", "-e", 'tell application "Finder" to empty trash'),
 }
 
 # Allowlist validators (defense in depth — argv-only spawn already kills word-splitting):

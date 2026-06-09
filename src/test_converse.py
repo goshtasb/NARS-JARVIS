@@ -424,7 +424,8 @@ def test_converse_formatter_hallucination_is_suppressed() -> None:
 
 class _FakeRunner:
     """Stub action runner: records perform() calls and returns a canned result, so converse's action
-    routing is tested without touching the OS (mirrors the injected-spawn pattern in actions/)."""
+    routing is tested without touching the OS (mirrors the injected-spawn pattern in actions/). Its
+    `propose` mirrors the real one: reversible actions run now -> (result, None) (ADR-019/020)."""
     def __init__(self, result: str = "(Done: mute)") -> None:
         self.result = result
         self.calls: list[tuple[str, str]] = []
@@ -433,6 +434,8 @@ class _FakeRunner:
     def perform(self, name: str, arg: str = "") -> str:
         self.calls.append((name, arg))
         return self.result
+    def propose(self, name: str, arg: str = ""):
+        return (self.perform(name, arg), None)
 
 
 def test_converse_runs_do_action_and_appends_result() -> None:
@@ -502,6 +505,38 @@ def test_converse_action_coexists_with_remember() -> None:
         assert "Opening Chrome." in out and "(Done:" in out and "(Saved:" in out
 
 
+class _DestructiveRunner:
+    """Runner whose `propose` returns a ConsentSpec for a destructive action (ADR-020), so converse's
+    consent routing is testable without the OS."""
+    def available(self): return [("empty_trash", "empty the Trash")]
+    def perform(self, name, arg=""): return "(Done)"
+    def propose(self, name, arg=""):
+        from actions.run import ConsentSpec
+        return (None, ConsentSpec(label="empty the Trash", on_approve=lambda: "(Done: emptied)"))
+
+
+def test_converse_destructive_action_routes_to_consent() -> None:
+    opened: list[tuple[str, object]] = []
+    asst = _RememberLLM("Sure.\n[[DO: empty_trash]]")
+    with Brain(cycles_per_step=50) as brain:
+        j = Jarvis(Translator(asst), MemoryStore(), brain, assistant=asst,
+                   action_runner=_DestructiveRunner(),
+                   consent_opener=lambda label, on_approve: opened.append((label, on_approve)) or 7)
+        out = j.converse("empty my trash")
+        assert len(opened) == 1 and opened[0][0] == "empty the Trash"   # consent opened, not executed
+        assert "Awaiting your approval" in out and "empty the Trash" in out
+
+
+def test_converse_destructive_action_refused_without_consent_channel() -> None:
+    # No consent_opener wired -> a destructive action must be safely refused, never run unconfirmed.
+    asst = _RememberLLM("Sure.\n[[DO: empty_trash]]")
+    with Brain(cycles_per_step=50) as brain:
+        j = Jarvis(Translator(asst), MemoryStore(), brain, assistant=asst,
+                   action_runner=_DestructiveRunner())          # no consent_opener
+        out = j.converse("empty my trash")
+        assert "needs confirmation" in out.lower()
+
+
 if __name__ == "__main__":
     test_converse_yes_with_cited_evidence()
     test_converse_llm_first_answers_and_injects_memory()
@@ -538,4 +573,6 @@ if __name__ == "__main__":
     test_converse_unknown_action_is_safe_no_crash()
     test_converse_no_runner_ignores_do_tag()
     test_converse_action_coexists_with_remember()
+    test_converse_destructive_action_routes_to_consent()
+    test_converse_destructive_action_refused_without_consent_channel()
     print("test_converse: OK")
