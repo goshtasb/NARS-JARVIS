@@ -22,6 +22,7 @@ GATED = "gated"                 # requires the ADR-020 human-approval gate
 
 # Deep links to the System Settings surfaces a recipe opens (the eyes can't see what isn't on screen).
 _DISPLAYS = "x-apple.systempreferences:com.apple.Displays-Settings.extension"
+_A11Y_DISPLAY = "x-apple.systempreferences:com.apple.preference.universalaccess?Seeing_Display"
 
 
 @dataclass(frozen=True)
@@ -37,17 +38,16 @@ class Recipe:
     takes_value: bool     # True if the intent carries a value (sliders); False for toggles
 
 
-# The closed table. v1 ships the one recipe whose target macOS labels directly in the accessibility
-# tree — the Brightness slider. A live AX dump (ADR-023 verification) showed that MANY System Settings
-# controls (e.g. the Accessibility → Display checkboxes, including "Increase contrast") expose an EMPTY
-# AXTitle — their label lives in a *sibling* element, so title-matching can't reach them. Reaching
-# those toggles requires enriching the serializer to associate sibling labels with controls; that is
-# deferred to ADR-024. Adding any new recipe = a row here AFTER confirming its (role, title) against a
-# live dump via the daemon `axdump` command — never guessed. The schema already supports `ax_press`
-# toggles and GATED friction; only the live label availability is the gating factor.
+# The closed table. ADR-024's serializer label-enrichment now recovers labels that live in a separate
+# element (the Accessibility → Display checkboxes report empty AXTitles natively), so toggles are
+# addressable. Each row's (role, title) is confirmed against a live `axdump` — never guessed.
 RECIPES: tuple[Recipe, ...] = (
     Recipe("set_brightness", "set the display brightness (0-100)",
            _DISPLAYS, "AXSlider", "brightness", "ax_set_value", FRICTIONLESS, takes_value=True),
+    # ADR-024: now reachable via label enrichment (was deferred in ADR-023). Verified live —
+    # `[checkbox_2] AXCheckBox "Increase contrast"` in the Accessibility → Display pane. ax_press toggles.
+    Recipe("increase_contrast", "toggle 'Increase contrast' (Accessibility → Display)",
+           _A11Y_DISPLAY, "AXCheckBox", "increase contrast", "ax_press", FRICTIONLESS, takes_value=False),
 )
 
 _BY_INTENT: dict[str, Recipe] = {r.intent: r for r in RECIPES}
