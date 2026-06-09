@@ -77,6 +77,14 @@ def test_render_action_prompt_forbids_guessing_metrics() -> None:
     assert "do NOT state or guess any system metric" in text
 
 
+def test_set_brightness_is_a_listed_nav_recipe() -> None:
+    # ADR-022: set_brightness is a self-navigating recipe (kind="nav"), surfaced in the prompt list
+    # (unlike ax_* verbs) so the model can emit it regardless of what's on screen.
+    a = catalog.resolve("set_brightness")
+    assert a is not None and a.kind == "nav" and a.takes_arg
+    assert "set_brightness" in {name for name, _ in catalog.available()}
+
+
 def test_render_action_prompt_forbids_improvising_unavailable_actions() -> None:
     # Honesty fix: lacking a contrast action, the 7B improvised open_app cascades + claimed success.
     # The prompt must forbid improvising and faking unavailable capabilities.

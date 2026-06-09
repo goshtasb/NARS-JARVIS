@@ -137,6 +137,7 @@ class Jarvis:
                  consent_opener: Callable[[str, Callable[[], object]], object] | None = None,
                  ax_provider: Callable[[], str] | None = None,
                  ax_dispatch: Callable[[str, str], str] | None = None,
+                 nav_dispatch: Callable[[str, str], str] | None = None,
                  ) -> None:
         self._translator = translator
         self._store = store
@@ -172,6 +173,9 @@ class Jarvis:
         # actuate event to the app. None => no GUI control surface (tests/offline; non-app clients).
         self._ax_provider = ax_provider
         self._ax_dispatch = ax_dispatch
+        # Navigation recipes (ADR-022): high-level verbs (e.g. set_brightness) where the daemon opens
+        # the right surface itself and actuates — works regardless of what's focused. None => unavailable.
+        self._nav_dispatch = nav_dispatch
         self._voice = voice or Voice()  # template-only by default; formatter LLM is optional
         # LLM-first brain (ADR-007): when a real model is wired, converse() lets the LLM answer from
         # its own knowledge with the user's persistent memory injected as ground truth. With no
@@ -424,6 +428,15 @@ class Jarvis:
                         results.append(f"Couldn't act on the screen ({name}).")
                 else:
                     results.append(f"I can't control on-screen elements here ({name}).")
+                continue
+            if act is not None and act.kind == "nav":          # ADR-022: self-navigating recipe
+                if self._nav_dispatch is not None:
+                    try:
+                        results.append(self._nav_dispatch(name, arg))
+                    except Exception:  # noqa: BLE001
+                        results.append(f"Couldn't do that ({name}).")
+                else:
+                    results.append(f"I can't do that here ({name}).")
                 continue
             if self._action_runner is None:
                 continue

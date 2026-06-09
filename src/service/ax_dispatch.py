@@ -17,6 +17,17 @@ from actions import AX_VERBS
 EmitActuate = Callable[[int, str, str, dict], None]
 
 
+def find_control_id(dom: str, role_kw: str, title_kw: str) -> str | None:
+    """Find the id of a control in a serialized AX DOM whose line matches role+title (case-insensitive).
+    DOM lines look like:  [sld_1] AXSlider "Brightness" = 0.6 . Pure — used by navigation recipes."""
+    rl, tl = role_kw.lower(), title_kw.lower()
+    for line in dom.splitlines():
+        low = line.lower()
+        if line.startswith("[") and "]" in line and rl in low and tl in low:
+            return line[1:line.index("]")]
+    return None
+
+
 def dispatch_ax(consent, emit_actuate: EmitActuate, ids: set[str], epoch: int,
                 verb: str, arg: str) -> str:
     """Validate (verb, id[, value]) and open a consent gate; on approve, emit the actuate event.

@@ -561,6 +561,18 @@ def test_converse_routes_ax_verb_to_dispatch() -> None:
         assert "Awaiting your approval" in out
 
 
+def test_converse_routes_nav_verb_to_nav_dispatch() -> None:
+    # ADR-022: a self-navigating recipe (set_brightness) routes to nav_dispatch, works from anywhere.
+    calls: list[tuple[str, str]] = []
+    asst = _RememberLLM("On it.\n[[DO: set_brightness: 45]]")
+    with Brain(cycles_per_step=50) as brain:
+        j = Jarvis(Translator(asst), MemoryStore(), brain, assistant=asst,
+                   nav_dispatch=lambda n, a: calls.append((n, a)) or "Opening Displays to set brightness to 45%…")
+        out = j.converse("set brightness to 45%")
+        assert calls == [("set_brightness", "45")]
+        assert "Opening Displays" in out
+
+
 def test_converse_ax_verb_without_dispatch_is_safe() -> None:
     asst = _RememberLLM("On it.\n[[DO: ax_press: btn_1]]")
     with Brain(cycles_per_step=50) as brain:
@@ -609,5 +621,6 @@ if __name__ == "__main__":
     test_converse_destructive_action_refused_without_consent_channel()
     test_converse_injects_ax_dom()
     test_converse_routes_ax_verb_to_dispatch()
+    test_converse_routes_nav_verb_to_nav_dispatch()
     test_converse_ax_verb_without_dispatch_is_safe()
     print("test_converse: OK")

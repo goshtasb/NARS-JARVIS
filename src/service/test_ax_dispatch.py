@@ -1,8 +1,17 @@
 """Unit tests for AX verb dispatch (ADR-021): validation + consent-gating, with a real ConsentService
 and a fake actuate emitter. No Session/socket/OS — proves nothing actuates until approval and that an
 invalid verb/id is a safe refusal that never opens a consent."""
-from service.ax_dispatch import dispatch_ax
+from service.ax_dispatch import dispatch_ax, find_control_id
 from service.consent_service import ConsentService
+
+
+def test_find_control_id_matches_role_and_title() -> None:
+    dom = ('[btn_1] AXButton "OK"\n'
+           '[sld_2] AXSlider "Brightness" = 0.6\n'
+           '[sld_3] AXSlider "Volume" = 0.3')
+    assert find_control_id(dom, "AXSlider", "brightness") == "sld_2"   # case-insensitive
+    assert find_control_id(dom, "AXSlider", "contrast") is None        # not present -> None
+    assert find_control_id("", "AXSlider", "brightness") is None
 
 
 def _setup():

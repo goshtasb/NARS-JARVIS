@@ -22,7 +22,9 @@ from memory import MemoryStore, MetricsStore, SqliteGroundingStore
 from sentinel import SentinelStore, SurpriseDetector, SystemSentinel
 from sentinel.narrate import Narrator
 
-from .ax_dispatch import dispatch_ax
+import safespawn
+
+from .ax_dispatch import dispatch_ax, find_control_id
 from .consent_service import ConsentService
 from .sentinel_loop import SentinelLoop
 from .voice import WhisperJob, speak, whisper_available
@@ -30,6 +32,9 @@ from .wiring import NoNarrationLLM, make_claim_source, make_embedder
 
 _STRONG = DecisionStats(0.95, 0.97, 30, 12)  # an explicit REPL `act` is a high-confidence request
 EventSink = Callable[[str, dict], None]
+# ADR-022 navigation recipe: the System Settings → Displays pane (holds the Brightness slider).
+_DISPLAYS_DEEPLINK = "x-apple.systempreferences:com.apple.Displays-Settings.extension"
+_NAV_TIMEOUT = 8.0   # seconds to wait for the opened surface's controls to arrive
 
 
 class Session:
@@ -61,7 +66,8 @@ class Session:
                               action_runner=ActionRunner(),  # conversational Mac actions (ADR-019)
                               consent_opener=self._open_action_consent,  # destructive-action consent (ADR-020)
                               ax_provider=self._ax_provider,  # GUI actuation: focused-window DOM (ADR-021)
-                              ax_dispatch=self._ax_dispatch_verb)  # GUI actuation: verb -> consent -> actuate
+                              ax_dispatch=self._ax_dispatch_verb,  # GUI actuation: verb -> consent -> actuate
+                              nav_dispatch=self._nav_dispatch)  # self-navigating recipes (ADR-022)
         # M2 system sentinel (CPU/mem surprise) feeds the knowledge brain; alerts push as events.
         narrator = Narrator(NoNarrationLLM(), on_alert=lambda t: self._emit("alert", {"text": "⚠  " + t}))
         self._sys_detector = SurpriseDetector(self._brain, threshold=0.5, on_surprise=narrator.narrate)
@@ -72,6 +78,7 @@ class Session:
         self._ax_ids: set[str] = set()
         self._ax_dom = ""
         self._ax_app = ""
+        self._pending_nav: dict | None = None   # ADR-022: a navigation recipe awaiting the opened surface
         # ADR-020: the Sentinel asks for consent through the same machine (ask-mode prompts).
         self._flow = SentinelLoop(db_path, self._emit, consent_request=self._consent.request)
         self._pending_learn: dict[str, dict] = {}
@@ -230,7 +237,40 @@ class Session:
         self._ax_dom = str(arg.get("dom", ""))
         self._ax_ids = {str(i) for i in (arg.get("ids") or [])}
         self._ax_app = str(arg.get("app", ""))
+        self._fulfill_pending_nav()   # ADR-022: the surface we opened may have just arrived
         return True, {"ok": True}
+
+    def _nav_dispatch(self, name: str, arg: str) -> str:
+        """Navigation recipe (ADR-022): open the right surface and actuate, regardless of what's
+        focused. `set_brightness <0-100>` is safe + reversible -> no consent gate."""
+        if name != "set_brightness":
+            return f"I don't know how to do that ({name})."
+        try:
+            value = float(str(arg).strip().rstrip("%").strip())
+        except ValueError:
+            return f"I can't read {arg!r} as a brightness level."
+        sid = find_control_id(self._ax_dom, "AXSlider", "brightness")
+        if sid is not None:                       # already on screen -> act now
+            self._emit_actuate(self._ax_epoch, sid, "ax_set_value", {"value": value})
+            return f"Setting brightness to {int(value)}%."
+        try:                                      # else open Displays ourselves, act when it arrives
+            safespawn.run(["open", _DISPLAYS_DEEPLINK], capture_output=True, text=True, timeout=10)
+        except Exception as exc:  # noqa: BLE001
+            return f"Couldn't open Displays settings: {exc}"
+        self._pending_nav = {"value": value, "deadline": time.time() + _NAV_TIMEOUT}
+        return f"Opening Displays to set brightness to {int(value)}%…"
+
+    def _fulfill_pending_nav(self) -> None:
+        """When the opened surface's controls arrive, complete the pending recipe (ADR-022)."""
+        if self._pending_nav is None:
+            return
+        sid = find_control_id(self._ax_dom, "AXSlider", "brightness")
+        if sid is None:
+            return                                # not this snapshot; keep waiting (until tick expires it)
+        value = self._pending_nav["value"]
+        self._emit_actuate(self._ax_epoch, sid, "ax_set_value", {"value": value})
+        self._emit("answer", {"text": f"Setting brightness to {int(value)}%."})
+        self._pending_nav = None
 
     def _ax_result(self, arg: object) -> tuple[bool, object]:
         """The app reports an actuation outcome; surface it to the user as an answer event."""
@@ -369,6 +409,9 @@ class Session:
         """Periodic M2 system-sentinel poll (CPU/mem -> surprise -> alert event), plus the consent
         expiry sweep (ADR-020): overdue requests default-resolve and emit `consent_closed`."""
         self._consent.sweep(time.time())
+        if self._pending_nav is not None and time.time() > self._pending_nav["deadline"]:
+            self._emit("answer", {"text": "I couldn't find the brightness control to set."})
+            self._pending_nav = None
         try:
             self._sys_sentinel.run_once()
             import psutil

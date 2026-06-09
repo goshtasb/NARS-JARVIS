@@ -48,6 +48,10 @@ _ACTIONS: tuple[Action, ...] = (
     # focused window (not a static enum); they run in JARVIS.app, never via safespawn. Consent-gated.
     Action("ax_press", "click a UI control", "ax", takes_arg=True, confirm=True),
     Action("ax_set_value", "set a UI control's value (e.g. a slider)", "ax", takes_arg=True, confirm=True),
+    # High-level navigation recipes (ADR-022): kind="nav". The daemon opens the right surface itself,
+    # waits for it, and actuates — so they work from ANYWHERE, no pre-opened page. Curated + safe, so
+    # no consent gate (unlike the general ax_* verbs). Always available (not DOM-dependent).
+    Action("set_brightness", "set the display brightness (0-100)", "nav", takes_arg=True),
 )
 
 # The closed set of GUI-actuation verbs (ADR-021). Validated here; executed in the app.
@@ -128,10 +132,11 @@ def render_action_prompt(actions: list[tuple[str, str]]) -> str:
         "[[DO: <action>]]   — or for an action that takes an argument —   [[DO: <action>: <argument>]]",
         "Use ONLY an action from the list above; never invent one. You may both answer and act in the "
         "same message. Never mention or explain the tag — it is stripped before the user sees it.",
-        "If the user asks for something NOT in the action list (for example changing display "
-        "brightness or contrast, Do-Not-Disturb, or other settings), say plainly that you can't do "
-        "that yet. Do NOT improvise by opening apps or System Settings panes to work around a missing "
-        "capability, and NEVER claim to have changed a setting you have no action for.",
+        "To change display brightness use the set_brightness action (it opens Displays itself). If the "
+        "user asks for something with NO matching action (e.g. display contrast, Do-Not-Disturb), say "
+        "plainly that you can't do that yet. Do NOT improvise by opening apps or System Settings panes "
+        "to work around a missing capability, and NEVER claim to have changed a setting you have no "
+        "action for.",
         "When you emit [[DO: report_system]], do NOT state or guess any system metric (CPU, memory, "
         "disk, battery) in your prose — the real report is appended automatically below your reply; "
         "defer to it entirely (e.g. say 'Let me check.' not 'Your CPU is at 0%').",
