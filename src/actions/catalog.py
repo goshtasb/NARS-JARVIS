@@ -50,6 +50,11 @@ _ACTIONS: tuple[Action, ...] = (
     # focused window (not a static enum); they run in JARVIS.app, never via safespawn. Consent-gated.
     Action("ax_press", "click a UI control", "ax", takes_arg=True, confirm=True),
     Action("ax_set_value", "set a UI control's value (e.g. a slider)", "ax", takes_arg=True, confirm=True),
+    # Bounded agent loop (ADR-024 Phase 2): open an app/Settings pane to reach a control that isn't on
+    # screen, then JARVIS re-perceives and acts. kind="agent"; the daemon validates the target to a
+    # safe open and bounds the chain to a few hops. Listed so the model can propose it.
+    Action("navigate", "open an app or Settings pane to reach a control not currently on screen",
+           "agent", takes_arg=True),
 )
 
 # High-level navigation recipes (kind="nav", ADR-022/023) are GENERATED from the declarative RECIPES
@@ -138,6 +143,10 @@ def render_action_prompt(actions: list[tuple[str, str]]) -> str:
         "[[DO: <action>]]   — or for an action that takes an argument —   [[DO: <action>: <argument>]]",
         "Use ONLY an action from the list above; never invent one. You may both answer and act in the "
         "same message. Never mention or explain the tag — it is stripped before the user sees it.",
+        "Use ax_press / ax_set_value ONLY with an id that appears in the on-screen controls list. If "
+        "the control the user wants is NOT in that list (e.g. a System Settings toggle while you're in "
+        "another app), do NOT guess an id — emit [[DO: navigate: <app or pane>]] FIRST to open it, and "
+        "you'll then be shown that surface's controls to act on.",
         "To change display brightness, ALWAYS use the set_brightness action — even if a 'Brightness' "
         "slider appears in the on-screen controls, do NOT use ax_set_value on it (set_brightness opens "
         "Displays itself and needs no confirmation; ax_set_value would pointlessly ask the user to "

@@ -24,6 +24,7 @@ from sentinel.narrate import Narrator
 
 import safespawn
 
+from .agent_loop import agent_route, resolve_surface
 from .ax_dispatch import dispatch_ax, find_control_id
 from .consent_service import ConsentService
 from .sentinel_loop import SentinelLoop
@@ -33,6 +34,9 @@ from .wiring import NoNarrationLLM, make_claim_source, make_embedder
 _STRONG = DecisionStats(0.95, 0.97, 30, 12)  # an explicit REPL `act` is a high-confidence request
 EventSink = Callable[[str, dict], None]
 _NAV_TIMEOUT = 8.0   # ADR-023: seconds to wait for an opened surface's controls to arrive (else give up)
+_MAX_HOPS = 2        # ADR-024 P2: max navigations in one agent loop (circuit breaker)
+_MAX_STEPS = 3       # ADR-024 P2: max re-prompt steps in one loop (bounds LLM cost)
+_AGENT_TTL = 12.0    # ADR-024 P2: seconds an agent loop may run before giving up
 
 
 class Session:
@@ -65,7 +69,8 @@ class Session:
                               consent_opener=self._open_action_consent,  # destructive-action consent (ADR-020)
                               ax_provider=self._ax_provider,  # GUI actuation: focused-window DOM (ADR-021)
                               ax_dispatch=self._ax_dispatch_verb,  # GUI actuation: verb -> consent -> actuate
-                              nav_dispatch=self._nav_dispatch)  # self-navigating recipes (ADR-022)
+                              nav_dispatch=self._nav_dispatch,  # self-navigating recipes (ADR-022)
+                              navigate=self._navigate)  # bounded agent loop (ADR-024 P2)
         # M2 system sentinel (CPU/mem surprise) feeds the knowledge brain; alerts push as events.
         narrator = Narrator(NoNarrationLLM(), on_alert=lambda t: self._emit("alert", {"text": "⚠  " + t}))
         self._sys_detector = SurpriseDetector(self._brain, threshold=0.5, on_surprise=narrator.narrate)
@@ -77,6 +82,7 @@ class Session:
         self._ax_dom = ""
         self._ax_app = ""
         self._pending_nav: dict | None = None   # ADR-022: a navigation recipe awaiting the opened surface
+        self._agent: dict | None = None          # ADR-024 P2: an active bounded agent loop, or None
         # ADR-020: the Sentinel asks for consent through the same machine (ask-mode prompts).
         self._flow = SentinelLoop(db_path, self._emit, consent_request=self._consent.request)
         self._pending_learn: dict[str, dict] = {}
@@ -237,6 +243,8 @@ class Session:
         self._ax_ids = {str(i) for i in (arg.get("ids") or [])}
         self._ax_app = str(arg.get("app", ""))
         self._fulfill_pending_nav()   # ADR-022: the surface we opened may have just arrived
+        if self._agent is not None:   # ADR-024 P2: note the fresh DOM; tick() drives the step once settled
+            self._agent["pending_epoch"] = self._ax_epoch
         return True, {"ok": True}
 
     def _nav_dispatch(self, name: str, arg: str) -> str:
@@ -299,6 +307,60 @@ class Session:
         if isinstance(arg, dict):
             self._emit("answer", {"text": str(arg.get("detail", "done."))})
         return True, {"ok": True}
+
+    # ── ADR-024 Phase 2: bounded agent loop (navigate → re-perceive → act) ──
+    def _navigate(self, target: str, question: str) -> str:
+        """Open a vetted surface to reach an off-screen control and arm/advance the agent loop. Safe-
+        open only (resolve_surface); the hop counter is the circuit breaker. Called for the first hop
+        (from converse) and for subsequent hops (from `_drive_agent`)."""
+        surface = resolve_surface(target)
+        if surface is None:
+            self._agent = None
+            return f"I don't know how to get to '{target}'."
+        if self._agent is None:
+            self._agent = {"request": question or target, "hop": 1, "steps": 0,
+                           "pending_epoch": None, "driven_epoch": -1, "deadline": time.time() + _AGENT_TTL}
+        else:
+            self._agent["hop"] += 1
+            if self._agent["hop"] > _MAX_HOPS:
+                self._agent = None
+                return "I couldn't reach that — too many steps."
+            self._agent["deadline"] = time.time() + _AGENT_TTL
+            self._agent["driven_epoch"] = -1          # let the new surface's DOM be driven
+        try:
+            safespawn.run(["open", surface], capture_output=True, text=True, timeout=10)
+        except Exception as exc:  # noqa: BLE001
+            self._agent = None
+            return f"Couldn't open settings for '{target}': {exc}"
+        return f"Opening {target}…"
+
+    def _drive_agent(self) -> None:
+        """One agent-loop step on the settled DOM (driven from tick, so re-reads have finished). One
+        step per distinct epoch; bounded by hops, steps, and the deadline. Actuation is ALWAYS routed
+        through the consent gate; a give-up keeps waiting (deadline ends a stall)."""
+        a = self._agent
+        if a is None:
+            return
+        if time.time() > a["deadline"]:
+            self._emit("answer", {"text": "I couldn't reach that in time."})
+            self._agent = None
+            return
+        pe = a.get("pending_epoch")
+        if pe is None or pe == a.get("driven_epoch"):
+            return                                    # nothing new on screen to reason about yet
+        a["driven_epoch"] = pe
+        a["steps"] += 1
+        if a["steps"] > _MAX_STEPS:
+            self._emit("answer", {"text": "I couldn't complete that."})
+            self._agent = None
+            return
+        step = agent_route(self._jarvis.agent_step(a["request"]))
+        if step[0] == "act":                          # the goal control -> GATED consent path
+            self._emit("answer", {"text": self._ax_dispatch_verb(step[1], step[2])})
+            self._agent = None
+        elif step[0] == "navigate":                   # another hop (circuit-broken in _navigate)
+            self._emit("answer", {"text": self._navigate(step[1], a["request"])})
+        # else give up: keep waiting for a more-rendered DOM until steps/deadline ends the loop
 
     def _axdump(self, arg: object) -> tuple[bool, object]:
         """Return the focused window's captured control tree (ADR-023) — to author/verify recipe
@@ -440,6 +502,7 @@ class Session:
         if self._pending_nav is not None and time.time() > self._pending_nav["deadline"]:
             self._emit("answer", {"text": "I couldn't find the brightness control to set."})
             self._pending_nav = None
+        self._drive_agent()   # ADR-024 P2: advance an active agent loop on the settled DOM
         try:
             self._sys_sentinel.run_once()
             import psutil

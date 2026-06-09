@@ -561,6 +561,34 @@ def test_converse_routes_ax_verb_to_dispatch() -> None:
         assert "Awaiting your approval" in out
 
 
+def test_converse_routes_navigate_to_callback() -> None:
+    # ADR-024 P2: a [[DO: navigate]] directive arms the agent loop via the injected navigate callback,
+    # carrying the original question so the daemon can re-prompt for it.
+    calls: list[tuple[str, str]] = []
+    asst = _RememberLLM("Let me open that.\n[[DO: navigate: Focus settings]]")
+    with Brain(cycles_per_step=50) as brain:
+        j = Jarvis(Translator(asst), MemoryStore(), brain, assistant=asst,
+                   navigate=lambda target, q: calls.append((target, q)) or "Opening Focus settings…")
+        out = j.converse("turn on do not disturb")
+        assert calls == [("Focus settings", "turn on do not disturb")]
+        assert "Opening Focus settings" in out
+
+
+def test_agent_step_parses_one_directive_from_the_dom() -> None:
+    asst = _RememberLLM("[[DO: ax_press: chk_2]]")
+    with Brain(cycles_per_step=50) as brain:
+        j = Jarvis(Translator(asst), MemoryStore(), brain, assistant=asst,
+                   ax_provider=lambda: '[chk_2] AXCheckBox "Do Not Disturb" = 0')
+        assert j.agent_step("turn on dnd") == [("ax_press", "chk_2")]
+
+
+def test_agent_step_empty_without_a_dom() -> None:
+    asst = _RememberLLM("[[DO: ax_press: x]]")
+    with Brain(cycles_per_step=50) as brain:
+        j = Jarvis(Translator(asst), MemoryStore(), brain, assistant=asst)   # no ax_provider -> no DOM
+        assert j.agent_step("x") == []
+
+
 def test_converse_routes_nav_verb_to_nav_dispatch() -> None:
     # ADR-022: a self-navigating recipe (set_brightness) routes to nav_dispatch, works from anywhere.
     calls: list[tuple[str, str]] = []
@@ -622,5 +650,8 @@ if __name__ == "__main__":
     test_converse_injects_ax_dom()
     test_converse_routes_ax_verb_to_dispatch()
     test_converse_routes_nav_verb_to_nav_dispatch()
+    test_converse_routes_navigate_to_callback()
+    test_agent_step_parses_one_directive_from_the_dom()
+    test_agent_step_empty_without_a_dom()
     test_converse_ax_verb_without_dispatch_is_safe()
     print("test_converse: OK")

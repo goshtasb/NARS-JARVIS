@@ -121,6 +121,18 @@ ASSISTANT_SYSTEM_PROMPT = (
 )
 
 
+# Bounded agent loop (ADR-024 Phase 2): the focused re-prompt after navigation. The model is shown
+# ONLY the goal + the current on-screen controls and must emit exactly one directive.
+AGENT_STEP_PROMPT = (
+    "You are operating the Mac's GUI to fulfill the user's goal. You are shown the controls currently "
+    "on screen. Emit EXACTLY ONE directive and nothing else:\n"
+    "- [[DO: ax_press: <id>]] to click the control that fulfills the goal,\n"
+    "- [[DO: ax_set_value: <id> <value>]] to set a slider/field,\n"
+    "- [[DO: navigate: <app or settings pane>]] if the needed control is NOT in the list,\n"
+    "- or reply 'cannot' if it isn't possible. Use an id from the list verbatim; never invent one."
+)
+
+
 class Jarvis:
     def __init__(self, translator: Translator, store: MemoryStore, brain: Brain,
                  guard: ContradictionGuard | None = None,
@@ -138,6 +150,7 @@ class Jarvis:
                  ax_provider: Callable[[], str] | None = None,
                  ax_dispatch: Callable[[str, str], str] | None = None,
                  nav_dispatch: Callable[[str, str], str] | None = None,
+                 navigate: Callable[[str, str], str] | None = None,
                  ) -> None:
         self._translator = translator
         self._store = store
@@ -176,6 +189,9 @@ class Jarvis:
         # Navigation recipes (ADR-022): high-level verbs (e.g. set_brightness) where the daemon opens
         # the right surface itself and actuates — works regardless of what's focused. None => unavailable.
         self._nav_dispatch = nav_dispatch
+        # Bounded agent loop (ADR-024 Phase 2): a callable (target, question) -> str that opens a surface
+        # and arms the navigate→re-perceive→act loop in the daemon. None => no agent loop (tests/offline).
+        self._navigate_cb = navigate
         self._voice = voice or Voice()  # template-only by default; formatter LLM is optional
         # LLM-first brain (ADR-007): when a real model is wired, converse() lets the LLM answer from
         # its own knowledge with the user's persistent memory injected as ground truth. With no
@@ -354,7 +370,7 @@ class Jarvis:
         # (an unknown/unsafe action is a safe no-op string). Done first so the tags are stripped before
         # the memory parsers run; results are appended to the reply below.
         clean, actions = split_do_directives(reply)
-        action_results = self._run_actions(actions)
+        action_results = self._run_actions(actions, question)
         # Auto-memory (ADR-008/009): pull [[REMEMBER]]/[[FORGET]] directives, persist them, show the
         # cleaned reply, and confirm changes so a wrong save/forget is visible and correctable.
         clean, facts = split_memory_directives(clean)
@@ -409,7 +425,24 @@ class Jarvis:
             return "\n".join(tail) if tail else self._converse_grounded(question)
         return "\n".join([clean, *tail]) if tail else clean
 
-    def _run_actions(self, actions: list[tuple[str, str]]) -> list[str]:
+    def agent_step(self, request: str) -> list[tuple[str, str]]:
+        """One bounded-agent-loop step (ADR-024 Phase 2): show the model the goal + the current
+        on-screen controls and PARSE (not execute) its single directive. The daemon routes the result
+        (navigate again / consent-gated act / give up). Returns [] when no model or no controls."""
+        if self._assistant is None:
+            return []
+        dom = self._ax_provider() if self._ax_provider is not None else ""
+        if not dom:
+            return []
+        try:
+            reply = self._assistant.generate_text(AGENT_STEP_PROMPT, f"Goal: {request}\n\n{dom}",
+                                                  max_tokens=96)
+        except Exception:  # noqa: BLE001 — a model hiccup ends the loop safely (no action)
+            return []
+        _clean, actions = split_do_directives(reply)
+        return actions
+
+    def _run_actions(self, actions: list[tuple[str, str]], question: str = "") -> list[str]:
         """Execute parsed [[DO:]] directives through the wired runner; return each result string. A
         reversible action runs immediately; a destructive (`confirm`) action is routed through the
         consent gate (ADR-020) and only acknowledged here — it runs on approval. The closed catalog is
@@ -419,6 +452,15 @@ class Jarvis:
             return []
         results: list[str] = []
         for name, arg in actions:
+            if name == "navigate":                             # ADR-024 P2: open a surface, arm the loop
+                if self._navigate_cb is not None:
+                    try:
+                        results.append(self._navigate_cb(arg, question))
+                    except Exception:  # noqa: BLE001
+                        results.append(f"Couldn't navigate to {arg}.")
+                else:
+                    results.append(f"I can't navigate here ({arg}).")
+                continue
             act = _resolve_action(name)
             if act is not None and act.kind == "ax":           # ADR-021: GUI actuation verb
                 if self._ax_dispatch is not None:
