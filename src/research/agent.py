@@ -100,6 +100,28 @@ def split_browse(browse_text: str) -> tuple[str, list[tuple[str, str]]]:
     return head.strip(), [(m.group(1).strip(), m.group(2)) for m in _MENU_LINE_RE.finditer(tail)]
 
 
+def data_window(text: str, cap: int) -> str:
+    """Cap a page note by keeping its most DATA-DENSE window (digits/°/%/$), not its head. Pure.
+    Live measurement behind this: tomorrow's forecast sat at offset 2552 of a 3568-char page while a
+    head-cap kept chars 0–1600 of navigation chrome — the loop read the right page and still fed the
+    synthesizer nothing. The Title:/Source: header line is always preserved (it cites the source)."""
+    if len(text) <= cap:
+        return text
+    head, _, body = text.partition("\n\n")            # "Title: …\nSource: …" stays intact
+    if not body:
+        head, body = "", text
+    budget = cap - len(head) - 3
+    if budget <= 0:
+        return text[:cap]
+    def density(s: str) -> int:
+        return sum(ch.isdigit() or ch in "°%$" for ch in s)
+    step = max(200, budget // 2)
+    starts = range(0, max(1, len(body) - budget + 1), step)
+    best = max(starts, key=lambda i: density(body[i:i + budget]))
+    window = ("…" if best else "") + body[best:best + budget]
+    return f"{head}\n\n{window}" if head else window
+
+
 # ── the loop (effects injected) ──
 def run_research(question: str, seed: list[tuple[str, str]], generate: Generate, perform: Perform,
                  clock: Callable[[], float] = time.monotonic,
@@ -150,7 +172,7 @@ def run_research(question: str, seed: list[tuple[str, str]], generate: Generate,
             return
         article, links = split_browse(result)
         if article:
-            notes.append(article[:NOTE_CAP])
+            notes.append(data_window(article, NOTE_CAP))   # densest window, not the head (chrome)
         _merge(links)
         log(f"open{' (floor)' if forced else ''} {url} -> {len(article)} chars")
 

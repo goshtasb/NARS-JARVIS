@@ -184,3 +184,18 @@ if __name__ == "__main__":
     test_all_errors_surface_honestly()
     test_read_article_seed_opens_directly_and_model_failure_degrades()
     print("research/test_agent: OK")
+
+
+def test_data_window_keeps_mid_page_data_not_nav_chrome() -> None:
+    """The live turn-1 failure: forecast at offset ~2552, head-cap kept chars 0-1600 of nav."""
+    nav = "Home About Menu Search Sign in Premium Radar Video News " * 40       # ~2280 chars, no data
+    data = "Thursday forecast: High 84°F low 64°F, rain 4%, wind 10mph, pressure 29.82 inHg. "
+    page = "Title: W\nSource: https://w.example/tomorrow\n\n" + nav + data * 3
+    from research.agent import data_window
+    out = data_window(page, 1600)
+    assert len(out) <= 1600 + 10
+    assert "High 84°F" in out                                  # the data survived the cap
+    assert out.startswith("Title: W\nSource:")                 # source citation preserved
+    assert "…" in out                                          # honest truncation marker
+    short = "Title: S\nSource: u\n\ntiny page 42°"
+    assert data_window(short, 1600) == short                   # under cap -> untouched
