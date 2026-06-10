@@ -116,3 +116,12 @@ def test_render_action_prompt_forbids_improvising_unavailable_actions() -> None:
     # The prompt must forbid improvising and faking unavailable capabilities.
     text = catalog.render_action_prompt(catalog.available())
     assert "Do NOT improvise" in text and "NEVER claim to have changed a setting" in text
+
+
+def test_schema_describes_actions_and_excludes_ax() -> None:
+    # ADR-033: machine-readable palette for the Batch Canvas — fields present, AX verbs excluded.
+    rows = catalog.schema()
+    assert rows and all({"name", "label", "kind", "takes_arg"} == set(r) for r in rows)
+    assert not any(r["kind"] == "ax" for r in rows)
+    sf = next(r for r in rows if r["name"] == "summarize_file")
+    assert sf["kind"] == "work" and sf["takes_arg"] is True

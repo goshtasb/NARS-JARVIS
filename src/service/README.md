@@ -46,11 +46,14 @@ then multiplexes the keyboard and the socket.
   math already encapsulated (no raw frequency/confidence); `habit_forget <key>` routes through
   `HabitLoop.forget` so the ONA term is cratered *and* the row purged. Both bypass the LLM — they back
   the menu-bar dashboard (`ui/HabitsView.swift`).
-- **Overnight batch commands** (ADR-031) — `overnight_enqueue {action,arg}` queues a concrete catalog
-  action; `overnight_start` drains the queue (read-only actions run; the rest are held);
+- **Overnight batch commands** (ADR-031/033) — `overnight_enqueue {action,arg}` queues a concrete catalog
+  action; `overnight_enqueue_batch [{action,arg}…]` commits a whole composed batch (unknown actions
+  rejected); `overnight_start` drains the queue (read-only actions run; the rest are held);
   `overnight_status` reports the queue; `briefing` returns `{done, held}`; `briefing_resolve {id,accepted}`
-  runs an approved held action (the approval is the consent gate). `overnight_runner.py` advances one
-  task per `tick()`. Stores live in the `overnight/` module; back the 🌅 Morning Briefing UI.
+  runs an approved held action (the approval is the consent gate); `briefing_dismiss_done` flushes
+  finished rows; `catalog_schema` returns the Batch Canvas palette (overnight-appropriate actions, each
+  annotated `autonomous`). `overnight_runner.py` advances one task per `tick()`. Stores live in the
+  `overnight/` module; back the 🌅 Morning Briefing + 🗂 Batch Canvas UIs.
 - **Kill switch** — the `shutdown` command stops the whole daemon cleanly (both brains, sensor,
   actuator); surfaced as the UI's Emergency Stop and the console's `shutdown`.
 
@@ -62,4 +65,5 @@ Standard library only for transport (`socket`, `select`, `json`) — no network,
 [ADR-001](../../docs/adrs/ADR-001-adopt-and-adapt-engineering-standards.md),
 [ADR-003](../../docs/adrs/ADR-003-headless-daemon-ipc.md),
 [ADR-030](../../docs/adrs/ADR-030-habit-menu-bar-dashboard.md),
-[ADR-031](../../docs/adrs/ADR-031-overnight-batch-queue.md).
+[ADR-031](../../docs/adrs/ADR-031-overnight-batch-queue.md),
+[ADR-033](../../docs/adrs/ADR-033-batch-canvas.md).

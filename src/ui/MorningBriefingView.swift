@@ -22,6 +22,10 @@ final class MorningBriefingViewController: NSViewController {
         refreshBtn.frame = NSRect(x: 404, y: 350, width: 26, height: 22)
         refreshBtn.bezelStyle = .rounded
 
+        let clearBtn = NSButton(title: "Clear Completed", target: self, action: #selector(clearCompleted))
+        clearBtn.frame = NSRect(x: 286, y: 350, width: 114, height: 22)   // ADR-033: flush the Done list
+        clearBtn.bezelStyle = .rounded; clearBtn.controlSize = .small
+
         let scroll = NSScrollView(frame: NSRect(x: 8, y: 8, width: 424, height: 336))
         scroll.hasVerticalScroller = true
         scroll.borderType = .bezelBorder
@@ -46,9 +50,16 @@ final class MorningBriefingViewController: NSViewController {
 
         container.addSubview(title)
         container.addSubview(refreshBtn)
+        container.addSubview(clearBtn)
         container.addSubview(scroll)
         container.addSubview(status)
         self.view = container
+    }
+
+    @objc private func clearCompleted() {
+        client?.call("briefing_dismiss_done") { [weak self] _, _ in
+            DispatchQueue.main.async { self?.refresh() }
+        }
     }
 
     @objc func refresh() {

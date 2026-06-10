@@ -27,9 +27,9 @@ Shell) since it orchestrates the `ActionRunner`.
 - **`classify.py`** — pure `safe_autonomous(action)`: the single read-only safety boundary
   (`kind in {"diag","query"}`, non-confirm). Unknown/other → held (default-deny).
 - **`store.py`** — `OvernightQueue` (incoming tasks: pending→running→done/held/failed, with
-  `reset_running()` restart-safety) and `HeldLedger` (outgoing actions awaiting approval:
-  held→approved/denied). Both on the shared `jarvis.db`; new tables, so `CREATE TABLE IF NOT EXISTS`
-  is the whole migration story.
+  `reset_running()` restart-safety and `purge_done()` for the ADR-033 Clear-Completed flush) and
+  `HeldLedger` (outgoing actions awaiting approval: held→approved/denied). Both on the shared
+  `jarvis.db`; new tables, so `CREATE TABLE IF NOT EXISTS` is the whole migration story.
 
 The autonomous vocabulary is `safe_autonomous` kinds: `diag`, `query`, and `work` — the last being the
 ADR-032 read-only document primitives (`read_file`, `summarize_file`), which is what gives an overnight

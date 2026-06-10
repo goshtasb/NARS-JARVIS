@@ -68,6 +68,13 @@ class OvernightQueue:
         self._db.execute("UPDATE overnight_queue SET status='pending' WHERE status='running'")
         self._db.commit()
 
+    def purge_done(self) -> int:
+        """Clear finished rows (done + failed) so the briefing doesn't grow forever (ADR-033). Pending
+        and held rows are never touched. Returns the number cleared."""
+        cur = self._db.execute("DELETE FROM overnight_queue WHERE status IN ('done','failed')")
+        self._db.commit()
+        return cur.rowcount
+
     def list_all(self) -> list[dict]:
         rows = self._db.execute(
             "SELECT id,action,arg,status,result FROM overnight_queue ORDER BY id").fetchall()

@@ -14,6 +14,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private let habits = HabitsViewController()
     private let briefingPopover = NSPopover()            // ADR-031: the Morning Briefing
     private let briefing = MorningBriefingViewController()
+    private let batchCanvas = BatchCanvasViewController() // ADR-033: the Batch Canvas workspace
+    private var batchWindow: NSWindow?                    // a real window (not a popover); retained here
     private var client: JarvisClient?
     private var sockPath = ""                     // ADR-017: remembered for auto-reconnect
     private let recorder = AudioRecorder()
@@ -136,6 +138,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         chat.client = c
         habits.client = c                                   // ADR-030: dashboard talks over the same socket
         briefing.client = c                                 // ADR-031: briefing shares the same socket
+        batchCanvas.client = c                              // ADR-033: canvas shares the same socket
         setConnected(true)
         chat.append(reconnect ? "↻ reconnected to JARVIS." : "✓ connected to JARVIS.")
         _log("UI: \(reconnect ? "reconnected" : "connected") to daemon at \(sockPath)")
@@ -192,6 +195,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             menu.addItem(NSMenuItem(title: "Open JARVIS", action: #selector(openPopover), keyEquivalent: ""))
             menu.addItem(NSMenuItem(title: "🧠 Habits…", action: #selector(openHabits), keyEquivalent: ""))
             menu.addItem(NSMenuItem(title: "🌅 Morning Briefing…", action: #selector(openBriefing), keyEquivalent: ""))
+            menu.addItem(NSMenuItem(title: "🗂 Batch Canvas…", action: #selector(openBatchCanvas), keyEquivalent: ""))
             menu.addItem(.separator())
             let stop = NSMenuItem(title: "⛔ Emergency Stop (quit everything)",
                                   action: #selector(emergencyStop), keyEquivalent: "")
@@ -234,6 +238,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if habitsPopover.isShown { habitsPopover.performClose(nil) }
         briefingPopover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         briefing.refresh()
+    }
+
+    /// ADR-033: open the Batch Canvas — a real resizable window (not a popover), retained so it survives
+    /// close (hidden, reopened via the menu). `.accessory` apps must activate to bring a window forward.
+    @objc private func openBatchCanvas() {
+        if batchWindow == nil {
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 560),
+                             styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                             backing: .buffered, defer: false)
+            w.title = "JARVIS — Batch Canvas"
+            w.contentViewController = batchCanvas
+            w.isReleasedWhenClosed = false       // keep it alive across close; reopen via the menu
+            w.center()
+            batchWindow = w
+        }
+        batchCanvas.refresh()
+        batchWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     @objc private func quitApp() { NSApp.terminate(nil) }

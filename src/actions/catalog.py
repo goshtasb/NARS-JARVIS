@@ -120,6 +120,13 @@ def available() -> list[tuple[str, str]]:
     return [(a.name, a.label) for a in _ACTIONS if a.kind != "ax"]
 
 
+def schema() -> list[dict]:
+    """Machine-readable description of the (non-AX) catalog for a UI to render (ADR-033). Pure data —
+    no overnight/autonomy semantics here (the caller annotates those, preserving dependency direction)."""
+    return [{"name": a.name, "label": a.label, "kind": a.kind, "takes_arg": a.takes_arg}
+            for a in _ACTIONS if a.kind != "ax"]
+
+
 def _valid_app(name: str) -> bool:
     return bool(name) and "/" not in name and ".." not in name and _APP_NAME.match(name) is not None
 

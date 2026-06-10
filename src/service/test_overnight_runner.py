@@ -70,8 +70,39 @@ def test_dispatch_briefing_approve_executes_held_action() -> None:
     assert ok and "no held action" in body["text"]
 
 
+def test_dispatch_catalog_schema_is_mixed_and_excludes_ax() -> None:
+    # ADR-033: the canvas palette — work/query/diag autonomous, argv/nav held, no ax/agent/habit.
+    from service.session import Session
+    ok, body = Session._catalog_schema(types.SimpleNamespace(), "")
+    by = {a["name"]: a for a in body["actions"]}
+    assert by["summarize_file"]["autonomous"] is True and by["empty_trash"]["autonomous"] is False
+    assert not any(a["kind"] in ("ax", "agent", "habit") for a in body["actions"])
+
+
+def test_dispatch_enqueue_batch_queues_valid_and_rejects_unknown() -> None:
+    from service.session import Session
+    q = OvernightQueue()
+    stub = types.SimpleNamespace(_overnight_queue=q)
+    ok, body = Session._overnight_enqueue_batch(
+        stub, [{"action": "find_file", "arg": "x"}, {"action": "bogus"}, {"action": "summarize_file", "arg": "/tmp/a"}])
+    assert ok and body["queued"] == 2 and body["rejected"] == ["bogus"]
+    assert len(q.list_all()) == 2
+
+
+def test_dispatch_briefing_dismiss_done_purges() -> None:
+    from service.session import Session
+    q = OvernightQueue()
+    t = q.enqueue("find_file", "x"); q.mark(t, "done")
+    q.enqueue("empty_trash")                                   # stays pending
+    ok, body = Session._briefing_dismiss_done(types.SimpleNamespace(_overnight_queue=q), "")
+    assert ok and body["cleared"] == 1 and len(q.list_all()) == 1
+
+
 if __name__ == "__main__":
     test_runner_runs_safe_holds_rest_and_completes()
     test_dispatch_overnight_enqueue_validates_against_catalog()
     test_dispatch_briefing_approve_executes_held_action()
+    test_dispatch_catalog_schema_is_mixed_and_excludes_ax()
+    test_dispatch_enqueue_batch_queues_valid_and_rejects_unknown()
+    test_dispatch_briefing_dismiss_done_purges()
     print("service/test_overnight_runner: OK")

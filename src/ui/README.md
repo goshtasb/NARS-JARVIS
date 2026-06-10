@@ -37,9 +37,15 @@ In the popover, type `learn …`, `ask …`, `tell …` (a bare line is treated 
   that fetches the `habits` snapshot over the socket and lists each learned tendency/habit with its
   `[Armed]`/`[Learning]` state and a one-click **Forget** (→ `habit_forget`, which craters the ONA term).
   Fetch-on-open; no NARS math in the UI. The instrument for the multi-day field test.
-- **`MorningBriefingView.swift`** (ADR-031) — the overnight report: a third popover (right-click → "🌅 Morning
+- **`MorningBriefingView.swift`** (ADR-031/033) — the overnight report: a third popover (right-click → "🌅 Morning
   Briefing…") showing what ran overnight (`done`) and the actions **held** for approval, each with
   Approve/Deny (→ `briefing_resolve`, which executes an approved action — the click is the consent gate).
+  A **Clear Completed** button (→ `briefing_dismiss_done`) flushes the Done list.
+- **`BatchCanvasView.swift`** (ADR-033) — the Batch Canvas: a standalone resizable **window** (not a popover;
+  right-click → "🗂 Batch Canvas…") for composing an overnight batch. A left palette from `catalog_schema`
+  (each chipped Autonomous/Held by the daemon), a center plan built by **click-to-add** (argument field +
+  native "Choose…" file picker + remove), and Commit → `overnight_enqueue_batch`. Renders only what the
+  daemon describes — no business logic in Swift.
 - **`AudioRecorder.swift`** — push-to-talk mic capture (`AVAudioRecorder`) → 16 kHz WAV in `$TMPDIR`.
 - **`HotKey.swift`** — Carbon `RegisterEventHotKey` hold-to-talk (no TCC dialog). Available but not
   registered — voice is triggered by the menu-bar 🎙 toggle instead (⌥Space conflicted).
@@ -74,4 +80,5 @@ socket. No third-party packages.
 [ADR-003](../../docs/adrs/ADR-003-headless-daemon-ipc.md) (the daemon/IPC it connects to),
 [ADR-004](../../docs/adrs/ADR-004-macos-menubar-ui.md) (this app's framework/sandbox choices),
 [ADR-030](../../docs/adrs/ADR-030-habit-menu-bar-dashboard.md) (the Habit Brain dashboard),
-[ADR-031](../../docs/adrs/ADR-031-overnight-batch-queue.md) (the Morning Briefing).
+[ADR-031](../../docs/adrs/ADR-031-overnight-batch-queue.md) (the Morning Briefing),
+[ADR-033](../../docs/adrs/ADR-033-batch-canvas.md) (the Batch Canvas).

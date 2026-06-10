@@ -27,6 +27,17 @@ def test_reset_running_reverts_zombies_to_pending() -> None:
     q.close()
 
 
+def test_purge_done_clears_finished_keeps_pending_and_held() -> None:
+    q = OvernightQueue(":memory:")
+    a, b, c, d = (q.enqueue("find_file", "x"), q.enqueue("report_system"),
+                  q.enqueue("summarize_file", "y"), q.enqueue("empty_trash"))
+    q.mark(a, "done"); q.mark(b, "failed"); q.mark(c, "pending"); q.mark(d, "held")
+    assert q.purge_done() == 2                            # done + failed cleared
+    left = {r["id"]: r["status"] for r in q.list_all()}
+    assert left == {c: "pending", d: "held"}             # pending + held untouched
+    q.close()
+
+
 def test_held_ledger_survives_a_restart() -> None:
     path = tempfile.mktemp(suffix=".db")
     led = HeldLedger(path)
@@ -44,5 +55,6 @@ def test_held_ledger_survives_a_restart() -> None:
 if __name__ == "__main__":
     test_queue_enqueue_next_pending_and_mark()
     test_reset_running_reverts_zombies_to_pending()
+    test_purge_done_clears_finished_keeps_pending_and_held()
     test_held_ledger_survives_a_restart()
     print("overnight/test_store: OK")

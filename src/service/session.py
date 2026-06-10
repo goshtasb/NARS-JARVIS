@@ -12,10 +12,10 @@ import uuid
 from datetime import datetime
 from typing import Callable
 
-from actions import ActionRunner, recipe_for, resolve as resolve_action, should_gate
+from actions import ActionRunner, recipe_for, resolve as resolve_action, schema as catalog_schema, should_gate
 from brain import Brain
 from habits import HabitStore
-from overnight import HeldLedger, OvernightQueue
+from overnight import HeldLedger, OvernightQueue, safe_autonomous
 from context import render_habits, render_live_context
 from execution import DecisionStats, build_air_gapped_executor, decide
 from jarvis import Jarvis
@@ -41,6 +41,9 @@ _NAV_TIMEOUT = 8.0   # ADR-023: seconds to wait for an opened surface's controls
 _MAX_HOPS = 2        # ADR-024 P2: max navigations in one agent loop (circuit breaker)
 _MAX_STEPS = 3       # ADR-024 P2: max re-prompt steps in one loop (bounds LLM cost)
 _AGENT_TTL = 12.0    # ADR-024 P2: seconds an agent loop may run before giving up
+# ADR-033: kinds offered in the Batch Canvas palette — overnight-appropriate (excludes ax/agent/habit,
+# which need live GUI context or aren't tasks). work/query/diag -> Autonomous; argv/nav -> Held.
+_CANVAS_KINDS = ("work", "query", "diag", "argv", "nav")
 
 
 class Session:
@@ -120,7 +123,10 @@ class Session:
             "habits": self._habits, "habit_forget": self._habit_forget,  # ADR-030: menu-bar dashboard
             "overnight_enqueue": self._overnight_enqueue, "overnight_start": self._overnight_start,
             "overnight_status": self._overnight_status,                   # ADR-031: overnight batch queue
+            "overnight_enqueue_batch": self._overnight_enqueue_batch,     # ADR-033: batch commit
+            "catalog_schema": self._catalog_schema,                       # ADR-033: palette for the canvas
             "briefing": self._briefing, "briefing_resolve": self._briefing_resolve,  # ADR-031: morning
+            "briefing_dismiss_done": self._briefing_dismiss_done,         # ADR-033: clear completed
             "ax_context": self._ax_context, "ax_result": self._ax_result,  # GUI actuation (ADR-021)
             "axdump": self._axdump,  # ADR-023: inspect the captured control tree (recipe-matcher authoring)
             "shutdown": self._do_shutdown,
@@ -392,6 +398,35 @@ class Session:
             return True, {"text": f"declined: {row['action']}"}
         result = self._actions.perform(row["action"], row["arg"])   # human just approved -> execute
         return True, {"text": result}
+
+    # ── ADR-033: Batch Canvas (palette schema, batch commit, clear-completed) ──
+    def _catalog_schema(self, _arg: object) -> tuple[bool, object]:
+        """The Batch Canvas palette: overnight-appropriate actions annotated with their autonomous/held
+        tag. The autonomy call lives here (session imports both actions + overnight), keeping the catalog
+        ignorant of overnight semantics and the Swift UI free of business logic."""
+        actions = [{**a, "autonomous": safe_autonomous(resolve_action(a["name"]))}
+                   for a in catalog_schema() if a["kind"] in _CANVAS_KINDS]
+        return True, {"actions": actions}
+
+    def _overnight_enqueue_batch(self, arg: object) -> tuple[bool, object]:
+        """Commit a composed batch: arg = [{action, arg}, …]. Unknown actions are rejected, never queued."""
+        items = arg if isinstance(arg, list) else []
+        queued, rejected = [], []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            name, a = str(it.get("action", "")).strip(), str(it.get("arg", "")).strip()
+            if not name or resolve_action(name) is None:
+                rejected.append(name or "(empty)")
+                continue
+            queued.append(self._overnight_queue.enqueue(name, a))
+        return True, {"queued": len(queued), "rejected": rejected,
+                      "text": f"committed {len(queued)} task(s)"
+                              + (f"; rejected {len(rejected)}" if rejected else "")}
+
+    def _briefing_dismiss_done(self, _arg: object) -> tuple[bool, object]:
+        """Clear finished (done/failed) rows so the briefing doesn't grow forever. Held/pending untouched."""
+        return True, {"cleared": self._overnight_queue.purge_done()}
 
     def _ax_result(self, arg: object) -> tuple[bool, object]:
         """The app reports an actuation outcome; surface it to the user as an answer event."""
