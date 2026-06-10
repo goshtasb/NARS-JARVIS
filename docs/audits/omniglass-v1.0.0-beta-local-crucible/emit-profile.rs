@@ -9,10 +9,10 @@
 //! Usage: emit-profile <plugin_dir> <out_profile_path>
 
 mod mcp {
-    #[path = "/Users/localuser/Desktop/NARS/OmniGlass/src-tauri/src/mcp/manifest.rs"]
+    #[path = "/Users/youruser/Desktop/NARS/OmniGlass/src-tauri/src/mcp/manifest.rs"]
     pub mod manifest;
     pub mod sandbox {
-        #[path = "/Users/localuser/Desktop/NARS/OmniGlass/src-tauri/src/mcp/sandbox/macos.rs"]
+        #[path = "/Users/youruser/Desktop/NARS/OmniGlass/src-tauri/src/mcp/sandbox/macos.rs"]
         pub mod macos;
     }
 }
