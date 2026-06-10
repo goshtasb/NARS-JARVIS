@@ -1,8 +1,20 @@
 # NARS-JARVIS runtime dependencies (the daemon + work primitives).
-# Strictly local / air-gapped — none of these phone home at runtime.
+#
+# Local-first by default. The autonomous execution tier stays air-gapped (test-locked). The ONLY
+# outbound network is the ADR-034 read-only web-search egress below (queries go to DuckDuckGo; no
+# local files or telemetry are uploaded), and it runs in an isolated subprocess.
 #
 # llama-cpp-python — local GGUF inference for the 7B brain + embeddings (imported lazily).
-# pypdf            — pure-Python PDF text extraction for the ADR-032 read_file/summarize_file
-#                    work primitives (local only; no network).
+# psutil          — system sentinel + the overnight resource monitor.
+# pypdf           — pure-Python PDF text extraction for the ADR-032 read_file/summarize_file primitives.
+# readability-lxml + beautifulsoup4 + lxml — ADR-034 web reader (extract a page's main article text).
+#                   HTTP itself uses the standard library (urllib) — no requests/httpx dependency.
+# truststore      — make urllib verify TLS against the macOS Keychain (so a corporate/proxy root that
+#                   the browser already trusts works) WITHOUT disabling verification (ADR-034).
 llama-cpp-python
+psutil
 pypdf
+readability-lxml
+beautifulsoup4
+lxml
+truststore

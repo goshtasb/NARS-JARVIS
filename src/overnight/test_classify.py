@@ -8,6 +8,8 @@ def test_read_only_actions_are_autonomous() -> None:
     assert safe_autonomous(resolve("report_system"))   # kind="diag" — read-only system report
     assert safe_autonomous(resolve("read_file"))       # kind="work" — read a local document (ADR-032)
     assert safe_autonomous(resolve("summarize_file"))  # kind="work" — read + summarize, scratchpad-only
+    assert safe_autonomous(resolve("web_lookup"))      # kind="query" — read-only web egress (ADR-034)
+    assert safe_autonomous(resolve("read_article"))    # kind="query" — read-only web egress (ADR-034)
 
 
 def test_state_changers_and_gui_and_destructive_are_held() -> None:

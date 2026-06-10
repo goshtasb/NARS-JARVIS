@@ -24,14 +24,20 @@ runner.propose("empty_trash")                # destructive -> (None, ConsentSpec
 - **`documents.py`** — read-only document **work primitives** (ADR-032, kind="work"): `read_file_text`
   (text-family + PDF via lazy `pypdf`), pure `chunk_text`, and `summarize` (whole-document **Map-Reduce**,
   coverage-honest — never a silent truncation). Outputs go only to a `/tmp` scratchpad.
+- **`web.py`** — read-only **web egress** (ADR-034, kind="query"): `web_lookup` (keyless DuckDuckGo search)
+  + `read_article` (readability-lxml main-text extraction). Runs as an isolated subprocess (the daemon
+  stays network-free); SSRF guard, bounded read, fail-closed `[ERROR…]`, TLS via the OS Keychain
+  (truststore). Pure parsers (`parse_ddg`/`extract_article`) are unit-tested offline.
 - **`recipes.py`** — declarative self-navigation recipes (kind="nav"; ADR-022/023).
 
 ## Dependencies
-`safespawn` (the subprocess seam). `documents.py` lazily imports `pypdf` for PDF text (see
-`requirements.txt`). The LLM handle for `summarize_file` is injected by the daemon; absent → an honest
-"no model" message. No network.
+`safespawn` (the subprocess seam). `documents.py` lazily imports `pypdf` for PDF text; `web.py` uses
+stdlib `urllib` + `readability-lxml`/`beautifulsoup4` + `truststore` (see `requirements.txt`). The LLM
+handle for `summarize_file` is injected by the daemon; absent → an honest "no model" message. The only
+network egress is `web.py`'s read-only DuckDuckGo fetch (ADR-034), in an isolated subprocess.
 
 ## Related ADRs
 [ADR-019](../../docs/adrs/ADR-019-mac-actions.md) (the action model),
 [ADR-025](../../docs/adrs/ADR-025-file-search.md) (find_file),
-[ADR-032](../../docs/adrs/ADR-032-work-primitives.md) (the work primitives).
+[ADR-032](../../docs/adrs/ADR-032-work-primitives.md) (the work primitives),
+[ADR-034](../../docs/adrs/ADR-034-web-search.md) (web search/read).

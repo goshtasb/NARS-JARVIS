@@ -7,6 +7,8 @@ argv with **no real side effects**. `ActionRunner` is the small object injected 
 """
 from __future__ import annotations
 
+import os
+import sys
 from dataclasses import dataclass
 from typing import Callable
 
@@ -18,6 +20,22 @@ from .diagnostics import system_report
 from .files import find_file
 
 _TIMEOUT = 15  # seconds — these are quick system commands; never hang the converse turn
+_WEB_TIMEOUT = 20  # seconds — a web fetch + parse may take longer; bounded so a hung site can't stall
+_WEB_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web.py")
+
+
+def _web(name: str, arg: str, spawn: Callable) -> str:
+    """Run a read-only web action (ADR-034) in an isolated subprocess via the sanctioned safespawn seam —
+    keeps network egress + readability out of the daemon process. Returns the child's stdout (an
+    `[ERROR: …]` string on the child's side) or an error if the fetch times out. Never raises."""
+    mode = "search" if name == "web_lookup" else "read"
+    try:
+        result = spawn([sys.executable, _WEB_PY, mode, arg],
+                       capture_output=True, text=True, timeout=_WEB_TIMEOUT)
+    except Exception as exc:  # noqa: BLE001 — timeout/spawn failure reports, never crashes the turn
+        return f"[ERROR: web request timed out or failed to start: {exc}]"
+    out = (getattr(result, "stdout", "") or "").strip()
+    return out or f"[ERROR: web request produced no output ({(getattr(result, 'stderr', '') or '').strip()[:120]})]"
 
 
 def _work(name: str, arg: str, llm) -> str:
@@ -47,7 +65,9 @@ def perform(name: str, arg: str = "", *, spawn: Callable = safespawn.run, llm=No
         return f"I don't know how to do that ({name})."
     if action.kind == "diag":
         return system_report()
-    if action.kind == "query":           # read-only search (e.g. find_file via Spotlight)
+    if action.kind == "query":           # read-only lookups (Spotlight search / web egress, ADR-034)
+        if action.name in ("web_lookup", "read_article"):
+            return _web(action.name, arg, spawn)
         return find_file(arg, spawn=spawn)
     if action.kind == "work":            # read-only document work (ADR-032): read / summarize
         return _work(action.name, arg, llm)

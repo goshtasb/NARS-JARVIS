@@ -61,8 +61,11 @@ they can confidently make things up. NARS-JARVIS is designed differently around 
    patterns in what you actually do ("you mute audio around 4 PM on weekdays when Zoom is open") and,
    once it has seen the pattern enough times, *offers* to do it for you. You're always asked first.
 
-3. **Local and private.** The language model, the reasoner, your memory, and your habits all live in a
-   single file on your machine. The assistant is **air-gapped by default** — it makes no network calls.
+3. **Local and private.** The language model, the reasoner, your memory, and your habits all live on
+   your machine. The system is local-first with **one explicit, narrow exception**: a read-only web
+   search (ADR-034) that sends your *search query* to DuckDuckGo when you ask it to look something up.
+   No local files, memory, or telemetry are ever uploaded, and the autonomous execution sandbox stays
+   fully air-gapped (test-locked). See "Safety first" below for exactly what crosses the network.
 
 ---
 
@@ -70,8 +73,13 @@ they can confidently make things up. NARS-JARVIS is designed differently around 
 
 Safety isn't a feature here; it's the architecture. The guarantees:
 
-- **Everything is local / air-gapped.** No cloud, no telemetry, no network calls at runtime. A test in
-  the codebase *locks* this — any change that gave an autonomous action network access fails the build.
+- **Local-first, with one declared network egress.** No cloud account, no telemetry, no API keys. The
+  *only* outbound traffic is the ADR-034 read-only web search/article-read: it sends your search query
+  (or a URL you point it at) to DuckDuckGo and reads the result — nothing else leaves. It runs in an
+  isolated subprocess (the brain process itself never opens a socket), only does GET requests (it cannot
+  log in, submit forms, or write to the web), blocks private/loopback addresses (SSRF guard), and caps
+  what it downloads. The **autonomous execution sandbox tier stays fully air-gapped** — a test still
+  fails the build if *that* tier ever gains network.
 - **It asks before doing anything with consequences.** Reversible things (e.g. toggling dark mode) it
   can do; anything destructive or that controls the GUI goes through an **explicit Approve/Deny consent
   gate**. Approval is always a human click.

@@ -43,7 +43,8 @@ _ACTIONS: tuple[Action, ...] = (
     Action("lock_screen", "lock the screen (sleep the display)", "argv"),
     Action("open_app", "open an application by name", "argv", takes_arg=True),
     Action("open_url", "open a web address in the browser", "argv", takes_arg=True),
-    Action("web_search", "search the web for a query", "argv", takes_arg=True),
+    Action("web_search", "open a web search in the user's browser (does NOT return results)", "argv",
+           takes_arg=True),
     # Destructive / irreversible -> gated behind interactive consent (ADR-020).
     Action("empty_trash", "empty the Trash (permanently delete its contents)", "argv", confirm=True),
     # Read-only file search (ADR-025): Spotlight by name. Returns text; mutates nothing -> frictionless.
@@ -53,6 +54,13 @@ _ACTIONS: tuple[Action, ...] = (
     Action("read_file", "read a local document's text (txt/md/csv/pdf…)", "work", takes_arg=True),
     Action("summarize_file", "summarize a local document (whole-document Map-Reduce)", "work",
            takes_arg=True),
+    # Read-only web egress (ADR-034): kind="query" -> auto-tagged Autonomous. Keyless DuckDuckGo search
+    # + article-text extraction, run in an isolated subprocess (the daemon stays network-free). NOTE:
+    # named web_lookup (returns text, headless) to NOT collide with the existing web_search, which opens
+    # a browser tab (argv/GUI -> Held). Headless lookup is the autonomous one.
+    Action("web_lookup", "search the web and READ the results (DuckDuckGo) — use this to answer questions",
+           "query", takes_arg=True),
+    Action("read_article", "read the main text of a web page (by URL)", "query", takes_arg=True),
     # Habit introspection & pruning (ADR-027): kind="habit", routed to the daemon's Habit Brain.
     # Not eligible() (not argv/nav), so asking about habits never becomes a habit itself.
     Action("list_habits", "list the habits JARVIS is learning", "habit"),
@@ -184,7 +192,14 @@ def render_action_prompt(actions: list[tuple[str, str]]) -> str:
         "When you emit [[DO: report_system]], do NOT state or guess any system metric (CPU, memory, "
         "disk, battery) in your prose — the real report is appended automatically below your reply; "
         "defer to it entirely (e.g. say 'Let me check.' not 'Your CPU is at 0%').",
+        "To answer a question using current information from the internet, use web_lookup (it RETURNS "
+        "the search results as text for you to read and use). web_search merely opens a browser tab for "
+        "the user and returns nothing, so never use web_search to gather facts. To read a specific page, "
+        "use read_article with its URL.",
         "Worked examples:",
+        "User: look up the latest on X / search online for X",
+        "Assistant: Let me check.",
+        "[[DO: web_lookup: X]]",
         "User: mute the volume",
         "Assistant: Muted.",
         "[[DO: mute]]",

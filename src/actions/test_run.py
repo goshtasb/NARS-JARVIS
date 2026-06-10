@@ -144,3 +144,28 @@ def test_work_read_file_needs_no_model() -> None:
     p = tempfile.mktemp(suffix=".md"); open(p, "w").write("# title\nbody")
     out = ActionRunner(spawn=_FakeSpawn(), llm=None).perform("read_file", p)
     assert "Read" in out and "→" in out
+
+
+# ── ADR-034: web_search / read_article route to the isolated subprocess via safespawn ──
+class _WebSpawn:
+    """Records argv and returns canned stdout (mocks the web.py subprocess — no real network)."""
+    def __init__(self, stdout: str = '[{"title":"x"}]') -> None:
+        self.calls: list[list[str]] = []
+        self._stdout = stdout
+    def __call__(self, argv, **kwargs):
+        self.calls.append(list(argv))
+        return type("R", (), {"returncode": 0, "stdout": self._stdout, "stderr": ""})()
+
+
+def test_web_lookup_routes_to_subprocess() -> None:
+    fake = _WebSpawn('[{"title":"Result"}]')
+    out = ActionRunner(spawn=fake).perform("web_lookup", "q3 rates")
+    assert out == '[{"title":"Result"}]'
+    argv = fake.calls[0]
+    assert argv[1].endswith("web.py") and argv[2] == "search" and argv[3] == "q3 rates"
+
+
+def test_read_article_routes_to_subprocess_in_read_mode() -> None:
+    fake = _WebSpawn("Title: T\n\nbody")
+    out = ActionRunner(spawn=fake).perform("read_article", "https://example.com/x")
+    assert "body" in out and fake.calls[0][2] == "read" and fake.calls[0][3] == "https://example.com/x"
