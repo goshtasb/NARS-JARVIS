@@ -33,10 +33,12 @@ In the popover, type `learn …`, `ask …`, `tell …` (a bare line is treated 
   (alerts → banners; intervention → a notification with **Hide apps / Not now** actions that reply to
   the daemon's pending intervention — the native replacement for the dropped osascript hack).
 - **`ChatView.swift`** — the popover view: transcript + input. Sends the typed command, renders the reply.
-- **`HabitsView.swift`** (ADR-030) — the Habit Brain dashboard: a second popover (right-click → "🧠 Habits…")
-  that fetches the `habits` snapshot over the socket and lists each learned tendency/habit with its
-  `[Armed]`/`[Learning]` state and a one-click **Forget** (→ `habit_forget`, which craters the ONA term).
-  Fetch-on-open; no NARS math in the UI. The instrument for the multi-day field test.
+- **`HabitsView.swift`** (ADR-030 + ADR-037) — the **🧠 Cognitive Identity** dashboard (right-click popover):
+  two sections in one pane — **Routine Cadence** (the Habit Brain: `habits` → `[Armed]`/`[Learning]` +
+  Forget via `habit_forget`) and **Persona Constraints** (the persona layer: `persona_list` → plain-English
+  constraint + `[Active]`/`[Learning]` + a red Forget via `persona_forget`). Each Forget routes through
+  the daemon so the SQLite row AND the live ONA belief are severed together. Fetch-on-open; no NARS math
+  in the UI.
 - **`MorningBriefingView.swift`** (ADR-031/033) — the overnight report: a third popover (right-click → "🌅 Morning
   Briefing…") showing what ran overnight (`done`) and the actions **held** for approval, each with
   Approve/Deny (→ `briefing_resolve`, which executes an approved action — the click is the consent gate).

@@ -91,5 +91,11 @@ class PersonaStore:
         self._db.commit()
         return cur.rowcount
 
+    def delete(self, term: str) -> int:
+        """Forget one learned constraint (ADR-037). Returns rows removed (0 if it wasn't there)."""
+        cur = self._db.execute("DELETE FROM persona_concepts WHERE term=?", (term,))
+        self._db.commit()
+        return cur.rowcount
+
     def close(self) -> None:
         self._db.close()

@@ -38,8 +38,19 @@ def test_prune_drops_washed_out_and_survives_reopen() -> None:
     reopened.close()
 
 
+def test_delete_removes_one_concept() -> None:
+    s = PersonaStore(":memory:")
+    s.upsert_concept("<format_directive --> omit_greeting_prose>", 1.0, 0.9)
+    s.upsert_concept("<current_focus --> local_development>", 1.0, 0.9)
+    assert s.delete("<format_directive --> omit_greeting_prose>") == 1
+    assert s.delete("<format_directive --> not_present>") == 0           # absent -> no-op
+    assert [r["term"] for r in s.all_concepts()] == ["<current_focus --> local_development>"]
+    s.close()
+
+
 if __name__ == "__main__":
     test_buffer_pending_consume()
     test_upsert_current_floor_and_all()
     test_prune_drops_washed_out_and_survives_reopen()
+    test_delete_removes_one_concept()
     print("persona/test_store: OK")

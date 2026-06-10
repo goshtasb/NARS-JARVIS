@@ -29,7 +29,15 @@ and `jarvis.converse()` prepends `render_persona(...)` to the system prompt.
   item against `vocab` and renders the term. Malformed/out-of-vocab is dropped, so the NAR only ever
   receives clean statements. `generate` is injected (testable without a model).
 - **`store.py`** — `PersonaStore`: the O(1) `persona_events_pending` buffer + the `persona_concepts`
-  checkpoint `(term, frequency, confidence)` that doubles as the injection source and the replay source.
+  checkpoint `(term, frequency, confidence)` that doubles as the injection source and the replay source;
+  `delete(term)` for user-initiated forgetting.
+
+## Introspection & control (ADR-037)
+`PersonaLoop.snapshot()` returns every learned constraint in plain English (`{term, phrase, confidence,
+state}`, state Active/Learning) and `forget(term)` purges the SQLite row AND craters the belief in the
+isolated persona ONA (`{0.0 0.9}`) so the two stay in sync. Surfaced in the menu-bar **🧠 Cognitive
+Identity** dashboard (daemon commands `persona_list` / `persona_forget`) alongside the Habit Brain — see
+[ADR-037](../../docs/adrs/ADR-037-persona-introspection.md).
 
 ## Dependencies
 `brain` (the isolated, resilient ONA instance; `BrainUnavailable` for fail-closed), the daemon's LLM

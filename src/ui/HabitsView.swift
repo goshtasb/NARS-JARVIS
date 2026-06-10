@@ -1,114 +1,135 @@
-// The Habit Brain dashboard (ADR-030): a glanceable menu-bar list of every learned tendency/habit
-// with its live [Armed]/[Learning] state, plus a one-click Forget. Strictly a view — it fetches the
-// structured snapshot over the socket ("habits") and routes Forget back through the daemon
-// ("habit_forget") so the ONA term is cratered, never a raw DB write. Zero NARS math lives here: the
-// daemon hands over finished `state`/`seen` strings (the UI never sees frequency/confidence). It is
-// the telemetry instrument for the field test. Mirrors ChatView's thin-client style. See service/README.
+// The Cognitive Identity dashboard (ADR-030 + ADR-037): one pane of glass over everything JARVIS has
+// learned about you — your "Routine Cadence" (the time/app Habit Brain) and your "Persona Constraints"
+// (the semantic persona layer). Each row has a one-click Forget that routes through the daemon so the
+// SQLite row AND the live ONA belief are severed together (never a raw DB write). Strictly a view: it
+// fetches structured snapshots over the socket ("habits" / "persona_list") and routes Forget back
+// ("habit_forget" / "persona_forget"). Zero reasoning/NARS-math here — the daemon hands over finished
+// strings. Two fixed sub-stacks so the two async fetches render into their own regions (no race).
 import AppKit
 
 final class HabitsViewController: NSViewController {
     weak var client: JarvisClient?
-    private let stack = NSStackView()
+    private let habitRows = NSStackView()
+    private let personaRows = NSStackView()
     private let status = NSTextField(labelWithString: "")
 
     override func loadView() {
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 420, height: 360))
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 440, height: 420))
 
-        let title = NSTextField(labelWithString: "🧠 Habits JARVIS is learning")
-        title.frame = NSRect(x: 12, y: 332, width: 396, height: 18)
-        title.font = .boldSystemFont(ofSize: 13)
-        title.textColor = .secondaryLabelColor
+        let title = NSTextField(labelWithString: "🧠 Cognitive Identity")
+        title.frame = NSRect(x: 12, y: 392, width: 396, height: 18)
+        title.font = .boldSystemFont(ofSize: 14)
 
         let refreshBtn = NSButton(title: "↻", target: self, action: #selector(refresh))
-        refreshBtn.frame = NSRect(x: 384, y: 330, width: 26, height: 22)
+        refreshBtn.frame = NSRect(x: 404, y: 390, width: 26, height: 22)
         refreshBtn.bezelStyle = .rounded
         refreshBtn.toolTip = "Refresh"
 
-        let scroll = NSScrollView(frame: NSRect(x: 8, y: 8, width: 404, height: 316))
+        status.frame = NSRect(x: 14, y: 372, width: 410, height: 16)
+        status.font = .systemFont(ofSize: 11)
+        status.textColor = .tertiaryLabelColor
+
+        let scroll = NSScrollView(frame: NSRect(x: 8, y: 8, width: 424, height: 360))
         scroll.hasVerticalScroller = true
         scroll.borderType = .bezelBorder
         scroll.drawsBackground = false
 
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 8
-        stack.edgeInsets = NSEdgeInsets(top: 10, left: 10, bottom: 10, right: 10)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        scroll.documentView = stack
+        for s in [habitRows, personaRows] {
+            s.orientation = .vertical; s.alignment = .leading; s.spacing = 6
+        }
+        let outer = NSStackView(views: [
+            sectionLabel("Routine Cadence — habits (when/where you act)"), habitRows,
+            sectionLabel("Persona Constraints — style/focus (how you want answers)"), personaRows,
+        ])
+        outer.orientation = .vertical; outer.alignment = .leading; outer.spacing = 10
+        outer.edgeInsets = NSEdgeInsets(top: 10, left: 10, bottom: 10, right: 10)
+        outer.translatesAutoresizingMaskIntoConstraints = false
+        scroll.documentView = outer
         let clip = scroll.contentView
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: clip.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: clip.trailingAnchor),
-            stack.topAnchor.constraint(equalTo: clip.topAnchor),
+            outer.leadingAnchor.constraint(equalTo: clip.leadingAnchor),
+            outer.trailingAnchor.constraint(equalTo: clip.trailingAnchor),
+            outer.topAnchor.constraint(equalTo: clip.topAnchor),
         ])
 
-        status.frame = NSRect(x: 14, y: 300, width: 380, height: 16)
-        status.font = .systemFont(ofSize: 11)
-        status.textColor = .tertiaryLabelColor
-
-        container.addSubview(title)
-        container.addSubview(refreshBtn)
-        container.addSubview(scroll)
-        container.addSubview(status)
+        for v in [title, refreshBtn, status, scroll] { container.addSubview(v) }
         self.view = container
     }
 
-    /// Pull the latest snapshot from the daemon (fetch-on-open; habits change on a daily timescale,
-    /// so no polling is needed). Safe to call repeatedly.
     @objc func refresh() {
         status.stringValue = "loading…"
         client?.call("habits") { [weak self] _, body in
             let rows = (body["rows"] as? [[String: Any]]) ?? []
-            DispatchQueue.main.async { self?.render(rows) }
+            DispatchQueue.main.async { self?.fill(self?.habitRows, rows.map { self!.habitRow($0) },
+                                                 empty: "No habits yet — JARVIS learns as you repeat actions.") }
+        }
+        client?.call("persona_list") { [weak self] _, body in
+            let rows = (body["rows"] as? [[String: Any]]) ?? []
+            DispatchQueue.main.async {
+                self?.fill(self?.personaRows, rows.map { self!.personaRow($0) },
+                           empty: "No persona learned yet — JARVIS infers your style as you work.")
+                self?.status.stringValue = ""
+            }
         }
     }
 
-    private func render(_ rows: [[String: Any]]) {
+    private func fill(_ stack: NSStackView?, _ rows: [NSView], empty: String) {
+        guard let stack = stack else { return }
         stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        if rows.isEmpty {
-            status.stringValue = "Nothing learned yet — JARVIS forms habits as you repeat actions."
-            return
-        }
-        status.stringValue = "\(rows.count) tracked"
-        for r in rows { stack.addArrangedSubview(makeRow(r)) }
+        if rows.isEmpty { stack.addArrangedSubview(dim(empty)) } else { rows.forEach { stack.addArrangedSubview($0) } }
     }
 
-    private func makeRow(_ r: [String: Any]) -> NSView {
+    private func sectionLabel(_ s: String) -> NSView {
+        let l = NSTextField(labelWithString: s); l.font = .boldSystemFont(ofSize: 12)
+        l.textColor = .secondaryLabelColor; return l
+    }
+    private func dim(_ s: String) -> NSView {
+        let l = NSTextField(labelWithString: s); l.font = .systemFont(ofSize: 11)
+        l.textColor = .tertiaryLabelColor; return l
+    }
+
+    // ── Habit row (ADR-030) ──
+    private func habitRow(_ r: [String: Any]) -> NSView {
         let desc = r["description"] as? String ?? "(habit)"
-        let key = r["key"] as? String ?? ""
         let armed = (r["state"] as? String) == "armed"
-        let scope = r["scope"] as? String ?? "tendency"
-        let seen = r["seen"] as? Int ?? 0
-        let arms = r["arms_at"] as? Int ?? 0
+        let seen = r["seen"] as? Int ?? 0, arms = r["arms_at"] as? Int ?? 0
         let badge = armed ? "🟢 Armed" : "🟡 Learning · seen ~\(seen)× (arms at ~\(arms))"
-
-        let text = NSTextField(labelWithString: "\(desc)\n\(badge) · \(scope)")
-        text.font = .systemFont(ofSize: 11)
-        text.lineBreakMode = .byWordWrapping
-        text.maximumNumberOfLines = 2
-        text.setContentHuggingPriority(.defaultLow, for: .horizontal)
-
-        let forget = NSButton(title: "Forget", target: self, action: #selector(forgetClicked(_:)))
-        forget.bezelStyle = .rounded
-        forget.controlSize = .small
-        forget.identifier = NSUserInterfaceItemIdentifier(key)   // carry the row key on the button
-        forget.setContentHuggingPriority(.required, for: .horizontal)
-
-        let row = NSStackView(views: [text, forget])
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 8
-        row.translatesAutoresizingMaskIntoConstraints = false
-        row.widthAnchor.constraint(equalToConstant: 380).isActive = true
-        return row
+        return row(text: "\(desc)\n\(badge)", id: r["key"] as? String ?? "",
+                   action: #selector(forgetHabit(_:)), destructive: false)
     }
 
-    @objc private func forgetClicked(_ sender: NSButton) {
-        guard let key = sender.identifier?.rawValue, !key.isEmpty else { return }
+    // ── Persona row (ADR-037) ──
+    private func personaRow(_ r: [String: Any]) -> NSView {
+        let phrase = r["phrase"] as? String ?? "(constraint)"
+        let active = (r["state"] as? String) == "Active"
+        let badge = active ? "🟢 Active" : "🟡 Learning"
+        return row(text: "\(phrase)\n\(badge)", id: r["term"] as? String ?? "",
+                   action: #selector(forgetPersona(_:)), destructive: true)
+    }
+
+    private func row(text: String, id: String, action: Selector, destructive: Bool) -> NSView {
+        let label = NSTextField(labelWithString: text)
+        label.font = .systemFont(ofSize: 11); label.lineBreakMode = .byWordWrapping
+        label.maximumNumberOfLines = 2; label.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        let forget = NSButton(title: "Forget", target: self, action: action)
+        forget.bezelStyle = .rounded; forget.controlSize = .small
+        if destructive { forget.bezelColor = .systemRed }
+        forget.identifier = NSUserInterfaceItemIdentifier(id)
+        forget.setContentHuggingPriority(.required, for: .horizontal)
+        let r = NSStackView(views: [label, forget])
+        r.orientation = .horizontal; r.alignment = .centerY; r.spacing = 8
+        r.translatesAutoresizingMaskIntoConstraints = false
+        r.widthAnchor.constraint(equalToConstant: 396).isActive = true
+        return r
+    }
+
+    @objc private func forgetHabit(_ sender: NSButton) { sever(sender, cmd: "habit_forget") }
+    @objc private func forgetPersona(_ sender: NSButton) { sever(sender, cmd: "persona_forget") }
+
+    private func sever(_ sender: NSButton, cmd: String) {
+        guard let id = sender.identifier?.rawValue, !id.isEmpty else { return }
         sender.isEnabled = false
-        // Routes through HabitLoop.forget on the daemon: craters the ONA term AND purges the row.
-        client?.call("habit_forget", key) { [weak self] _, _ in
-            DispatchQueue.main.async { self?.refresh() }
-        }
+        // Daemon-side: deletes the SQLite row AND craters the ONA belief — DB and reasoner stay in sync.
+        client?.call(cmd, id) { [weak self] _, _ in DispatchQueue.main.async { self?.refresh() } }
     }
 }

@@ -66,4 +66,6 @@ Standard library only for transport (`socket`, `select`, `json`) — no network,
 [ADR-003](../../docs/adrs/ADR-003-headless-daemon-ipc.md),
 [ADR-030](../../docs/adrs/ADR-030-habit-menu-bar-dashboard.md),
 [ADR-031](../../docs/adrs/ADR-031-overnight-batch-queue.md),
-[ADR-033](../../docs/adrs/ADR-033-batch-canvas.md).
+[ADR-033](../../docs/adrs/ADR-033-batch-canvas.md),
+[ADR-036](../../docs/adrs/ADR-036-continuous-persona-learning.md) (persona loop),
+[ADR-037](../../docs/adrs/ADR-037-persona-introspection.md) (persona_list / persona_forget).

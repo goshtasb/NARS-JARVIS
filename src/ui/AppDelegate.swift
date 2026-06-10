@@ -46,7 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         popover.contentSize = NSSize(width: 420, height: 320)
         habitsPopover.behavior = .transient                 // ADR-030: separate dashboard popover
         habitsPopover.contentViewController = habits
-        habitsPopover.contentSize = NSSize(width: 420, height: 360)
+        habitsPopover.contentSize = NSSize(width: 440, height: 420)   // ADR-037: + Persona Constraints
         briefingPopover.behavior = .transient               // ADR-031: morning briefing popover
         briefingPopover.contentViewController = briefing
         briefingPopover.contentSize = NSSize(width: 440, height: 380)
@@ -193,7 +193,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if NSApp.currentEvent?.type == .rightMouseUp {
             let menu = NSMenu()
             menu.addItem(NSMenuItem(title: "Open JARVIS", action: #selector(openPopover), keyEquivalent: ""))
-            menu.addItem(NSMenuItem(title: "🧠 Habits…", action: #selector(openHabits), keyEquivalent: ""))
+            menu.addItem(NSMenuItem(title: "🧠 Cognitive Identity…", action: #selector(openHabits), keyEquivalent: ""))
             menu.addItem(NSMenuItem(title: "🌅 Morning Briefing…", action: #selector(openBriefing), keyEquivalent: ""))
             menu.addItem(NSMenuItem(title: "🗂 Batch Canvas…", action: #selector(openBatchCanvas), keyEquivalent: ""))
             menu.addItem(.separator())

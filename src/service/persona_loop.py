@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import Callable
 
 from brain import BrainUnavailable
-from persona import extract
+from persona import extract, phrase_for
 
 IDLE_SECONDS = 45.0   # ADR-036 locked thresholds
 BATCH_MAX = 5
@@ -68,6 +68,36 @@ class PersonaLoop:
     # ── injection source (read by context.render_persona; empty when down -> stateless) ──
     def persona(self) -> list[dict]:
         return [] if self._down else self._store.current(INJECT_FLOOR)
+
+    # ── introspection & control (ADR-037) — the glass box ──
+    def snapshot(self) -> list[dict]:
+        """Every learned persona constraint, in plain English, for the Cognitive Identity dashboard:
+        {term, phrase, confidence, state}. state = Active (>= inject floor) | Learning. O(1) SQLite read;
+        out-of-vocab terms (shouldn't exist) are skipped."""
+        rows = []
+        for c in self._store.all_concepts():
+            phrase = phrase_for(c["term"])
+            if not phrase:
+                continue
+            rows.append({"term": c["term"], "phrase": phrase, "confidence": c["confidence"],
+                         "state": "Active" if c["confidence"] >= INJECT_FLOOR else "Learning"})
+        return sorted(rows, key=lambda r: r["confidence"], reverse=True)
+
+    def forget(self, term: str) -> str:
+        """User-initiated delete: remove the constraint from SQLite AND crater the belief in the isolated
+        persona ONA ({0.0 0.9}), so the DB and the live reasoner stay in sync (mirrors HabitLoop.forget).
+        The SQLite delete is what removes it from injection; the crater stops it re-arming this session."""
+        term = (term or "").strip()
+        if not term:
+            return "Which persona constraint should I forget?"
+        removed = self._store.delete(term)
+        if not self._down:
+            try:
+                self._brain.add_belief(f"{term}. {{0.0 0.9}}")   # negative evidence collapses its weight
+            except Exception:  # noqa: BLE001 — DB delete already took it out of injection
+                pass
+        phrase = phrase_for(term) or term
+        return f"Forgotten: {phrase}." if removed else f"Wasn't tracking: {phrase}."
 
     @property
     def down(self) -> bool:

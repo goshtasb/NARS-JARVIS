@@ -136,6 +136,7 @@ class Session:
             "intervene": self._intervene, "voice": self._voice,  # intervene: Sentinel auto-mode undo
             "forget": self._forget, "restore": self._restore,
             "habits": self._habits, "habit_forget": self._habit_forget,  # ADR-030: menu-bar dashboard
+            "persona_list": self._persona_list, "persona_forget": self._persona_forget,  # ADR-037: glass box
             "overnight_enqueue": self._overnight_enqueue, "overnight_start": self._overnight_start,
             "overnight_status": self._overnight_status,                   # ADR-031: overnight batch queue
             "overnight_enqueue_batch": self._overnight_enqueue_batch,     # ADR-033: batch commit
@@ -371,6 +372,14 @@ class Session:
         """ADR-030: one-click Forget from the dashboard. Routes through HabitLoop.forget so the ONA
         term is cratered (not a raw row delete) — distinct from the memory `forget` command."""
         return True, {"text": self._habit_loop.forget(str(arg).strip())}
+
+    # ── ADR-037: persona introspection & control (the Cognitive Identity glass box) ──
+    def _persona_list(self, _arg: object) -> tuple[bool, object]:
+        return True, {"rows": self._persona_loop.snapshot()}
+
+    def _persona_forget(self, arg: object) -> tuple[bool, object]:
+        """Delete a learned persona constraint + crater its belief in the isolated persona ONA."""
+        return True, {"text": self._persona_loop.forget(str(arg).strip())}
 
     # ── ADR-031: overnight batch queue + morning briefing ──
     def _overnight_enqueue(self, arg: object) -> tuple[bool, object]:
