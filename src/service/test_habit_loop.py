@@ -1,6 +1,7 @@
 """Unit tests for the Habit Brain loop (ADR-026): telemetry feeds + persists, eligibility filters,
 and the proposal tick gates correctly + respects the once-per-occurrence cooldown. Stubbed brain/
 store/consent — no ONA, no OS."""
+import types
 from datetime import datetime
 
 from service.habit_loop import HabitLoop
@@ -144,6 +145,38 @@ def test_describe_lists_armed_and_learning_without_raw_math() -> None:
     assert "mute around 9:00 AM — [Armed]" in out
     assert "dark mode around 2:00 PM — [Learning]" in out and "seen ~1×" in out
     assert "0.9" not in out and "conf" not in out               # no raw NARS numbers leak to the user
+
+
+def test_snapshot_is_structured_and_encapsulates_math() -> None:
+    # ADR-030: the dashboard payload is machine-readable BUT carries no raw NARS math.
+    s = _Store()
+    s.record("h09_mute", "h09", "mute", "", 1.0, 0.9)                          # armed tendency
+    s.record("h14_dark_mode", "h14", "dark_mode", "", 1.0, 0.5, scope="base")  # learning tendency
+    s.record("h16_mute_weekday_app_zoom", "h16", "mute", "", 1.0, 0.9,
+             day_type="weekday", app="app_zoom", scope="context")              # armed context habit
+    rows = HabitLoop(_Brain(), s, _Consent(), lambda a, g: "", clock=_CLOCK).snapshot()
+    by_key = {r["key"]: r for r in rows}
+    assert by_key["h09_mute"]["state"] == "armed" and by_key["h09_mute"]["scope"] == "tendency"
+    assert by_key["h14_dark_mode"]["state"] == "learning" and by_key["h14_dark_mode"]["seen"] == 1
+    assert by_key["h16_mute_weekday_app_zoom"]["scope"] == "habit"
+    assert "mute in Zoom on weekdays" in by_key["h16_mute_weekday_app_zoom"]["description"]
+    for r in rows:                                                             # no raw freq/conf leak
+        assert set(r) == {"key", "description", "scope", "state", "seen", "arms_at"}
+
+
+def test_dispatch_habits_and_habit_forget_route_through_loop() -> None:
+    # ADR-030 IPC: the daemon commands delegate to HabitLoop — forget craters ONA *and* purges the row.
+    from service.session import Session
+    s = _Store()
+    s.record("h09_mute", "h09", "mute", "", 1.0, 0.9)
+    b = _Brain()
+    stub = types.SimpleNamespace(_habit_loop=HabitLoop(b, s, _Consent(), lambda a, g: "", clock=_CLOCK))
+    ok, body = Session._habits(stub, "")
+    assert ok and [r["key"] for r in body["rows"]] == ["h09_mute"]
+    ok, body = Session._habit_forget(stub, "mute")
+    assert ok and "Forgotten" in body["text"]
+    assert s.list_all() == []                                  # row purged
+    assert any("{0.0 0.9}" in x for x in b.added)              # ONA term cratered (not a raw delete)
 
 
 def test_describe_empty() -> None:

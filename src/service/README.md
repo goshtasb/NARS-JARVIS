@@ -41,6 +41,11 @@ then multiplexes the keyboard and the socket.
   consent weights (yes `{1.0 0.5}`, no `{0.0 0.9}`), and the two-condition gate (confidence ≥ 0.85
   AND favorable expectation). `SentinelLoop` queries it before acting and feeds consent back on each
   y/n; ~6 approvals earn autonomy, one decline revokes it. See ADR-006.
+- **Habit dashboard commands** (ADR-030) — `habits` returns a structured snapshot
+  (`{"rows": [{key, description, scope, state, seen, arms_at}]}`) of the learned habits with the NARS
+  math already encapsulated (no raw frequency/confidence); `habit_forget <key>` routes through
+  `HabitLoop.forget` so the ONA term is cratered *and* the row purged. Both bypass the LLM — they back
+  the menu-bar dashboard (`ui/HabitsView.swift`).
 - **Kill switch** — the `shutdown` command stops the whole daemon cleanly (both brains, sensor,
   actuator); surfaced as the UI's Emergency Stop and the console's `shutdown`.
 
@@ -50,4 +55,5 @@ Standard library only for transport (`socket`, `select`, `json`) — no network,
 
 ## Related ADRs
 [ADR-001](../../docs/adrs/ADR-001-adopt-and-adapt-engineering-standards.md),
-[ADR-003](../../docs/adrs/ADR-003-headless-daemon-ipc.md).
+[ADR-003](../../docs/adrs/ADR-003-headless-daemon-ipc.md),
+[ADR-030](../../docs/adrs/ADR-030-habit-menu-bar-dashboard.md).

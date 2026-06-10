@@ -10,6 +10,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
     private let chat = ChatViewController()
+    private let habitsPopover = NSPopover()              // ADR-030: the Habit Brain dashboard
+    private let habits = HabitsViewController()
     private var client: JarvisClient?
     private var sockPath = ""                     // ADR-017: remembered for auto-reconnect
     private let recorder = AudioRecorder()
@@ -38,6 +40,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         popover.behavior = .transient
         popover.contentViewController = chat
         popover.contentSize = NSSize(width: 420, height: 320)
+        habitsPopover.behavior = .transient                 // ADR-030: separate dashboard popover
+        habitsPopover.contentViewController = habits
+        habitsPopover.contentSize = NSSize(width: 420, height: 360)
         chat.onQuit = { NSApp.terminate(nil) }
         chat.onStop = { [weak self] in self?.emergencyStop() }
         chat.onConsent = { [weak self] id, approved in    // ADR-021: inline Approve/Deny -> daemon
@@ -124,6 +129,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         c.start()
         client = c
         chat.client = c
+        habits.client = c                                   // ADR-030: dashboard talks over the same socket
         setConnected(true)
         chat.append(reconnect ? "↻ reconnected to JARVIS." : "✓ connected to JARVIS.")
         _log("UI: \(reconnect ? "reconnected" : "connected") to daemon at \(sockPath)")
@@ -178,6 +184,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if NSApp.currentEvent?.type == .rightMouseUp {
             let menu = NSMenu()
             menu.addItem(NSMenuItem(title: "Open JARVIS", action: #selector(openPopover), keyEquivalent: ""))
+            menu.addItem(NSMenuItem(title: "🧠 Habits…", action: #selector(openHabits), keyEquivalent: ""))
             menu.addItem(.separator())
             let stop = NSMenuItem(title: "⛔ Emergency Stop (quit everything)",
                                   action: #selector(emergencyStop), keyEquivalent: "")
@@ -201,6 +208,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             chat.focusInput()
         }
+    }
+
+    /// ADR-030: open the Habit Brain dashboard and pull a fresh snapshot. The field-test instrument.
+    @objc private func openHabits() {
+        guard let button = statusItem.button else { return }
+        if habitsPopover.isShown { habitsPopover.performClose(nil); return }
+        if popover.isShown { popover.performClose(nil) }
+        habitsPopover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        habits.refresh()
     }
 
     @objc private func quitApp() { NSApp.terminate(nil) }

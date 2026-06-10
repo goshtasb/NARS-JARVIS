@@ -33,6 +33,10 @@ In the popover, type `learn …`, `ask …`, `tell …` (a bare line is treated 
   (alerts → banners; intervention → a notification with **Hide apps / Not now** actions that reply to
   the daemon's pending intervention — the native replacement for the dropped osascript hack).
 - **`ChatView.swift`** — the popover view: transcript + input. Sends the typed command, renders the reply.
+- **`HabitsView.swift`** (ADR-030) — the Habit Brain dashboard: a second popover (right-click → "🧠 Habits…")
+  that fetches the `habits` snapshot over the socket and lists each learned tendency/habit with its
+  `[Armed]`/`[Learning]` state and a one-click **Forget** (→ `habit_forget`, which craters the ONA term).
+  Fetch-on-open; no NARS math in the UI. The instrument for the multi-day field test.
 - **`AudioRecorder.swift`** — push-to-talk mic capture (`AVAudioRecorder`) → 16 kHz WAV in `$TMPDIR`.
 - **`HotKey.swift`** — Carbon `RegisterEventHotKey` hold-to-talk (no TCC dialog). Available but not
   registered — voice is triggered by the menu-bar 🎙 toggle instead (⌥Space conflicted).
@@ -65,4 +69,5 @@ socket. No third-party packages.
 
 ## Related ADRs
 [ADR-003](../../docs/adrs/ADR-003-headless-daemon-ipc.md) (the daemon/IPC it connects to),
-[ADR-004](../../docs/adrs/ADR-004-macos-menubar-ui.md) (this app's framework/sandbox choices).
+[ADR-004](../../docs/adrs/ADR-004-macos-menubar-ui.md) (this app's framework/sandbox choices),
+[ADR-030](../../docs/adrs/ADR-030-habit-menu-bar-dashboard.md) (the Habit Brain dashboard).

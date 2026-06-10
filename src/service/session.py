@@ -109,6 +109,7 @@ class Session:
             "status": self._status, "health": self._health, "sentinel": self._sentinel,
             "intervene": self._intervene, "voice": self._voice,  # intervene: Sentinel auto-mode undo
             "forget": self._forget, "restore": self._restore,
+            "habits": self._habits, "habit_forget": self._habit_forget,  # ADR-030: menu-bar dashboard
             "ax_context": self._ax_context, "ax_result": self._ax_result,  # GUI actuation (ADR-021)
             "axdump": self._axdump,  # ADR-023: inspect the captured control tree (recipe-matcher authoring)
             "shutdown": self._do_shutdown,
@@ -327,6 +328,15 @@ class Session:
         if verb == "forget_habit":
             return self._habit_loop.forget(arg)
         return self._habit_loop.describe()
+
+    def _habits(self, _arg: object) -> tuple[bool, object]:
+        """ADR-030: structured habit snapshot for the menu-bar dashboard (no LLM round-trip)."""
+        return True, {"rows": self._habit_loop.snapshot()}
+
+    def _habit_forget(self, arg: object) -> tuple[bool, object]:
+        """ADR-030: one-click Forget from the dashboard. Routes through HabitLoop.forget so the ONA
+        term is cratered (not a raw row delete) — distinct from the memory `forget` command."""
+        return True, {"text": self._habit_loop.forget(str(arg).strip())}
 
     def _ax_result(self, arg: object) -> tuple[bool, object]:
         """The app reports an actuation outcome; surface it to the user as an answer event."""

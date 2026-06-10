@@ -95,6 +95,24 @@ class HabitLoop:
                              f"arms at ~{arms_at})")
         return "\n".join(lines)
 
+    def snapshot(self) -> list[dict]:
+        """Structured per-row view for a native UI (ADR-030) — the same data `describe()` renders, but
+        machine-readable. The NARS math stays encapsulated: rows carry a finished `state`/`seen`, never
+        raw frequency/confidence (the UI must not reimplement `gate_passes`)."""
+        arms_at = evidence_count(CONF_FLOOR)
+        rows = []
+        for r in self._store.list_all():
+            armed = gate_passes(r["frequency"], r["confidence"])
+            rows.append({
+                "key": r["key"],
+                "description": self._describe_row(r),
+                "scope": "habit" if r.get("scope") == "context" else "tendency",
+                "state": "armed" if armed else "learning",
+                "seen": evidence_count(r["confidence"]),
+                "arms_at": arms_at,
+            })
+        return rows
+
     @staticmethod
     def _describe_row(r: dict) -> str:
         return describe_habit(r["action"], r["arg"], r["bucket"], r.get("day_type", ""), r.get("app", ""))
