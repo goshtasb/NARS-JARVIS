@@ -22,7 +22,8 @@ final class ChatViewController: NSViewController {
     // so "sentinel on" was being sent to the LLM as chat). `act` is intentionally NOT here — its
     // needs_confirm round-trip has no GUI yet; use the terminal console for actions.
     private static let known = ["learn", "ask", "tell", "status", "health",
-                                "sentinel", "forget", "restore"]
+                                "sentinel", "forget", "restore",
+                                "overnight_enqueue", "overnight_start", "overnight_status"]  // ADR-031
 
     override func loadView() {
         let container = NSView(frame: NSRect(x: 0, y: 0, width: 420, height: 320))

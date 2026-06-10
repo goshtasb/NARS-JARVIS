@@ -15,6 +15,7 @@ from typing import Callable
 from actions import ActionRunner, recipe_for, resolve as resolve_action, should_gate
 from brain import Brain
 from habits import HabitStore
+from overnight import HeldLedger, OvernightQueue
 from context import render_habits, render_live_context
 from execution import DecisionStats, build_air_gapped_executor, decide
 from jarvis import Jarvis
@@ -29,6 +30,7 @@ from .agent_loop import agent_route, resolve_surface
 from .ax_dispatch import dispatch_ax, find_control_id
 from .consent_service import ConsentService
 from .habit_loop import HabitLoop
+from .overnight_runner import OvernightRunner
 from .sentinel_loop import SentinelLoop
 from .voice import WhisperJob, speak, whisper_available
 from .wiring import NoNarrationLLM, make_claim_source, make_embedder
@@ -65,6 +67,11 @@ class Session:
         self._habit_store = HabitStore(db_path)
         self._habit_loop = HabitLoop(self._brain, self._habit_store, self._consent, self._habit_actuate,
                                      foreground=lambda: self._ax_app)  # ADR-028: app context for habits
+        # Overnight batch queue + persistent held-ledger (ADR-031): run read-only tasks unattended,
+        # hold everything else for explicit morning approval. Durable across daemon restarts.
+        self._overnight_queue = OvernightQueue(db_path)
+        self._held_ledger = HeldLedger(db_path)
+        self._overnight = OvernightRunner(self._overnight_queue, self._held_ledger, self._actions, self._emit)
         voice = Voice(formatter=llm if hasattr(llm, "generate_text") else None)
         self._jarvis = Jarvis(Translator(llm, embedder=embedder, cache=grounding),
                               self._store, self._brain, executor=self._executor, gate=gate,
@@ -110,6 +117,9 @@ class Session:
             "intervene": self._intervene, "voice": self._voice,  # intervene: Sentinel auto-mode undo
             "forget": self._forget, "restore": self._restore,
             "habits": self._habits, "habit_forget": self._habit_forget,  # ADR-030: menu-bar dashboard
+            "overnight_enqueue": self._overnight_enqueue, "overnight_start": self._overnight_start,
+            "overnight_status": self._overnight_status,                   # ADR-031: overnight batch queue
+            "briefing": self._briefing, "briefing_resolve": self._briefing_resolve,  # ADR-031: morning
             "ax_context": self._ax_context, "ax_result": self._ax_result,  # GUI actuation (ADR-021)
             "axdump": self._axdump,  # ADR-023: inspect the captured control tree (recipe-matcher authoring)
             "shutdown": self._do_shutdown,
@@ -338,6 +348,50 @@ class Session:
         term is cratered (not a raw row delete) — distinct from the memory `forget` command."""
         return True, {"text": self._habit_loop.forget(str(arg).strip())}
 
+    # ── ADR-031: overnight batch queue + morning briefing ──
+    def _overnight_enqueue(self, arg: object) -> tuple[bool, object]:
+        """Queue one concrete catalog action for the overnight run. arg: {action, arg} or
+        'action arg…' (the console form)."""
+        if isinstance(arg, dict):
+            action, a = str(arg.get("action", "")).strip(), str(arg.get("arg", "")).strip()
+        else:
+            parts = str(arg).strip().split(" ", 1)
+            action, a = parts[0], (parts[1] if len(parts) > 1 else "")
+        if not action:
+            return False, {"text": "usage: overnight_enqueue <action> [arg]"}
+        if resolve_action(action) is None:
+            return False, {"text": f"unknown action: {action!r} (only catalog actions can be queued)."}
+        tid = self._overnight_queue.enqueue(action, a)
+        return True, {"text": f"queued #{tid}: {action}{(' ' + a) if a else ''}", "id": tid}
+
+    def _overnight_start(self, _arg: object) -> tuple[bool, object]:
+        """Begin draining the queue (call at bedtime). Read-only tasks run; the rest are held."""
+        n = self._overnight.start()
+        return True, {"text": f"overnight run started — {n} task(s) queued.", "queued": n}
+
+    def _overnight_status(self, _arg: object) -> tuple[bool, object]:
+        return True, {"active": self._overnight.active, "rows": self._overnight_queue.list_all()}
+
+    def _briefing(self, _arg: object) -> tuple[bool, object]:
+        """The morning report: completed tasks + the actions held for approval."""
+        rows = self._overnight_queue.list_all()
+        done = [r for r in rows if r["status"] in ("done", "failed")]
+        return True, {"done": done, "held": self._held_ledger.pending()}
+
+    def _briefing_resolve(self, arg: object) -> tuple[bool, object]:
+        """Approve/deny a held action. On approve, run it NOW — the briefing click IS the consent gate."""
+        if not isinstance(arg, dict):
+            return False, {"text": "usage: briefing_resolve {id, accepted}"}
+        hid, accepted = int(arg.get("id", 0)), bool(arg.get("accepted"))
+        row = self._held_ledger.get(hid)
+        if row is None or row["disposition"] != "held":
+            return True, {"text": "no held action with that id (already resolved?)."}
+        self._held_ledger.resolve(hid, accepted)
+        if not accepted:
+            return True, {"text": f"declined: {row['action']}"}
+        result = self._actions.perform(row["action"], row["arg"])   # human just approved -> execute
+        return True, {"text": result}
+
     def _ax_result(self, arg: object) -> tuple[bool, object]:
         """The app reports an actuation outcome; surface it to the user as an answer event."""
         if isinstance(arg, dict):
@@ -544,6 +598,10 @@ class Session:
             self._habit_loop.propose_due()   # ADR-026: offer an armed habit for the current hour-bucket
         except Exception as exc:  # noqa: BLE001 — a habit-tick hiccup must never kill the loop
             self._emit("alert", {"text": f"[habit error] {exc}"})
+        try:
+            self._overnight.advance()        # ADR-031: advance the overnight batch run by one task
+        except Exception as exc:  # noqa: BLE001 — an overnight hiccup must never kill the loop
+            self._emit("alert", {"text": f"[overnight error] {exc}"})
         try:
             self._sys_sentinel.run_once()
             import psutil
