@@ -26,11 +26,11 @@ def test_parse_ddg_extracts_top_results_and_decodes_redirect() -> None:
       <a class="result__snippet">Second snippet.</a>
     </div>
     """
-    import json
-    rows = json.loads(web.parse_ddg(html))
-    assert rows[0]["title"] == "First" and rows[0]["url"] == "https://example.com/a"   # uddg decoded
-    assert rows[0]["snippet"] == "First snippet here."
-    assert rows[1]["url"] == "https://plain.example/b"
+    out = web.parse_ddg(html)
+    assert "First" in out and "https://example.com/a" in out          # uddg redirect decoded
+    assert "First snippet here." in out
+    assert "Second" in out and "https://plain.example/b" in out
+    assert not out.lstrip().startswith(("{", "["))                    # readable text, not JSON
 
 
 def test_parse_ddg_reports_when_markup_changes() -> None:

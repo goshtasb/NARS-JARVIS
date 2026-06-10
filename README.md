@@ -122,6 +122,9 @@ Released in tagged increments **v1.0.0 → v1.8.0**; **435 automated tests** cur
 - **Self-navigation recipes** — higher-level skills like "set brightness to 40%" that open the right
   settings pane and operate the control themselves. ([ADR-022], [ADR-023])
 - **File search** — find files by name via Spotlight, ranked for relevance. ([ADR-025])
+- **Web search & reading (keyless)** — ask it to look something up and it searches DuckDuckGo and reads
+  the page, then **synthesizes a source-cited answer** (not a raw result dump). Read-only, no API key, in
+  an isolated subprocess; the only thing that leaves your machine is the search query. ([ADR-034], [ADR-035])
 
 ### Learning your habits
 - **The Habit Brain** — every eligible action you take becomes evidence on a time-and-context pattern in
@@ -363,3 +366,5 @@ author. (If you're reading this in a private repo: that's expected — it isn't 
 [ADR-031]: docs/adrs/ADR-031-overnight-batch-queue.md
 [ADR-032]: docs/adrs/ADR-032-work-primitives.md
 [ADR-033]: docs/adrs/ADR-033-batch-canvas.md
+[ADR-034]: docs/adrs/ADR-034-web-search.md
+[ADR-035]: docs/adrs/ADR-035-web-answer-synthesis.md

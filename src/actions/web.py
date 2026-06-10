@@ -17,7 +17,6 @@ CLI: `python web.py search "<query>"`  |  `python web.py read "<url>"`  -> resul
 from __future__ import annotations
 
 import ipaddress
-import json
 import random
 import socket
 import sys
@@ -101,7 +100,8 @@ def _decode_ddg(href: str) -> str:
 
 
 def parse_ddg(html: str) -> str:
-    """Top-5 results from a DuckDuckGo text-endpoint page -> JSON [{title,url,snippet}], or [ERROR…]."""
+    """Top-5 results from a DuckDuckGo text-endpoint page -> a clean numbered list (title/snippet/url),
+    or `[ERROR…]`. Readable text (not JSON) so it reads well in chat AND feeds cleanly to the model."""
     if html.startswith("[ERROR:"):
         return html
     from bs4 import BeautifulSoup
@@ -119,7 +119,9 @@ def parse_ddg(html: str) -> str:
                             "url": _decode_ddg(a.get("href", "")), "snippet": ""})
     if not results:
         return "[ERROR: DuckDuckGo returned no parseable results (markup may have changed)]"
-    return json.dumps(results, indent=2)
+    return "\n".join(
+        f"{i}. {r['title']}\n   {r['snippet']}\n   {r['url']}".rstrip()
+        for i, r in enumerate(results, 1))
 
 
 def extract_article(html: str, url: str) -> str:

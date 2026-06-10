@@ -148,6 +148,16 @@ _SYSTEM_QUERY = re.compile(
     re.I,
 )
 
+# ADR-035: read-only web actions whose results get a SECOND model pass (synthesize an answer) instead of
+# being dumped raw into the chat.
+_RESEARCH_ACTIONS = ("web_lookup", "read_article")
+_SYNTH_PROMPT = (
+    "You searched the web and got the results below. Answer the user's question concisely and factually "
+    "USING ONLY those results, and name the source site. If the results do not actually contain the "
+    "answer, say so plainly — do not guess or invent details."
+)
+_SYNTH_INPUT_CAP = 8000   # chars of findings fed to the synthesis call (keeps it under the model's n_ctx)
+
 
 class Jarvis:
     def __init__(self, translator: Translator, store: MemoryStore, brain: Brain,
@@ -393,12 +403,21 @@ class Jarvis:
         # (an unknown/unsafe action is a safe no-op string). Done first so the tags are stripped before
         # the memory parsers run; results are appended to the reply below.
         clean, actions = split_do_directives(reply)
-        action_results = self._run_actions(actions, question)
-        # Auto-memory (ADR-008/009): pull [[REMEMBER]]/[[FORGET]] directives, persist them, show the
-        # cleaned reply, and confirm changes so a wrong save/forget is visible and correctable.
+        # Auto-memory (ADR-008/009): pull [[REMEMBER]]/[[FORGET]] from the model's OWN prose FIRST — a
+        # research synthesis pass (below) may replace that prose with the web-sourced answer.
         clean, facts = split_memory_directives(clean)
         clean, forgets = split_forget_directives(clean)
         clean = clean.strip()
+        # Actions: run normal ones (results appended as a tail below). Research actions (web_lookup /
+        # read_article, ADR-035) instead get a SECOND model pass that synthesizes the answer FROM the
+        # findings — so the user sees a real answer, not raw search results dumped into the chat.
+        research = [t for t in actions if t[0] in _RESEARCH_ACTIONS]
+        action_results = self._run_actions([t for t in actions if t[0] not in _RESEARCH_ACTIONS], question)
+        if research:
+            answer, errors = self._run_research(research, question)
+            if answer:
+                clean = answer            # the synthesized, web-sourced answer replaces the "Let me check" filler
+            action_results += errors      # surface any [ERROR…] (rate-limited/blocked) honestly
         if facts:  # guard the context-echo bug — but an UPDATE (same slot, new value) is not an echo
             known = [ln[2:] if ln.startswith("- ") else ln
                      for ln in (memory + "\n" + live + "\n" + habits).splitlines()]  # incl. live + habits
@@ -473,6 +492,30 @@ class Jarvis:
             return []
         _clean, actions = split_do_directives(reply)
         return actions
+
+    def _run_research(self, research: list[tuple[str, str]], question: str) -> tuple[str | None, list[str]]:
+        """ADR-035 two-pass web answer: run the research actions, then make a SECOND model call to
+        synthesize an answer from the findings. Returns (answer_or_None, error_strings). Falls back to
+        the raw (now human-readable) findings if synthesis yields nothing."""
+        if self._action_runner is None:
+            return None, []
+        findings, errors = [], []
+        for name, arg in research:
+            result = self._action_runner.perform(name, arg)
+            (errors if result.lstrip().startswith("[ERROR") else findings).append(result)
+        if not findings:
+            return None, errors                                  # all blocked/empty -> surface the errors
+        joined = "\n\n".join(findings)
+        return (self._web_answer(question, joined) or joined), []
+
+    def _web_answer(self, question: str, findings: str) -> str:
+        """Second pass: have the model answer the question from the (capped) web findings. '' on failure."""
+        try:
+            return self._assistant.generate_text(
+                _SYNTH_PROMPT, f"Question: {question}\n\nSearch results:\n{findings[:_SYNTH_INPUT_CAP]}",
+                max_tokens=400).strip()
+        except Exception:  # noqa: BLE001 — a model hiccup falls back to the raw findings
+            return ""
 
     @staticmethod
     def _is_system_query(text: str) -> bool:

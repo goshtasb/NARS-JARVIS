@@ -549,6 +549,45 @@ def test_converse_injects_ax_dom() -> None:
         assert "[sld_1] AXSlider \"Brightness\"" in asst.last_user      # AX DOM injected
 
 
+def test_web_research_synthesizes_an_answer_not_raw_results() -> None:
+    # ADR-035: a web_lookup result is fed back for a 2nd pass that ANSWERS — the user must NOT see the
+    # raw search list dumped into chat.
+    class _WebLLM:
+        """1st call: emits a web_lookup directive. 2nd call (synthesis): answers from the findings."""
+        def generate_text(self, system, user, max_tokens=64):
+            if system.startswith("You searched the web"):                  # the synthesis pass
+                assert "Sunrise Times" in user                             # findings were fed in
+                return "Sunrise tomorrow is about 5:43 AM (timeanddate.com)."
+            return "Let me check.\n[[DO: web_lookup: sunrise tomorrow]]"
+
+    class _Runner:
+        def available(self): return [("web_lookup", "search the web and READ the results")]
+        def perform(self, name, arg):
+            assert name == "web_lookup"
+            return "1. Sunrise Times\n   Sunrise 5:43 AM tomorrow.\n   https://timeanddate.com/x"
+
+    with Brain(cycles_per_step=50) as brain:
+        j = Jarvis(Translator(_QLLM()), MemoryStore(), brain, assistant=_WebLLM(), action_runner=_Runner())
+        out = j.converse("what time is sunrise tomorrow")
+        assert out == "Sunrise tomorrow is about 5:43 AM (timeanddate.com)."   # synthesized answer
+        assert "https://timeanddate.com/x" not in out and "Let me check" not in out  # not raw dump/filler
+
+
+def test_web_research_surfaces_errors_without_synthesis() -> None:
+    # If the search fails (rate-limited/blocked), surface the honest error — don't fabricate an answer.
+    class _WebLLM:
+        def generate_text(self, system, user, max_tokens=64):
+            assert not system.startswith("You searched the web")           # synthesis must NOT run
+            return "Let me check.\n[[DO: web_lookup: x]]"
+    class _Runner:
+        def available(self): return []
+        def perform(self, name, arg): return "[ERROR: target rate-limited or blocked after retries]"
+    with Brain(cycles_per_step=50) as brain:
+        j = Jarvis(Translator(_QLLM()), MemoryStore(), brain, assistant=_WebLLM(), action_runner=_Runner())
+        out = j.converse("look up x")
+        assert "[ERROR:" in out                                            # honest failure, no fake answer
+
+
 def test_report_system_gated_to_real_system_questions() -> None:
     # v1.8.2: the 7B fired report_system on a sunrise question. The deterministic guard runs it ONLY
     # when the user's text shows system intent — regardless of what the model emits.
