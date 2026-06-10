@@ -60,6 +60,36 @@ def test_extract_article_keeps_body_drops_chrome() -> None:
 def test_error_strings_pass_through() -> None:
     assert web.parse_ddg("[ERROR: blocked]") == "[ERROR: blocked]"
     assert web.extract_article("[ERROR: blocked]", "u") == "[ERROR: blocked]"
+    assert web.extract_links("[ERROR: blocked]", "https://a.com") == []
+
+
+def test_page_text_fallback_keeps_widget_data() -> None:
+    html = """<html><head><title>LA Weather</title><style>.x{}</style></head><body>
+      <script>tracker()</script>
+      <div class="widget"><span>Now</span><span>83°</span><span>Mostly Clear</span></div>
+    </body></html>"""
+    out = web.page_text(html, "https://w.example/today")
+    assert "83°" in out and "Mostly Clear" in out            # widget data survives (readability drops it)
+    assert "tracker()" not in out and ".x{}" not in out      # script/style stripped
+    assert out.startswith("Title: LA Weather")
+    assert web.page_text("[ERROR: blocked]", "u") == "[ERROR: blocked]"
+
+
+def test_extract_links_absolutizes_filters_and_dedupes() -> None:
+    html = """
+    <html><body>
+      <a href="/hourly">Hourly forecast</a>
+      <a href="https://other.example/radar">Radar &amp; maps</a>
+      <a href="/hourly">Hourly forecast (duplicate)</a>
+      <a href="#section">same-page anchor</a>
+      <a href="javascript:void(0)">scripty</a>
+      <a href="mailto:x@y.com">mail</a>
+      <a href="/textless"><img src="i.png"/></a>
+    </body></html>
+    """
+    links = web.extract_links(html, "https://weather.example/today")
+    assert links == [("Hourly forecast", "https://weather.example/hourly"),
+                     ("Radar & maps", "https://other.example/radar")]   # absolutized, deduped, filtered
 
 
 if __name__ == "__main__":
@@ -68,4 +98,6 @@ if __name__ == "__main__":
     test_parse_ddg_reports_when_markup_changes()
     test_extract_article_keeps_body_drops_chrome()
     test_error_strings_pass_through()
+    test_page_text_fallback_keeps_widget_data()
+    test_extract_links_absolutizes_filters_and_dedupes()
     print("actions/test_web: OK")

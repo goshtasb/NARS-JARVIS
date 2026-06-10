@@ -20,15 +20,18 @@ from .diagnostics import system_report
 from .files import find_file
 
 _TIMEOUT = 15  # seconds — these are quick system commands; never hang the converse turn
-_WEB_TIMEOUT = 20  # seconds — a web fetch + parse may take longer; bounded so a hung site can't stall
+_WEB_TIMEOUT = 45  # seconds — read/browse may escalate to a rendered (headless Chromium) fetch
+                   # (ADR-039: static GET ~8s + render cap 12s + settle + parse); bounded regardless
 _WEB_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web.py")
+_WEB_MODES = {"web_lookup": "search", "read_article": "read", "browse_page": "browse"}
 
 
 def _web(name: str, arg: str, spawn: Callable) -> str:
-    """Run a read-only web action (ADR-034) in an isolated subprocess via the sanctioned safespawn seam —
-    keeps network egress + readability out of the daemon process. Returns the child's stdout (an
-    `[ERROR: …]` string on the child's side) or an error if the fetch times out. Never raises."""
-    mode = "search" if name == "web_lookup" else "read"
+    """Run a read-only web action (ADR-034/039) in an isolated subprocess via the sanctioned safespawn
+    seam — keeps network egress, readability, AND the transient headless browser out of the daemon
+    process. Returns the child's stdout (an `[ERROR: …]` string on the child's side) or an error if
+    the fetch times out. Never raises."""
+    mode = _WEB_MODES[name]
     try:
         result = spawn([sys.executable, _WEB_PY, mode, arg],
                        capture_output=True, text=True, timeout=_WEB_TIMEOUT)
@@ -66,7 +69,7 @@ def perform(name: str, arg: str = "", *, spawn: Callable = safespawn.run, llm=No
     if action.kind == "diag":
         return system_report()
     if action.kind == "query":           # read-only lookups (Spotlight search / web egress, ADR-034)
-        if action.name in ("web_lookup", "read_article"):
+        if action.name in _WEB_MODES:
             return _web(action.name, arg, spawn)
         return find_file(arg, spawn=spawn)
     if action.kind == "work":            # read-only document work (ADR-032): read / summarize

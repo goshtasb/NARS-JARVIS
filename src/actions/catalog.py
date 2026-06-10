@@ -29,6 +29,8 @@ class Action:
     kind: str             # "argv" | "diag"
     takes_arg: bool = False
     confirm: bool = False
+    internal: bool = False  # resolvable by code (e.g. the research loop, ADR-039) but never offered
+                            # to the model in the prompt list — the loop picks links, not the chat LLM
 
 
 # Closed registry, in display order. Argv templates for the non-parameterized actions live in
@@ -61,6 +63,9 @@ _ACTIONS: tuple[Action, ...] = (
     Action("web_lookup", "search the web and READ the results (DuckDuckGo) — use this to answer questions",
            "query", takes_arg=True),
     Action("read_article", "read the main text of a web page (by URL)", "query", takes_arg=True),
+    # Research primitive (ADR-039): page text + its numbered links, render-escalated. INTERNAL — only
+    # the bounded research loop calls it (it "clicks" links for the model); never in the prompt list.
+    Action("browse_page", "read a web page and list its links", "query", takes_arg=True, internal=True),
     # Habit introspection & pruning (ADR-027): kind="habit", routed to the daemon's Habit Brain.
     # Not eligible() (not argv/nav), so asking about habits never becomes a habit itself.
     Action("list_habits", "list the habits JARVIS is learning", "habit"),
@@ -124,15 +129,16 @@ def resolve(name: str) -> Action | None:
 def available() -> list[tuple[str, str]]:
     """(name, label) for the conversational actions shown in the prompt. EXCLUDES the AX verbs
     (ADR-021): those only make sense with a live on-screen element tree, so they are surfaced
-    contextually alongside the AX DOM, not in the static action list."""
-    return [(a.name, a.label) for a in _ACTIONS if a.kind != "ax"]
+    contextually alongside the AX DOM, not in the static action list. EXCLUDES internal actions
+    (ADR-039): those are code-driven primitives the chat model must not call directly."""
+    return [(a.name, a.label) for a in _ACTIONS if a.kind != "ax" and not a.internal]
 
 
 def schema() -> list[dict]:
     """Machine-readable description of the (non-AX) catalog for a UI to render (ADR-033). Pure data —
     no overnight/autonomy semantics here (the caller annotates those, preserving dependency direction)."""
     return [{"name": a.name, "label": a.label, "kind": a.kind, "takes_arg": a.takes_arg}
-            for a in _ACTIONS if a.kind != "ax"]
+            for a in _ACTIONS if a.kind != "ax" and not a.internal]
 
 
 def _valid_app(name: str) -> bool:

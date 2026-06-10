@@ -11,6 +11,10 @@
 #                   HTTP itself uses the standard library (urllib) — no requests/httpx dependency.
 # truststore      — make urllib verify TLS against the macOS Keychain (so a corporate/proxy root that
 #                   the browser already trusts works) WITHOUT disabling verification (ADR-034).
+# playwright      — ADR-039 rendered-fetch escalation: a TRANSIENT headless Chromium for JS-rendered
+#                   data sites, only inside the isolated egress subprocess. After install, run
+#                   `python -m playwright install chromium` once. Optional: without it, the web layer
+#                   degrades to the static (urllib) tier.
 llama-cpp-python
 psutil
 pypdf
@@ -18,3 +22,4 @@ readability-lxml
 beautifulsoup4
 lxml
 truststore
+playwright

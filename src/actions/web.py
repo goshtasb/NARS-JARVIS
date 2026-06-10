@@ -142,16 +142,100 @@ def extract_article(html: str, url: str) -> str:
         return f"[ERROR: article extraction failed: {exc}]"
 
 
+_LINK_CAP = 20         # links handed to the research loop — its menu is capped anyway
+_RENDER_FLOOR = 600    # chars of extracted body below which we escalate to the rendered (JS) fetch
+
+
+def extract_links(html: str, base_url: str) -> list[tuple[str, str]]:
+    """(anchor text, absolute URL) for the navigable links of a page — the research loop's 'clickable'
+    menu (ADR-039). Pure. http(s) only, SSRF-checked later at fetch time; same-page anchors, scripty
+    schemes, and textless anchors are dropped; first occurrence of a URL wins; capped."""
+    if html.startswith("[ERROR:"):
+        return []
+    try:
+        from bs4 import BeautifulSoup
+        out: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        page = base_url.split("#", 1)[0]
+        for a in BeautifulSoup(html, "html.parser").find_all("a", href=True):
+            text = " ".join(a.get_text(" ", strip=True).split())[:80]
+            url = urllib.parse.urljoin(base_url, a["href"].strip()).split("#", 1)[0]
+            if not text or not url.startswith(("http://", "https://")) or url in seen or url == page:
+                continue  # url == page: same-page anchors resolve back to the page itself
+            seen.add(url)
+            out.append((text, url))
+            if len(out) >= _LINK_CAP:
+                break
+        return out
+    except Exception:  # noqa: BLE001 — a parse failure just means no links this page
+        return []
+
+
+def _page_html(url: str) -> str:
+    """The page's HTML via the cheap static GET, escalating to the headless rendered fetch (ADR-039)
+    only when static extraction yields (nearly) nothing — the JS-rendered-site case. Asymmetric-cost
+    discipline: urllib is ~free, Chromium costs seconds, so the browser runs only when needed."""
+    html = _fetch(url)
+    body = extract_article(html, url)
+    if not body.startswith("[ERROR:") and len(body) >= _RENDER_FLOOR:
+        return html
+    try:  # lazy (static tier works without playwright); dual-context: package import OR bare-script CLI
+        from . import web_render
+    except ImportError:
+        import web_render  # type: ignore[no-redef] — script mode: actions/ is the script dir on sys.path
+    rendered = web_render.render_html(url)
+    return rendered if not rendered.startswith("[ERROR:") else html
+
+
+def page_text(html: str, url: str) -> str:
+    """Whole-page visible text (collapsed whitespace, capped) — the fallback for data-dense pages
+    (weather/finance dashboards) where readability finds no 'article' because the live numbers sit in
+    widgets, not prose. Pure. Returns [ERROR…] when there's nothing."""
+    if html.startswith("[ERROR:"):
+        return html
+    try:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, "html.parser")
+        for tag in soup(("script", "style", "noscript")):
+            tag.decompose()
+        text = " ".join(soup.get_text(" ").split())
+        if not text:
+            return "[ERROR: no text could be extracted from this page]"
+        title = soup.title.get_text(strip=True) if soup.title else url
+        return f"Title: {title}\nSource: {url}\n\n{text}"[:_OUTPUT_CAP]
+    except Exception as exc:  # noqa: BLE001
+        return f"[ERROR: page text extraction failed: {exc}]"
+
+
+def browse_page(url: str) -> str:
+    """The research primitive (ADR-039): page text PLUS the page's numbered links, so the model can
+    pick what to 'click' next. Render-escalated like `read`; falls back from article extraction to
+    whole-page text so dashboard-style data (temperatures, prices) actually reaches the findings."""
+    html = _page_html(url)
+    article = extract_article(html, url)
+    if article.startswith("[ERROR:") or len(article) < _RENDER_FLOOR:
+        full = page_text(html, url)
+        if not full.startswith("[ERROR:") and len(full) > len(article):
+            article = full
+    links = extract_links(html, url)
+    if article.startswith("[ERROR:") and not links:
+        return article
+    menu = "\n".join(f"{i}. {text} — {u}" for i, (text, u) in enumerate(links, 1))
+    return f"{article}\n\nLINKS:\n{menu}" if menu else article
+
+
 def _main(argv: list[str]) -> str:
     if len(argv) < 3:
-        return "[ERROR: usage: web.py <search|read> <query|url>]"
+        return "[ERROR: usage: web.py <search|read|browse> <query|url>]"
     mode, arg = argv[1], argv[2]
     if mode == "search":
         q = urllib.parse.quote_plus(arg)
         return parse_ddg(_fetch(f"https://html.duckduckgo.com/html/?q={q}",
                                 [f"https://lite.duckduckgo.com/lite/?q={q}"]))
     if mode == "read":
-        return extract_article(_fetch(arg), arg)
+        return extract_article(_page_html(arg), arg)   # ADR-039: read is render-escalated too
+    if mode == "browse":
+        return browse_page(arg)
     return f"[ERROR: unknown mode {mode!r}]"
 
 

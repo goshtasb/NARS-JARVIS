@@ -24,20 +24,29 @@ runner.propose("empty_trash")                # destructive -> (None, ConsentSpec
 - **`documents.py`** — read-only document **work primitives** (ADR-032, kind="work"): `read_file_text`
   (text-family + PDF via lazy `pypdf`), pure `chunk_text`, and `summarize` (whole-document **Map-Reduce**,
   coverage-honest — never a silent truncation). Outputs go only to a `/tmp` scratchpad.
-- **`web.py`** — read-only **web egress** (ADR-034, kind="query"): `web_lookup` (keyless DuckDuckGo search)
-  + `read_article` (readability-lxml main-text extraction). Runs as an isolated subprocess (the daemon
-  stays network-free); SSRF guard, bounded read, fail-closed `[ERROR…]`, TLS via the OS Keychain
-  (truststore). Pure parsers (`parse_ddg`/`extract_article`) are unit-tested offline.
+- **`web.py`** — read-only **web egress** (ADR-034/039, kind="query"): `web_lookup` (keyless DuckDuckGo
+  search), `read_article` (readability-lxml main-text extraction), and `browse_page` (page text + its
+  numbered links — the research loop's primitive; `internal=True`, never offered to the chat model).
+  Runs as an isolated subprocess (the daemon stays network-free); SSRF guard, bounded read, fail-closed
+  `[ERROR…]`, TLS via the OS Keychain (truststore). `read`/`browse` escalate from the static GET to the
+  rendered fetch when extraction comes back thin; data-dense pages fall back from article extraction to
+  whole-page text. Pure parsers (`parse_ddg`/`extract_article`/`extract_links`/`page_text`) are
+  unit-tested offline.
+- **`web_render.py`** — the **rendered (JS) escalation tier** (ADR-039): a transient headless Chromium
+  via Playwright, launched only when static extraction yields nothing (JS-rendered data sites), dead
+  seconds later. Lazy import — everything else works without Playwright installed.
 - **`recipes.py`** — declarative self-navigation recipes (kind="nav"; ADR-022/023).
 
 ## Dependencies
 `safespawn` (the subprocess seam). `documents.py` lazily imports `pypdf` for PDF text; `web.py` uses
-stdlib `urllib` + `readability-lxml`/`beautifulsoup4` + `truststore` (see `requirements.txt`). The LLM
-handle for `summarize_file` is injected by the daemon; absent → an honest "no model" message. The only
-network egress is `web.py`'s read-only DuckDuckGo fetch (ADR-034), in an isolated subprocess.
+stdlib `urllib` + `readability-lxml`/`beautifulsoup4` + `truststore`; `web_render.py` lazily imports
+`playwright` (see `requirements.txt`). The LLM handle for `summarize_file` is injected by the daemon;
+absent → an honest "no model" message. The only network egress is `web.py`'s read-only fetch
+(ADR-034/039), in an isolated subprocess.
 
 ## Related ADRs
 [ADR-019](../../docs/adrs/ADR-019-mac-actions.md) (the action model),
 [ADR-025](../../docs/adrs/ADR-025-file-search.md) (find_file),
 [ADR-032](../../docs/adrs/ADR-032-work-primitives.md) (the work primitives),
-[ADR-034](../../docs/adrs/ADR-034-web-search.md) (web search/read).
+[ADR-034](../../docs/adrs/ADR-034-web-search.md) (web search/read),
+[ADR-039](../../docs/adrs/ADR-039-agentic-web-research.md) (agentic research + rendered fetch).

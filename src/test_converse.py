@@ -550,14 +550,16 @@ def test_converse_injects_ax_dom() -> None:
 
 
 def test_web_research_synthesizes_an_answer_not_raw_results() -> None:
-    # ADR-035: a web_lookup result is fed back for a 2nd pass that ANSWERS — the user must NOT see the
-    # raw search list dumped into chat.
+    # ADR-035/039: a web_lookup directive triggers the bounded research loop, which ANSWERS — the user
+    # must NOT see the raw search list dumped into chat.
     class _WebLLM:
-        """1st call: emits a web_lookup directive. 2nd call (synthesis): answers from the findings."""
+        """Chat: emits a web_lookup directive. Loop decision: ANSWER. Synthesis: answers from findings."""
         def generate_text(self, system, user, max_tokens=64):
-            if system.startswith("You searched the web"):                  # the synthesis pass
+            if system.startswith("You researched the web"):                # the synthesis pass
                 assert "Sunrise Times" in user                             # findings were fed in
                 return "Sunrise tomorrow is about 5:43 AM (timeanddate.com)."
+            if system.startswith("You are researching"):                   # the loop's decision step
+                return "ANSWER"
             return "Let me check.\n[[DO: web_lookup: sunrise tomorrow]]"
 
     class _Runner:

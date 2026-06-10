@@ -51,6 +51,7 @@ from memory import (
     statement_term,
     statement_truth,
 )
+from research import run_research
 
 
 class InvalidNarseseError(ValueError):
@@ -148,15 +149,9 @@ _SYSTEM_QUERY = re.compile(
     re.I,
 )
 
-# ADR-035: read-only web actions whose results get a SECOND model pass (synthesize an answer) instead of
-# being dumped raw into the chat.
+# ADR-035/039: web actions that trigger the bounded research loop (research/) instead of dumping raw
+# results into the chat — the loop searches, opens the links the model judges relevant, and synthesizes.
 _RESEARCH_ACTIONS = ("web_lookup", "read_article")
-_SYNTH_PROMPT = (
-    "You searched the web and got the results below. Answer the user's question concisely and factually "
-    "USING ONLY those results, and name the source site. If the results do not actually contain the "
-    "answer, say so plainly — do not guess or invent details."
-)
-_SYNTH_INPUT_CAP = 8000   # chars of findings fed to the synthesis call (keeps it under the model's n_ctx)
 
 
 class Jarvis:
@@ -500,28 +495,14 @@ class Jarvis:
         return actions
 
     def _run_research(self, research: list[tuple[str, str]], question: str) -> tuple[str | None, list[str]]:
-        """ADR-035 two-pass web answer: run the research actions, then make a SECOND model call to
-        synthesize an answer from the findings. Returns (answer_or_None, error_strings). Falls back to
-        the raw (now human-readable) findings if synthesis yields nothing."""
+        """ADR-039 agentic web answer: hand the model's research directives to the bounded link-following
+        loop (research/), which searches, opens the pages the model picks, and synthesizes an answer with
+        sources. Returns (answer_or_None, error_strings); the loop itself never raises."""
         if self._action_runner is None:
             return None, []
-        findings, errors = [], []
-        for name, arg in research:
-            result = self._action_runner.perform(name, arg)
-            (errors if result.lstrip().startswith("[ERROR") else findings).append(result)
-        if not findings:
-            return None, errors                                  # all blocked/empty -> surface the errors
-        joined = "\n\n".join(findings)
-        return (self._web_answer(question, joined) or joined), []
-
-    def _web_answer(self, question: str, findings: str) -> str:
-        """Second pass: have the model answer the question from the (capped) web findings. '' on failure."""
-        try:
-            return self._assistant.generate_text(
-                _SYNTH_PROMPT, f"Question: {question}\n\nSearch results:\n{findings[:_SYNTH_INPUT_CAP]}",
-                max_tokens=400).strip()
-        except Exception:  # noqa: BLE001 — a model hiccup falls back to the raw findings
-            return ""
+        generate = lambda system, user, max_tokens: self._assistant.generate_text(
+            system, user, max_tokens=max_tokens)
+        return run_research(question, research, generate, self._action_runner.perform)
 
     @staticmethod
     def _is_system_query(text: str) -> bool:
