@@ -595,8 +595,16 @@ def test_report_system_gated_to_real_system_questions() -> None:
     # when the user's text shows system intent — regardless of what the model emits.
     assert Jarvis._is_system_query("what's my CPU doing")
     assert Jarvis._is_system_query("is anything wrong with my mac")
+    assert Jarvis._is_system_query("how's my computer")
+    assert Jarvis._is_system_query("give me a system report")
+    assert Jarvis._is_system_query("is my mac ok")
+    assert Jarvis._is_system_query("check my computer")
     assert not Jarvis._is_system_query("what time will be the sunrise tomorrow morning")
     assert not Jarvis._is_system_query("how is everything going")
+    # ADR-040: a device noun alone is NOT system intent — the live probe that exposed the hole: a
+    # volume question containing "computer" got a CPU/memory report presented as the answer.
+    assert not Jarvis._is_system_query("Can you check and see why the volume button on my computer doesn't work?")
+    assert not Jarvis._is_system_query("open the calculator on my computer")
 
     class _Runner:
         def __init__(self): self.ran = []
@@ -612,6 +620,13 @@ def test_report_system_gated_to_real_system_questions() -> None:
         assert runner.ran == []                                                            # never ran
         out = j._run_actions([("report_system", "")], "what's my cpu doing")               # kept
         assert runner.ran == [("report_system", "")] and out and "ran report_system" in out[0]
+        # ADR-040: the volume probe — report_system is dropped; audio_status (the matching sensor)
+        # runs; and audio_status itself is gated to actual sound/volume questions.
+        probe = "why does the volume button on my computer not work?"
+        assert j._run_actions([("report_system", "")], probe) == []                        # wrong sensor
+        out = j._run_actions([("audio_status", "")], probe)                                # right sensor
+        assert out and "ran audio_status" in out[0]
+        assert j._run_actions([("audio_status", "")], "when is sunrise tomorrow") == []    # gated too
 
 
 def test_converse_routes_ax_verb_to_dispatch() -> None:

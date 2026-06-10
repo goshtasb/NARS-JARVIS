@@ -16,7 +16,7 @@ import safespawn
 
 from . import catalog
 from . import documents
-from .diagnostics import system_report
+from .diagnostics import audio_report, system_report
 from .files import find_file
 
 _TIMEOUT = 15  # seconds — these are quick system commands; never hang the converse turn
@@ -67,7 +67,7 @@ def perform(name: str, arg: str = "", *, spawn: Callable = safespawn.run, llm=No
     if action is None:
         return f"I don't know how to do that ({name})."
     if action.kind == "diag":
-        return system_report()
+        return audio_report(spawn) if action.name == "audio_status" else system_report()
     if action.kind == "query":           # read-only lookups (Spotlight search / web egress, ADR-034)
         if action.name in _WEB_MODES:
             return _web(action.name, arg, spawn)

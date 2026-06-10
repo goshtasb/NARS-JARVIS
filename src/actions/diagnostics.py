@@ -1,10 +1,11 @@
-"""System diagnostics (ADR-019). Imperative Shell at the edge (reads psutil), pure formatting core.
+"""System diagnostics (ADR-019/040). Imperative Shell at the edge, pure formatting core.
 
-`report_system` is JARVIS's answer to "what's my CPU?" and the seed of "is something broken?": a
-read-only snapshot (CPU / memory / disk / battery / top processes) plus deterministic anomaly flags.
-No subprocess — psutil only. `system_report(readings=...)` takes injected readings so the flag
-thresholds are unit-testable without faking the host. v1 troubleshooting = the flags; LLM-reasoned
-diagnosis over this report is a documented v2 follow-on.
+`report_system` is JARVIS's answer to "what's my CPU?": a read-only snapshot (CPU / memory / disk /
+battery / top processes) plus deterministic anomaly flags. `audio_report` is the matching SENSOR for
+the volume/mute actuators (ADR-040 sensor–actuator parity: if JARVIS can set a state, it must be able
+to read it — otherwise "why doesn't my volume work?" gets answered with CPU numbers). Every report
+names its own scope in its verdict line (scope-honest: a clean report must never read as a verdict on
+something it didn't measure). Injected readings/spawn keep both unit-testable without faking the host.
 """
 from __future__ import annotations
 
@@ -72,6 +73,62 @@ def system_report(readings: dict | None = None) -> str:
     if top:
         lines.append("- Top memory: " + ", ".join(f"{name} {mem:.0f}%" for name, mem in top))
     flags = anomaly_flags(r)
+    # Scope-honest verdict (ADR-040): name what was measured, so a clean report can never masquerade
+    # as "X is fine" for an X (audio, keyboard, …) this report does not cover.
     lines.append(("Anomalies: " + "; ".join(flags)) if flags
-                 else "Nothing looks wrong — all metrics nominal.")
+                 else "Nothing looks wrong in these metrics (CPU / memory / disk / battery).")
+    return "\n".join(lines)
+
+
+# ── audio (ADR-040): the read-back sensor for the volume/mute actuators ──
+def parse_volume_settings(raw: str) -> dict | None:
+    """Parse osascript's `get volume settings` line ("output volume:19, input volume:55, alert
+    volume:100, output muted:false") -> {output, input, alert, muted}. Pure; None if unparseable.
+    A 'missing value' field (no output device / some hardware) parses to None for that key."""
+    out: dict = {}
+    for part in (raw or "").strip().split(","):
+        k, _, v = part.partition(":")
+        k, v = k.strip().lower(), v.strip().lower()
+        if not _:
+            continue
+        if k == "output muted":
+            out["muted"] = (v == "true") if v in ("true", "false") else None
+        elif k in ("output volume", "input volume", "alert volume"):
+            out[k.split()[0]] = int(v) if v.isdigit() else None
+    return out if "output" in out and "muted" in out else None
+
+
+def audio_report(spawn) -> str:
+    """The sound-state report behind `audio_status`: output/input/alert volume + mute, with
+    deterministic interpretation flags. Read-only; `spawn` is the sanctioned safespawn seam."""
+    try:
+        result = spawn(["osascript", "-e", "get volume settings"],
+                       capture_output=True, text=True, timeout=10)
+    except Exception as exc:  # noqa: BLE001 — report the failure, never crash the turn
+        return f"Couldn't read the sound state ({exc})."
+    raw = (getattr(result, "stdout", "") or "").strip()
+    s = parse_volume_settings(raw)
+    if s is None:
+        return f"Couldn't read the sound state (unexpected reply: {raw[:80]!r})."
+    lines = ["Sound state:"]
+    if s.get("output") is not None:
+        lines.append(f"- Output volume: {s['output']}/100")
+    if s.get("muted") is not None:
+        lines.append(f"- Muted: {'YES' if s['muted'] else 'no'}")
+    if s.get("input") is not None:
+        lines.append(f"- Input (mic) volume: {s['input']}/100")
+    if s.get("alert") is not None:
+        lines.append(f"- Alert volume: {s['alert']}/100")
+    flags = []
+    if s.get("muted"):
+        flags.append("⚠ output is MUTED — no sound will play until unmuted")
+    elif s.get("output") == 0:
+        flags.append("⚠ output volume is 0 — effectively silent")
+    elif s.get("output") is not None and s["output"] <= 15:
+        flags.append(f"⚠ output volume is very low ({s['output']}/100)")
+    # Scope-honest verdict (ADR-040): this reads macOS's software audio state only.
+    lines.append(("Flags: " + "; ".join(flags)) if flags
+                 else "Software audio state looks fine (volume audible, not muted). This does not "
+                      "test speakers/keys — if a physical volume key does nothing, check Keyboard "
+                      "settings ('Use F1, F2… as standard function keys') or the key itself.")
     return "\n".join(lines)

@@ -46,6 +46,8 @@ absent → an honest "no model" message. The only network egress is `web.py`'s r
 
 ## Related ADRs
 [ADR-019](../../docs/adrs/ADR-019-mac-actions.md) (the action model),
+[ADR-040](../../docs/adrs/ADR-040-sensor-actuator-parity.md) (sensor–actuator parity: every actuator
+family ships a read-only status sensor with its own intent gate; reports name their measured scope),
 [ADR-025](../../docs/adrs/ADR-025-file-search.md) (find_file),
 [ADR-032](../../docs/adrs/ADR-032-work-primitives.md) (the work primitives),
 [ADR-034](../../docs/adrs/ADR-034-web-search.md) (web search/read),

@@ -169,3 +169,15 @@ def test_read_article_routes_to_subprocess_in_read_mode() -> None:
     fake = _WebSpawn("Title: T\n\nbody")
     out = ActionRunner(spawn=fake).perform("read_article", "https://example.com/x")
     assert "body" in out and fake.calls[0][2] == "read" and fake.calls[0][3] == "https://example.com/x"
+
+
+def test_audio_status_runs_readonly_osascript() -> None:
+    # ADR-040: the audio sensor goes through the spawn seam (recorded, no real OS call).
+    calls: list[list[str]] = []
+    def fake(argv, **kwargs):
+        calls.append(list(argv))
+        return type("R", (), {"returncode": 0, "stdout":
+                    "output volume:30, input volume:50, alert volume:100, output muted:false"})()
+    out = perform("audio_status", spawn=fake)
+    assert calls == [["osascript", "-e", "get volume settings"]]
+    assert "Sound state:" in out and "30/100" in out

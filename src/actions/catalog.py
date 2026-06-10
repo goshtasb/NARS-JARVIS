@@ -37,6 +37,8 @@ class Action:
 # `_STATIC_ARGV`; the parameterized ones are built (and sanitized) in `argv_for`.
 _ACTIONS: tuple[Action, ...] = (
     Action("report_system", "report CPU / memory / disk / battery and flag anomalies", "diag"),
+    # ADR-040 sensor–actuator parity: the read-back sensor matching the volume/mute actuators below.
+    Action("audio_status", "report the current sound state — output volume, mute, mic, alerts", "diag"),
     Action("dark_mode", "toggle dark / light mode", "argv"),
     Action("volume_up", "turn the volume up", "argv"),
     Action("volume_down", "turn the volume down", "argv"),
@@ -195,6 +197,11 @@ def render_action_prompt(actions: list[tuple[str, str]]) -> str:
         "performance — CPU, memory, disk, battery, or 'is my Mac OK / is anything wrong'. Do NOT use it "
         "for greetings or conversational openers like 'how are you', \"how's it going\", or 'how is "
         "everything' — answer those in plain words with NO action.",
+        "When the user asks whether or why a specific capability works (sound, volume, mute, a button "
+        "doing nothing), use the MATCHING status action — e.g. audio_status for anything sound/volume "
+        "related. If no status action matches that capability, say plainly that you can't check it yet. "
+        "NEVER substitute report_system (or any other report) for a check you cannot take — a CPU/memory "
+        "report says nothing about sound, and presenting it as the answer is misleading.",
         "When you emit [[DO: report_system]], do NOT state or guess any system metric (CPU, memory, "
         "disk, battery) in your prose — the real report is appended automatically below your reply; "
         "defer to it entirely (e.g. say 'Let me check.' not 'Your CPU is at 0%').",
@@ -212,6 +219,9 @@ def render_action_prompt(actions: list[tuple[str, str]]) -> str:
         "User: what's my CPU doing?",
         "Assistant: Let me check.",
         "[[DO: report_system]]",
+        "User: why isn't my volume working? / why is there no sound?",
+        "Assistant: Let me check the sound state.",
+        "[[DO: audio_status]]",
         "User: open google",
         "Assistant: Opening Google.",
         "[[DO: open_url: https://google.com]]",

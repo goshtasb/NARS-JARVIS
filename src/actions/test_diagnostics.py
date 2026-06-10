@@ -36,3 +36,51 @@ def test_plugged_in_low_battery_is_not_flagged() -> None:
 def test_thresholds_are_inclusive_boundaries() -> None:
     assert anomaly_flags({"cpu": diagnostics.CPU_HIGH, "mem": 0, "disk": 0}) == ["⚠ CPU pegged"]
     assert anomaly_flags({"cpu": 89.9, "mem": 0, "disk": 0}) == []
+
+
+# ── audio sensor (ADR-040) ──
+class _AudioSpawn:
+    """Fake spawn returning a canned `get volume settings` line."""
+    def __init__(self, stdout: str) -> None:
+        self.stdout = stdout
+        self.calls: list[list[str]] = []
+    def __call__(self, argv, **kwargs):
+        self.calls.append(list(argv))
+        return type("R", (), {"returncode": 0, "stdout": self.stdout})()
+
+
+def test_parse_volume_settings_normal_and_garbage() -> None:
+    s = diagnostics.parse_volume_settings(
+        "output volume:19, input volume:55, alert volume:100, output muted:false")
+    assert s == {"output": 19, "input": 55, "alert": 100, "muted": False}
+    s = diagnostics.parse_volume_settings(
+        "output volume:missing value, input volume:55, alert volume:100, output muted:true")
+    assert s is not None and s["output"] is None and s["muted"] is True   # headless/odd hardware
+    assert diagnostics.parse_volume_settings("execution error: blah") is None
+    assert diagnostics.parse_volume_settings("") is None
+
+
+def test_audio_report_flags_muted_and_silent_states() -> None:
+    spawn = _AudioSpawn("output volume:64, input volume:50, alert volume:100, output muted:false")
+    out = diagnostics.audio_report(spawn)
+    assert spawn.calls == [["osascript", "-e", "get volume settings"]]     # read-only, single call
+    assert "Output volume: 64/100" in out and "Muted: no" in out
+    assert "Software audio state looks fine" in out                       # scope-honest verdict
+    assert "does not test speakers" in out                                # names what it can't see
+
+    out = diagnostics.audio_report(
+        _AudioSpawn("output volume:64, input volume:50, alert volume:100, output muted:true"))
+    assert "MUTED" in out                                                  # the actual "why no sound"
+
+    out = diagnostics.audio_report(
+        _AudioSpawn("output volume:0, input volume:50, alert volume:100, output muted:false"))
+    assert "volume is 0" in out
+
+    out = diagnostics.audio_report(_AudioSpawn("execution error: not allowed"))
+    assert out.startswith("Couldn't read the sound state")                 # honest failure, no fake
+
+
+def test_system_report_verdict_names_its_scope() -> None:
+    # ADR-040: a clean report must say WHAT it measured — it can never read as "your audio is fine".
+    out = system_report({"cpu": 5.0, "mem": 10.0, "disk": 10.0, "battery": (90.0, True), "top": []})
+    assert "CPU / memory / disk / battery" in out

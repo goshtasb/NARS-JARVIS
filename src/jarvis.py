@@ -139,13 +139,27 @@ AGENT_STEP_PROMPT = (
 # Used to gate report_system in code (the 7B over-proposes it as a generic "let me check"). Tuned to
 # match the real system asks ("what's my CPU", "is anything wrong with my mac", "system report") while
 # NOT matching ordinary questions (sunrise, weather, chit-chat).
+# ADR-040 tightening: the bare device nouns (computer/machine/mac/laptop/system) are GONE from the
+# keyword alternation — "why doesn't the volume button on my computer work" matched on "computer"
+# alone and let a CPU/memory report masquerade as an audio answer. Device nouns now count only inside
+# explicit health phrasings ("how's my mac", "is my computer ok", "check my mac", "system report").
 _SYSTEM_QUERY = re.compile(
     r"\b(cpu|memory|ram|disk|storage|battery|power|performance|perf|slow|laggy|lag|"
-    r"freez\w*|temperature|thermal|overheat\w*|fans?|resources?|utiliz\w*|"
-    r"system|machine|computer|laptop|\bmac\b|diagnostics?)\b"
+    r"freez\w*|temperature|thermal|overheat\w*|fans?|resources?|utiliz\w*|diagnostics?)\b"
+    r"|\bsystem\s+(report|status|health|check)\b"
     r"|\b(anything|something|what'?s)\s+wrong\b"
     r"|\brunning\s+(hot|slow|fine|ok)\b"
-    r"|\bhow'?s?\s+(my|the)\s+(mac|computer|machine|system)\b",
+    r"|\bhow'?s?\s+(my|the)\s+(mac|computer|machine|system)\b"
+    r"|\bis\s+(my|the)\s+(mac|computer|machine|laptop|system)\s+(ok|okay|fine|alright|healthy)\b"
+    r"|\bcheck\s+(on\s+)?(my|the)\s+(mac|computer|machine|laptop|system)\b",
+    re.I,
+)
+
+# ADR-040: the matching intent gate for the audio sensor — audio_status runs only when the user is
+# actually asking about sound/volume, the same proposal/disposal split as _SYSTEM_QUERY above.
+_AUDIO_QUERY = re.compile(
+    r"\b(volume|sound|audio|mute[d]?|unmute[d]?|speakers?|headphones?|silent|quiet|loud\w*|"
+    r"hear\w*|music)\b",
     re.I,
 )
 
@@ -512,6 +526,12 @@ class Jarvis:
         prompt, decides whether a system report is warranted."""
         return bool(_SYSTEM_QUERY.search(text or ""))
 
+    @staticmethod
+    def _is_audio_query(text: str) -> bool:
+        """True iff the user's text is actually about sound/volume — the matching gate for the
+        audio_status sensor (ADR-040), so it can never become the 7B's next generic escape hatch."""
+        return bool(_AUDIO_QUERY.search(text or ""))
+
     def _run_actions(self, actions: list[tuple[str, str]], question: str = "") -> list[str]:
         """Execute parsed [[DO:]] directives through the wired runner; return each result string. A
         reversible action runs immediately; a destructive (`confirm`) action is routed through the
@@ -560,10 +580,12 @@ class Jarvis:
                 else:
                     results.append(f"I can't do that here ({name}).")
                 continue
-            # Deterministic guard (v1.8.2): report_system runs ONLY when the user's text shows real
-            # system intent — so an unrelated question (sunrise, weather, chit-chat) can never get a
-            # CPU/memory dump, no matter what the 7B emits. Code disposes; the prompt only proposes.
+            # Deterministic guards (v1.8.2 / ADR-040): each diag SENSOR runs ONLY when the user's text
+            # shows the matching intent — so an unrelated question can never get a CPU/memory dump (or
+            # a sound report), no matter what the 7B emits. Code disposes; the prompt only proposes.
             if name == "report_system" and not self._is_system_query(question):
+                continue
+            if name == "audio_status" and not self._is_audio_query(question):
                 continue
             if self._action_runner is None:
                 continue
