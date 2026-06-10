@@ -114,3 +114,33 @@ def test_propose_unknown_action_no_spec_no_spawn() -> None:
     fake = _FakeSpawn()
     result, spec = ActionRunner(spawn=fake).propose("nuke")
     assert spec is None and "don't know" in result.lower() and fake.calls == []
+
+
+# ── ADR-032: kind="work" routes to documents, with the injected llm; never spawns ──
+def test_work_summarize_routes_to_llm_and_never_spawns() -> None:
+    import os, tempfile
+    p = tempfile.mktemp(suffix=".txt")
+    open(p, "w").write("alpha beta gamma " * 40)
+
+    class _FakeLLM:
+        def __init__(self): self.calls = 0
+        def generate_text(self, system, user, max_tokens=64):
+            self.calls += 1
+            return "a summary"
+    fake_spawn, llm = _FakeSpawn(), _FakeLLM()
+    out = ActionRunner(spawn=fake_spawn, llm=llm).perform("summarize_file", p)
+    assert "Summarized" in out and llm.calls >= 1 and fake_spawn.calls == []   # used the model, not safespawn
+
+
+def test_work_summarize_without_model_is_honest() -> None:
+    import tempfile
+    p = tempfile.mktemp(suffix=".txt"); open(p, "w").write("hi")
+    out = ActionRunner(spawn=_FakeSpawn(), llm=None).perform("summarize_file", p)
+    assert out.startswith("⚠ No local model")
+
+
+def test_work_read_file_needs_no_model() -> None:
+    import os, tempfile
+    p = tempfile.mktemp(suffix=".md"); open(p, "w").write("# title\nbody")
+    out = ActionRunner(spawn=_FakeSpawn(), llm=None).perform("read_file", p)
+    assert "Read" in out and "→" in out

@@ -62,7 +62,8 @@ class Session:
         # destructive actions, executor confirmation, and Sentinel training.
         self._consent = ConsentService(self._emit)
         # Conversational Mac actions (ADR-019) — one instance, reused by converse + habit actuation.
-        self._actions = ActionRunner()
+        # llm is injected for ADR-032 kind="work" actions (summarize_file); read-only actions ignore it.
+        self._actions = ActionRunner(llm=llm)
         # Habit Brain (ADR-026): execution -> NARS evidence; armed habits propose via the consent gate.
         self._habit_store = HabitStore(db_path)
         self._habit_loop = HabitLoop(self._brain, self._habit_store, self._consent, self._habit_actuate,

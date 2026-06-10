@@ -1,0 +1,8 @@
+# NARS-JARVIS runtime dependencies (the daemon + work primitives).
+# Strictly local / air-gapped — none of these phone home at runtime.
+#
+# llama-cpp-python — local GGUF inference for the 7B brain + embeddings (imported lazily).
+# pypdf            — pure-Python PDF text extraction for the ADR-032 read_file/summarize_file
+#                    work primitives (local only; no network).
+llama-cpp-python
+pypdf

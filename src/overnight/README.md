@@ -31,6 +31,10 @@ Shell) since it orchestrates the `ActionRunner`.
   held→approved/denied). Both on the shared `jarvis.db`; new tables, so `CREATE TABLE IF NOT EXISTS`
   is the whole migration story.
 
+The autonomous vocabulary is `safe_autonomous` kinds: `diag`, `query`, and `work` — the last being the
+ADR-032 read-only document primitives (`read_file`, `summarize_file`), which is what gives an overnight
+run something genuinely useful to do.
+
 ## Dependencies
 `actions` (the closed catalog, for `Action.kind` + `resolve`); stdlib `sqlite3`. No network.
 

@@ -48,6 +48,11 @@ _ACTIONS: tuple[Action, ...] = (
     Action("empty_trash", "empty the Trash (permanently delete its contents)", "argv", confirm=True),
     # Read-only file search (ADR-025): Spotlight by name. Returns text; mutates nothing -> frictionless.
     Action("find_file", "find files by name (Spotlight search)", "query", takes_arg=True),
+    # Read-only document work (ADR-032): kind="work" — read a local file's text / summarize it (Map-
+    # Reduce). Read-only + writes only to a /tmp scratchpad -> safe to run unattended overnight.
+    Action("read_file", "read a local document's text (txt/md/csv/pdf…)", "work", takes_arg=True),
+    Action("summarize_file", "summarize a local document (whole-document Map-Reduce)", "work",
+           takes_arg=True),
     # Habit introspection & pruning (ADR-027): kind="habit", routed to the daemon's Habit Brain.
     # Not eligible() (not argv/nav), so asking about habits never becomes a habit itself.
     Action("list_habits", "list the habits JARVIS is learning", "habit"),

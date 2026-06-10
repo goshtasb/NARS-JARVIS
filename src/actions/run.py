@@ -13,10 +13,22 @@ from typing import Callable
 import safespawn
 
 from . import catalog
+from . import documents
 from .diagnostics import system_report
 from .files import find_file
 
 _TIMEOUT = 15  # seconds — these are quick system commands; never hang the converse turn
+
+
+def _work(name: str, arg: str, llm) -> str:
+    """Run a read-only document work action (ADR-032). `llm` (or None) is the model handle for
+    summarize_file; read_file needs no model. Wraps the LLM's generate_text into the injected callable."""
+    if name == "read_file":
+        return documents.do_read_file(arg)
+    generate = None
+    if llm is not None and hasattr(llm, "generate_text"):
+        generate = lambda system, user, max_tokens: llm.generate_text(system, user, max_tokens=max_tokens)
+    return documents.do_summarize_file(arg, generate)
 
 
 @dataclass(frozen=True)
@@ -28,7 +40,7 @@ class ConsentSpec:
     on_approve: Callable[[], str]
 
 
-def perform(name: str, arg: str = "", *, spawn: Callable = safespawn.run) -> str:
+def perform(name: str, arg: str = "", *, spawn: Callable = safespawn.run, llm=None) -> str:
     """Validate then run a single action. Returns a short user-facing result string; never raises."""
     action = catalog.resolve(name)
     if action is None:
@@ -37,6 +49,8 @@ def perform(name: str, arg: str = "", *, spawn: Callable = safespawn.run) -> str
         return system_report()
     if action.kind == "query":           # read-only search (e.g. find_file via Spotlight)
         return find_file(arg, spawn=spawn)
+    if action.kind == "work":            # read-only document work (ADR-032): read / summarize
+        return _work(action.name, arg, llm)
     argv = catalog.argv_for(action, arg)
     if argv is None:
         return f"I can't do that — {arg!r} isn't a safe argument for {action.name}."
@@ -62,14 +76,15 @@ class ActionRunner:
     `perform`, so the orchestrator depends only on `available()` + `perform()` and tests can stub it.
     `spawn` defaults to the sanctioned `safespawn.run`; inject a recorder to avoid OS side effects."""
 
-    def __init__(self, spawn: Callable = safespawn.run) -> None:
+    def __init__(self, spawn: Callable = safespawn.run, llm=None) -> None:
         self._spawn = spawn
+        self._llm = llm           # ADR-032: model handle for kind="work" (summarize_file); may be None
 
     def available(self) -> list[tuple[str, str]]:
         return catalog.available()
 
     def perform(self, name: str, arg: str = "") -> str:
-        return perform(name, arg, spawn=self._spawn)
+        return perform(name, arg, spawn=self._spawn, llm=self._llm)
 
     def propose(self, name: str, arg: str = "") -> tuple[str | None, ConsentSpec | None]:
         """Policy layer over `perform` (ADR-020): a reversible action runs immediately and returns

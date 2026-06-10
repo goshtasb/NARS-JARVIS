@@ -10,9 +10,10 @@ from __future__ import annotations
 
 from actions import Action
 
-# Read-only kinds only: 'diag' (system report) and 'query' (Spotlight find_file). Everything else —
-# 'argv' (system-config changes), 'nav'/'ax'/'agent' (GUI actuation), and any confirm action — is HELD.
-_SAFE_KINDS = frozenset({"diag", "query"})
+# Read-only kinds only: 'diag' (system report), 'query' (Spotlight find_file), and 'work' (ADR-032:
+# read/summarize a local document, output only to a /tmp scratchpad). Everything else — 'argv'
+# (system-config changes), 'nav'/'ax'/'agent' (GUI actuation), and any confirm action — is HELD.
+_SAFE_KINDS = frozenset({"diag", "query", "work"})
 
 
 def safe_autonomous(action: Action | None) -> bool:
