@@ -549,6 +549,30 @@ def test_converse_injects_ax_dom() -> None:
         assert "[sld_1] AXSlider \"Brightness\"" in asst.last_user      # AX DOM injected
 
 
+def test_report_system_gated_to_real_system_questions() -> None:
+    # v1.8.2: the 7B fired report_system on a sunrise question. The deterministic guard runs it ONLY
+    # when the user's text shows system intent — regardless of what the model emits.
+    assert Jarvis._is_system_query("what's my CPU doing")
+    assert Jarvis._is_system_query("is anything wrong with my mac")
+    assert not Jarvis._is_system_query("what time will be the sunrise tomorrow morning")
+    assert not Jarvis._is_system_query("how is everything going")
+
+    class _Runner:
+        def __init__(self): self.ran = []
+        def available(self): return []
+        def perform(self, name, arg=""): return f"ran {name}"     # required by Jarvis' duck-type guard
+        def propose(self, name, arg=""):
+            self.ran.append((name, arg)); return (f"ran {name}", None)
+
+    with Brain(cycles_per_step=50) as brain:
+        runner = _Runner()
+        j = Jarvis(Translator(_QLLM()), MemoryStore(), brain, action_runner=runner)
+        assert j._run_actions([("report_system", "")], "when is sunrise tomorrow") == []   # dropped
+        assert runner.ran == []                                                            # never ran
+        out = j._run_actions([("report_system", "")], "what's my cpu doing")               # kept
+        assert runner.ran == [("report_system", "")] and out and "ran report_system" in out[0]
+
+
 def test_converse_routes_ax_verb_to_dispatch() -> None:
     # An ax verb [[DO:]] must route to ax_dispatch (not the action runner / safespawn).
     calls: list[tuple[str, str]] = []

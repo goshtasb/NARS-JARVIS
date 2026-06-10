@@ -6,6 +6,7 @@ Composes domains via their public interfaces only (ADR-001). Imperative Shell (S
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, replace
 from typing import Callable
 
@@ -131,6 +132,20 @@ AGENT_STEP_PROMPT = (
     "- [[DO: ax_set_checked: <id> 1]] (or 0) to turn a checkbox/toggle on (or off),\n"
     "- [[DO: navigate: <app or settings pane>]] if the needed control is NOT in the list,\n"
     "- or reply 'cannot' if it isn't possible. Use an id from the list verbatim; never invent one."
+)
+
+# v1.8.2: words that indicate the user is actually asking about the computer's system/performance.
+# Used to gate report_system in code (the 7B over-proposes it as a generic "let me check"). Tuned to
+# match the real system asks ("what's my CPU", "is anything wrong with my mac", "system report") while
+# NOT matching ordinary questions (sunrise, weather, chit-chat).
+_SYSTEM_QUERY = re.compile(
+    r"\b(cpu|memory|ram|disk|storage|battery|power|performance|perf|slow|laggy|lag|"
+    r"freez\w*|temperature|thermal|overheat\w*|fans?|resources?|utiliz\w*|"
+    r"system|machine|computer|laptop|\bmac\b|diagnostics?)\b"
+    r"|\b(anything|something|what'?s)\s+wrong\b"
+    r"|\brunning\s+(hot|slow|fine|ok)\b"
+    r"|\bhow'?s?\s+(my|the)\s+(mac|computer|machine|system)\b",
+    re.I,
 )
 
 
@@ -459,6 +474,14 @@ class Jarvis:
         _clean, actions = split_do_directives(reply)
         return actions
 
+    @staticmethod
+    def _is_system_query(text: str) -> bool:
+        """True iff the user's text actually asks about the computer's system/performance. The
+        deterministic guard for report_system (v1.8.2): the 7B uses it as a generic "let me check"
+        escape hatch and fired it on unrelated questions (e.g. tomorrow's sunrise). Code, not the
+        prompt, decides whether a system report is warranted."""
+        return bool(_SYSTEM_QUERY.search(text or ""))
+
     def _run_actions(self, actions: list[tuple[str, str]], question: str = "") -> list[str]:
         """Execute parsed [[DO:]] directives through the wired runner; return each result string. A
         reversible action runs immediately; a destructive (`confirm`) action is routed through the
@@ -506,6 +529,11 @@ class Jarvis:
                         results.append(f"Couldn't do that ({name}).")
                 else:
                     results.append(f"I can't do that here ({name}).")
+                continue
+            # Deterministic guard (v1.8.2): report_system runs ONLY when the user's text shows real
+            # system intent — so an unrelated question (sunrise, weather, chit-chat) can never get a
+            # CPU/memory dump, no matter what the 7B emits. Code disposes; the prompt only proposes.
+            if name == "report_system" and not self._is_system_query(question):
                 continue
             if self._action_runner is None:
                 continue
