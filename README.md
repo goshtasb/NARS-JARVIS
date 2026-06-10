@@ -126,6 +126,13 @@ Released in tagged increments **v1.0.0 → v1.8.0**; **435 automated tests** cur
   the page, then **synthesizes a source-cited answer** (not a raw result dump). Read-only, no API key, in
   an isolated subprocess; the only thing that leaves your machine is the search query. ([ADR-034], [ADR-035])
 
+### Learning how you work (persona)
+- **Continuous persona learning** — over idle moments it learns your stable *style* and *focus* (e.g.
+  "prefers terse markdown tables, no greetings", "doing local development") and feeds that back into
+  every answer as a context prefix, so replies match how you work. Learned on a separate, crash-resilient
+  reasoner from a closed, developer-curated vocabulary; it only shapes the prompt — it never runs an
+  action. ([ADR-036])
+
 ### Learning your habits
 - **The Habit Brain** — every eligible action you take becomes evidence on a time-and-context pattern in
   NARS; once a pattern is confirmed enough, the assistant *offers* to do it. It distinguishes a broad
@@ -372,3 +379,4 @@ separately are governed by their own (MIT) licenses.
 [ADR-033]: docs/adrs/ADR-033-batch-canvas.md
 [ADR-034]: docs/adrs/ADR-034-web-search.md
 [ADR-035]: docs/adrs/ADR-035-web-answer-synthesis.md
+[ADR-036]: docs/adrs/ADR-036-continuous-persona-learning.md

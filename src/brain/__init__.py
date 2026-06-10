@@ -2,7 +2,7 @@
 
 Public interface (ADR-001: a Python module's public surface is its `__init__.py` + `__all__`).
 """
-from .ona import Brain
+from .ona import Brain, BrainUnavailable
 from .parse import (
     Answer,
     Truth,
@@ -14,5 +14,5 @@ from .parse import (
     parse_truth,
 )
 
-__all__ = ["Brain", "Answer", "Truth", "canonical_input", "input_accepted", "parse_answer",
-           "parse_line", "parse_stamp", "parse_truth"]
+__all__ = ["Brain", "BrainUnavailable", "Answer", "Truth", "canonical_input", "input_accepted",
+           "parse_answer", "parse_line", "parse_stamp", "parse_truth"]

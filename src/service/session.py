@@ -15,6 +15,7 @@ from typing import Callable
 from actions import ActionRunner, recipe_for, resolve as resolve_action, schema as catalog_schema, should_gate
 from brain import Brain
 from habits import HabitStore
+from persona import PersonaStore, render_persona
 from overnight import HeldLedger, OvernightQueue, safe_autonomous
 from context import render_habits, render_live_context
 from execution import DecisionStats, build_air_gapped_executor, decide
@@ -31,6 +32,7 @@ from .ax_dispatch import dispatch_ax, find_control_id
 from .consent_service import ConsentService
 from .habit_loop import HabitLoop
 from .overnight_runner import OvernightRunner
+from .persona_loop import IDLE_SECONDS, PersonaLoop
 from .sentinel_loop import SentinelLoop
 from .voice import WhisperJob, speak, whisper_available
 from .wiring import NoNarrationLLM, make_claim_source, make_embedder
@@ -76,6 +78,17 @@ class Session:
         self._overnight_queue = OvernightQueue(db_path)
         self._held_ledger = HeldLedger(db_path)
         self._overnight = OvernightRunner(self._overnight_queue, self._held_ledger, self._actions, self._emit)
+        # Persona cognitive layer (ADR-036): an ISOLATED, resilient persona ONA learns the user's
+        # style/focus from idle-gated batches; the system prompt is injected from SQLite. Separate brain
+        # so persona concepts never crowd the conversational memory bag.
+        self._persona_store = PersonaStore(db_path)
+        self._persona_loop = None  # set just below; referenced by the brain's on_restart hook
+        _persona_gen = ((lambda s, u, mt: llm.generate_text(s, u, max_tokens=mt))
+                        if hasattr(llm, "generate_text") else (lambda s, u, mt: ""))
+        self._persona_brain = Brain(cycles_per_step=50,
+                                    on_restart=lambda _b: self._persona_loop and self._persona_loop.replay())
+        self._persona_loop = PersonaLoop(self._persona_brain, self._persona_store, _persona_gen, self._emit)
+        self._last_request_at = 0.0
         voice = Voice(formatter=llm if hasattr(llm, "generate_text") else None)
         self._jarvis = Jarvis(Translator(llm, embedder=embedder, cache=grounding),
                               self._store, self._brain, executor=self._executor, gate=gate,
@@ -83,6 +96,8 @@ class Session:
                               embedder=embedder,  # auto-memory semantic echo-guard (ADR-008)
                               context_provider=self._live_context,  # dynamic context (ADR-010)
                               habits_provider=self._learned_habits,  # learned sentinel habits (ADR-012)
+                              persona_provider=lambda: render_persona(self._persona_loop.persona()),  # ADR-036
+
                               sentinel_beliefs_provider=self._sentinel_store.beliefs,  # grounding (ADR-013)
                               action_runner=self._actions,  # conversational Mac actions (ADR-019)
                               habit_observer=self._habit_loop.observe,  # execution -> habit evidence (ADR-026)
@@ -133,6 +148,7 @@ class Session:
         }.get(cmd)
         if handler is None:
             return False, {"text": f"unknown command: {cmd!r}"}
+        self._last_request_at = time.time()   # ADR-036: gate persona ingestion to idle windows only
         return handler(arg)
 
     def _ask(self, arg: object) -> tuple[bool, object]:
@@ -143,6 +159,7 @@ class Session:
         if "-->" in raw or raw.startswith(("<", "(")):
             answer = self._jarvis.ask(text)
             return True, {"text": f"answer: {answer}" if answer is not None else "no answer in memory."}
+        self._persona_loop.observe(text, "user")   # ADR-036: buffer the utterance for idle batch learning
         return True, {"text": self._jarvis.converse(text)}
 
     def _tell(self, arg: object) -> tuple[bool, object]:
@@ -639,6 +656,11 @@ class Session:
         except Exception as exc:  # noqa: BLE001 — an overnight hiccup must never kill the loop
             self._emit("alert", {"text": f"[overnight error] {exc}"})
         try:
+            idle = (time.time() - self._last_request_at) >= IDLE_SECONDS   # ADR-036: persona ingestion,
+            self._persona_loop.tick(idle, overnight_active=self._overnight.active)  # idle-gated, batched
+        except Exception as exc:  # noqa: BLE001 — a persona hiccup must never kill the loop
+            self._emit("alert", {"text": f"[persona error] {exc}"})
+        try:
             self._sys_sentinel.run_once()
             import psutil
             self._last = f"cpu={psutil.cpu_percent():.0f}% mem={psutil.virtual_memory().percent:.0f}%"
@@ -650,6 +672,8 @@ class Session:
         self._brain.close()
         self._sentinel_store.close()
         self._habit_store.close()
+        self._persona_brain.close()      # ADR-036: tear down the isolated persona ONA
+        self._persona_store.close()
 
 
 def _ingestion_health(s: dict) -> list[str]:

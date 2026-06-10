@@ -170,6 +170,7 @@ class Jarvis:
                  embedder: object | None = None,
                  context_provider: Callable[[], str] | None = None,
                  habits_provider: Callable[[], str] | None = None,
+                 persona_provider: Callable[[], str] | None = None,
                  sentinel_beliefs_provider: Callable[[], list[tuple[str, float, float]]] | None = None,
                  action_runner: object | None = None,
                  consent_opener: Callable[[str, Callable[[], object]], object] | None = None,
@@ -196,6 +197,7 @@ class Jarvis:
         # Learned habits (ADR-012): a callable returning the translated "Learned habits" block from the
         # sentinel's persisted beliefs. None => no habits block (tests/offline).
         self._habits_provider = habits_provider
+        self._persona_provider = persona_provider   # ADR-036: [COGNITIVE CONTEXT CONSTRAINTS] prefix
         # Pre-commit grounding (ADR-013): a callable returning the raw persisted sentinel beliefs, so
         # converse can drop conversational memories that try to control a sentinel-governed category.
         self._sentinel_beliefs_provider = sentinel_beliefs_provider
@@ -395,6 +397,10 @@ class Jarvis:
         system = ASSISTANT_SYSTEM_PROMPT
         if self._action_runner is not None:
             system = system + "\n\n" + render_action_prompt(self._action_runner.available())
+        # ADR-036: prepend the learned persona constraints (style/focus) to the system prompt. Read from
+        # SQLite (O(1), no ONA on the hot path); '' when nothing is confident enough or the layer is down.
+        if self._persona_provider is not None and (persona := self._persona_provider()):
+            system = system + "\n\n" + persona
         try:
             reply = self._assistant.generate_text(system, user, max_tokens=512)
         except Exception:  # noqa: BLE001 — a model hiccup degrades to the grounded path, never crashes
