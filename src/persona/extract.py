@@ -28,6 +28,29 @@ _PROMPT = (
     "If nothing in the vocabulary is evidenced, output []. Output ONLY the JSON array."
 )
 
+# Few-shot semantic anchoring (ADR-036 recall tuning). A heavily-quantized local 7B lacks a frontier
+# model's semantic webbing, so colloquial phrasings ("lay it out as a grid") don't reliably map onto the
+# rigid vocabulary terms — recall, not precision, was the measured gap (see test_extractor_recall.py).
+# These worked examples bridge that gap. Two integrity rules: (1) every phrasing here is LEXICALLY
+# DISTINCT from the eval fixtures, so a measured recall lift reflects generalization, not memorization;
+# (2) the last example is a NEGATIVE (pleasantries -> []), anchoring the model AGAINST over-firing — the
+# mirror risk of adding positive examples. Expanding this stays a human code change (never LLM-driven).
+_EXAMPLES = (
+    "\n\nExamples — map the colloquial phrasing to the pair it evidences:\n"
+    'Event: "drop the chit-chat and get straight to it"\n'
+    '-> [{"predicate": "format_directive", "value": "omit_greeting_prose", "freq": 1.0, "conf": 0.85}]\n'
+    'Event: "organize this into a tabular layout, rows and columns"\n'
+    '-> [{"predicate": "format_directive", "value": "terse_markdown_tables", "freq": 1.0, "conf": 0.85}]\n'
+    'Event: "include footnotes pointing to where this came from"\n'
+    '-> [{"predicate": "format_directive", "value": "cite_sources_explicitly", "freq": 1.0, "conf": 0.85}]\n'
+    'Event: "I\'m heads-down in the repo on my machine today"\n'
+    '-> [{"predicate": "current_focus", "value": "local_development", "freq": 1.0, "conf": 0.8}]\n'
+    'Event: "this data is still unconfirmed, treat it carefully"\n'
+    '-> [{"predicate": "current_focus", "value": "unverified_data_synthesis", "freq": 1.0, "conf": 0.8}]\n'
+    'Event: "hey, how\'s it going?"\n'
+    "-> []"
+)
+
 
 def _clamp(x: object) -> float:
     try:
@@ -62,7 +85,7 @@ def extract(events: list[str], generate: Generate) -> list[tuple[str, float, flo
         return []
     user = "Events:\n" + "\n".join(f"- {e}" for e in events)
     try:
-        raw = generate(_PROMPT.format(catalog=catalog_for_prompt()), user, 256)
+        raw = generate(_PROMPT.format(catalog=catalog_for_prompt()) + _EXAMPLES, user, 256)
     except Exception:  # noqa: BLE001 — a model hiccup just yields no persona this batch
         return []
     return parse_items(raw)
