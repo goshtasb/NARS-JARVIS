@@ -57,16 +57,69 @@ def test_loop_opens_chosen_link_and_synthesizes() -> None:
 
 
 def test_injection_bound_model_cannot_mint_urls() -> None:
-    """OPEN with an out-of-menu index (or a URL) never fetches — the menu is the whole universe."""
+    """OPEN with an out-of-menu index (or a URL) never fetches the model's choice — the menu is the
+    whole universe. With nothing read yet, the ADR-042 floor opens the TOP MENU link (a URL code
+    extracted), never anything the model named."""
     performed: list[tuple[str, str]] = []
     def perform(name: str, arg: str) -> str:
         performed.append((name, arg))
-        return _results(("Only", "https://only.com"))
+        return _results(("Only", "https://only.com")) if name == "web_lookup" else \
+            "Title: O\nSource: https://only.com\n\npage text"
     def generate(system: str, user: str, max_tokens: int) -> str:
         return "OPEN 99" if max_tokens == 32 else "synthesized"
     answer, _ = run_research("q", [("web_lookup", "q")], generate, perform)
-    assert all(name == "web_lookup" for name, _a in performed)        # no fetch from the bad pick
+    browses = [a for n, a in performed if n == "browse_page"]
+    assert browses == ["https://only.com"]                            # floor: top menu link, nothing minted
     assert answer == "synthesized"
+
+
+def test_floor_forces_one_open_when_model_answers_from_snippets() -> None:
+    """ADR-042: the live regression — the model tried to stop with only snippets read; code must open
+    the top result first. An ANSWER after that one read is honored."""
+    performed: list[tuple[str, str]] = []
+    def perform(name: str, arg: str) -> str:
+        performed.append((name, arg))
+        return _results(("Tomorrow — AccuWeather", "https://accu.example/tomorrow")) \
+            if name == "web_lookup" else \
+            "Title: A\nSource: https://accu.example/tomorrow\n\nTomorrow: high 81F low 64F."
+    replies = iter(["ANSWER", "ANSWER", "High 81F tomorrow (accu.example)."])
+    def generate(system: str, user: str, max_tokens: int) -> str:
+        return next(replies)
+    answer, _ = run_research("weather tomorrow?", [("web_lookup", "weather tomorrow")],
+                             generate, perform)
+    assert ("browse_page", "https://accu.example/tomorrow") in performed   # forced read happened
+    assert answer == "High 81F tomorrow (accu.example)."
+
+
+def test_duplicate_search_is_refusal_not_progress() -> None:
+    """ADR-042: re-issuing an already-searched query (the live 3/3 failure) doesn't burn the search
+    budget — it triggers the floor instead."""
+    searches: list[str] = []
+    def perform(name: str, arg: str) -> str:
+        if name == "web_lookup":
+            searches.append(arg)
+            return _results(("R", "https://r.example/page"))
+        return "Title: R\nSource: https://r.example/page\n\nreal data 42"
+    replies = iter(["SEARCH weather tomorrow", "ANSWER", "42 (r.example)."])
+    def generate(system: str, user: str, max_tokens: int) -> str:
+        return next(replies)
+    answer, _ = run_research("weather tomorrow?", [("web_lookup", "weather tomorrow")],
+                             generate, perform)
+    assert searches == ["weather tomorrow"]                           # the repeat never ran
+    assert answer == "42 (r.example)."                                # floor read the page instead
+
+
+def test_conversation_context_reaches_decide_and_synthesis() -> None:
+    """ADR-042: follow-ups research what they refer to — the chat block rides into both prompts."""
+    seen: list[str] = []
+    def perform(name: str, arg: str) -> str:
+        return _results(("R", "https://r.example"))
+    def generate(system: str, user: str, max_tokens: int) -> str:
+        seen.append(user)
+        return "ANSWER" if max_tokens == 32 else "ok"
+    ctx = "RECENT CONVERSATION:\nUser: weather tomorrow\nJARVIS: High 81F."
+    run_research("are you sure?", [("web_lookup", "verify weather")], generate, perform, context=ctx)
+    assert all("RECENT CONVERSATION" in u and "are you sure?" in u for u in seen)
 
 
 def test_caps_bound_the_loop() -> None:
@@ -123,6 +176,9 @@ if __name__ == "__main__":
     test_split_browse_separates_article_and_links()
     test_loop_opens_chosen_link_and_synthesizes()
     test_injection_bound_model_cannot_mint_urls()
+    test_floor_forces_one_open_when_model_answers_from_snippets()
+    test_duplicate_search_is_refusal_not_progress()
+    test_conversation_context_reaches_decide_and_synthesis()
     test_caps_bound_the_loop()
     test_wall_clock_bound()
     test_all_errors_surface_honestly()

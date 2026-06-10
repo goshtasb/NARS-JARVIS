@@ -7,6 +7,7 @@ Composes domains via their public interfaces only (ADR-001). Imperative Shell (S
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import dataclass, replace
 from typing import Callable
 
@@ -448,7 +449,7 @@ class Jarvis:
         research = [t for t in actions if t[0] in _RESEARCH_ACTIONS]
         action_results = self._run_actions([t for t in actions if t[0] not in _RESEARCH_ACTIONS], question)
         if research:
-            answer, errors = self._run_research(research, question)
+            answer, errors = self._run_research(research, question, chat)
             if answer:
                 clean = answer            # the synthesized, web-sourced answer replaces the "Let me check" filler
             action_results += errors      # surface any [ERROR…] (rate-limited/blocked) honestly
@@ -527,15 +528,20 @@ class Jarvis:
         _clean, actions = split_do_directives(reply)
         return actions
 
-    def _run_research(self, research: list[tuple[str, str]], question: str) -> tuple[str | None, list[str]]:
-        """ADR-039 agentic web answer: hand the model's research directives to the bounded link-following
-        loop (research/), which searches, opens the pages the model picks, and synthesizes an answer with
-        sources. Returns (answer_or_None, error_strings); the loop itself never raises."""
+    def _run_research(self, research: list[tuple[str, str]], question: str,
+                      chat_context: str = "") -> tuple[str | None, list[str]]:
+        """ADR-039/042 agentic web answer: hand the model's research directives to the bounded
+        link-following loop (research/), which searches, opens the pages the model picks (floor: at
+        least one when links exist), and synthesizes an answer with sources. `chat_context` is the
+        recent-conversation block so follow-up questions research what they refer to. The loop logs
+        its trajectory to stderr (the daemon log). Never raises."""
         if self._action_runner is None:
             return None, []
         generate = lambda system, user, max_tokens: self._assistant.generate_text(
             system, user, max_tokens=max_tokens)
-        return run_research(question, research, generate, self._action_runner.perform)
+        log = lambda m: print(f"[research] {m}", file=sys.stderr, flush=True)
+        return run_research(question, research, generate, self._action_runner.perform,
+                            context=chat_context, log=log)
 
     @staticmethod
     def _is_system_query(text: str) -> bool:

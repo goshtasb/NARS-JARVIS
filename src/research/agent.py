@@ -36,8 +36,17 @@ _DECIDE_PROMPT = (
     "You are researching the user's question on the web. Decide your SINGLE next move. Reply with "
     "EXACTLY one line and nothing else:\n"
     "OPEN <number>   — read that link from the list (pick the most relevant)\n"
-    "SEARCH <query>  — run a different web search\n"
-    "ANSWER          — you have enough information to answer now"
+    "SEARCH <query>  — run a DIFFERENT web search (never repeat one already shown in the findings)\n"
+    "ANSWER          — you have enough information to answer now\n\n"
+    # Few-shot anchoring (the ADR-036/v1.11.1 lesson, applied after a live 3/3 failure where the 7B
+    # re-issued the same search instead of opening a link): snippets are pointers, not data.
+    "Rule: search-result descriptions are NOT data. If the findings are only result snippets, OPEN "
+    "the most relevant link — do not ANSWER from snippets and do not repeat the search.\n"
+    "Examples:\n"
+    "Findings: result snippets describing forecast pages (no actual temperatures); link 2 is "
+    "'Weather Tomorrow | AccuWeather'\n-> OPEN 2\n"
+    "Findings: a page you read says 'Tomorrow: high 81F, low 64F, sunny'\n-> ANSWER\n"
+    "Findings: results are about Phoenix but the user asked about Denver\n-> SEARCH Denver weather"
 )
 _SYNTH_PROMPT = (
     "You researched the web and collected the findings below. Answer the user's question concisely "
@@ -93,15 +102,21 @@ def split_browse(browse_text: str) -> tuple[str, list[tuple[str, str]]]:
 
 # ── the loop (effects injected) ──
 def run_research(question: str, seed: list[tuple[str, str]], generate: Generate, perform: Perform,
-                 clock: Callable[[], float] = time.monotonic) -> tuple[str | None, list[str]]:
+                 clock: Callable[[], float] = time.monotonic,
+                 context: str = "",
+                 log: Callable[[str], None] = lambda _m: None) -> tuple[str | None, list[str]]:
     """Research `question` starting from the model's seed directives (web_lookup/read_article).
-    Returns (synthesized answer or None, [error strings…]). Bounded by opens/searches/steps/wall."""
+    `context` is the rendered recent-conversation block (ADR-041/042) so follow-ups like "are you
+    sure?" research what they actually refer to; `log` receives a trajectory line per step (wired to
+    the daemon log) so field failures are diagnosable. Returns (answer or None, [error strings…])."""
     notes: list[str] = []
     menu: list[tuple[str, str]] = []
     opened: set[str] = set()
+    issued: set[str] = set()                     # normalized queries already searched (dup guard)
     errors: list[str] = []
     opens = searches = 0
     deadline = clock() + WALL_SECONDS
+    convo = f"{context}\n\n" if context else ""
 
     def _merge(links: list[tuple[str, str]]) -> None:
         have = {u for _t, u in menu}
@@ -113,14 +128,17 @@ def run_research(question: str, seed: list[tuple[str, str]], generate: Generate,
     def _search(query: str) -> None:
         nonlocal searches
         searches += 1
+        issued.add(" ".join((query or question).lower().split()))
         result = perform("web_lookup", query or question)
         if result.lstrip().startswith("[ERROR"):
             errors.append(result)
+            log(f"search {query or question!r} -> {result[:80]}")
             return
         notes.append(f"[search: {query or question}]\n{result}"[:NOTE_CAP])
         _merge(links_from_results(result))
+        log(f"search {query or question!r} -> {len(menu)} links in menu")
 
-    def _open(url: str) -> None:
+    def _open(url: str, forced: bool = False) -> None:
         nonlocal opens
         opens += 1
         opened.add(url)
@@ -128,11 +146,13 @@ def run_research(question: str, seed: list[tuple[str, str]], generate: Generate,
         result = perform("browse_page", url)
         if result.lstrip().startswith("[ERROR"):
             errors.append(result)
+            log(f"open{' (floor)' if forced else ''} {url} -> {result[:80]}")
             return
         article, links = split_browse(result)
         if article:
             notes.append(article[:NOTE_CAP])
         _merge(links)
+        log(f"open{' (floor)' if forced else ''} {url} -> {len(article)} chars")
 
     for name, arg in seed:                       # the model's own [[DO:]] directives kick it off
         if name == "read_article" and arg.startswith(("http://", "https://")):
@@ -150,23 +170,35 @@ def run_research(question: str, seed: list[tuple[str, str]], generate: Generate,
         try:
             reply = generate(
                 _DECIDE_PROMPT,
-                f"Question: {question}\n\nFindings so far:\n{shown}\n\nLinks you can OPEN:\n{listing}",
+                f"{convo}Question: {question}\n\nFindings so far:\n{shown}\n\n"
+                f"Links you can OPEN:\n{listing}",
                 32)
         except Exception:  # noqa: BLE001 — a model hiccup ends the loop; synthesize what we have
             break
         verb, arg = parse_step(reply)
+        chose = False
         if verb == "open" and can_open and arg.isdigit() and 1 <= int(arg) <= len(menu):
             _open(menu[int(arg) - 1][1])
-        elif verb == "search" and can_search:
-            _search(arg)
-        else:
-            break                                # ANSWER / invalid / over a cap -> stop researching
+            chose = True
+        elif verb == "search" and can_search and " ".join(arg.lower().split()) not in issued:
+            _search(arg)                         # a repeat of an issued query is a refusal, not progress
+            chose = True
+        if not chose:
+            # Deterministic floor (ADR-042): the model may not END research in the snippet trap. If it
+            # tries to stop (ANSWER / invalid pick / duplicate search) with NOTHING read and links on
+            # the table, code opens the top result — proposal/disposal, applied to giving up.
+            if opens == 0 and can_open:
+                _open(menu[0][1], forced=True)
+                continue
+            log(f"stop ({verb}) after {opens} opens / {searches} searches")
+            break
 
     if not notes:
         return None, errors                      # everything blocked/empty -> surface the errors
     joined = "\n\n".join(notes)
     try:
-        answer = generate(_SYNTH_PROMPT, f"Question: {question}\n\nFindings:\n{joined[:SYNTH_INPUT_CAP]}",
+        answer = generate(_SYNTH_PROMPT,
+                          f"{convo}Question: {question}\n\nFindings:\n{joined[:SYNTH_INPUT_CAP]}",
                           400).strip()
     except Exception:  # noqa: BLE001 — a model hiccup falls back to the raw findings
         answer = ""

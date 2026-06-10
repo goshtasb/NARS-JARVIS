@@ -565,6 +565,8 @@ def test_web_research_synthesizes_an_answer_not_raw_results() -> None:
     class _Runner:
         def available(self): return [("web_lookup", "search the web and READ the results")]
         def perform(self, name, arg):
+            if name == "browse_page":                                  # ADR-042 floor: one page read
+                return "Title: Sunrise Times\nSource: https://timeanddate.com/x\n\nSunrise 5:43 AM."
             assert name == "web_lookup"
             return "1. Sunrise Times\n   Sunrise 5:43 AM tomorrow.\n   https://timeanddate.com/x"
 

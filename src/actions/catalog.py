@@ -209,6 +209,9 @@ def render_action_prompt(actions: list[tuple[str, str]]) -> str:
         "the search results as text for you to read and use). web_search merely opens a browser tab for "
         "the user and returns nothing, so never use web_search to gather facts. To read a specific page, "
         "use read_article with its URL.",
+        "If the user is asking about YOUR previous answer (e.g. 'are you sure?', 'why?', 'what did you "
+        "mean?'), answer conversationally from the RECENT CONVERSATION block — do NOT run web_lookup "
+        "again unless genuinely new information is required to respond.",
         "Worked examples:",
         "User: look up the latest on X / search online for X",
         "Assistant: Let me check.",
