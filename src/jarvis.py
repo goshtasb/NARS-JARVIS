@@ -14,6 +14,7 @@ from actions import render_action_prompt
 from actions import resolve as _resolve_action
 from brain import Brain, canonical_input, input_accepted
 from context import (
+    ConversationBuffer,
     conflicting_habit,
     correction_notice,
     ground_answer,
@@ -241,6 +242,9 @@ class Jarvis:
         # its own knowledge with the user's persistent memory injected as ground truth. With no
         # assistant (tests / no model) converse() falls back to the legacy ONA-grounded path.
         self._assistant = assistant if (assistant is not None and hasattr(assistant, "generate_text")) else None
+        # ADR-041: the sliding short-term conversation window (in-memory, session-bounded) that makes
+        # follow-up questions work. Render-only — it never feeds memory/persona/habit pipelines.
+        self._chat = ConversationBuffer()
 
     def learn(self, sentence: str, *, on_rejects: RejectPresenter | None = None,
               confirm_escalation: EscalationConfirm | None = None) -> list[str]:
@@ -380,9 +384,22 @@ class Jarvis:
         return answer
 
     def converse(self, question: str) -> str:
-        """LLM-first answer (ADR-007): the model answers from its own knowledge with the user's
-        persistent memory injected as ground truth. Falls back to the legacy ONA-grounded path when
-        no language model is wired (tests / offline demo)."""
+        """LLM-first answer (ADR-007) with short-term conversational memory (ADR-041): the exchange is
+        recorded AFTER the turn completes, on every return path — so the next question can say "what
+        about that?" and be understood. The wrapper is the single recording point; `_converse_inner`
+        owns the actual flow."""
+        reply = self._converse_inner(question)
+        self._chat.observe(question, reply)
+        return reply
+
+    def clear_conversation(self) -> None:
+        """ADR-041: explicitly end the short-term conversation window (durable memory untouched)."""
+        self._chat.clear()
+
+    def _converse_inner(self, question: str) -> str:
+        """The model answers from its own knowledge with the user's persistent memory injected as
+        ground truth. Falls back to the legacy ONA-grounded path when no language model is wired
+        (tests / offline demo)."""
         if self._assistant is None:
             return self._converse_grounded(question)
         memory = self._recall(question)
@@ -399,6 +416,8 @@ class Jarvis:
         if memory:
             blocks.append("Persistent memory (the user taught you these; treat as ground truth):\n"
                           + memory)
+        if (chat := self._chat.render()):                     # ADR-041: the sliding turn window —
+            blocks.append(chat)                               # adjacent to the question, transcript-style
         blocks.append(f"User: {question}")
         user = "\n\n".join(blocks)
         # Actions (ADR-019): when a runner is wired, teach the LLM the closed action set so it can

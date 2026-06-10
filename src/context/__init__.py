@@ -12,10 +12,12 @@ from .grounding import (
     grounding_notice,
 )
 from .habits import habit_directive, render_habits
+from .history import ConversationBuffer
 from .providers import clock_fact, foreground_fact, render_live_context, system_fact
 from .volatile import is_volatile
 
 __all__ = [
+    "ConversationBuffer",
     "render_live_context",
     "clock_fact",
     "system_fact",

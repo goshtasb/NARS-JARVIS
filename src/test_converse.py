@@ -770,3 +770,25 @@ if __name__ == "__main__":
     test_agent_step_empty_without_a_dom()
     test_converse_ax_verb_without_dispatch_is_safe()
     print("test_converse: OK")
+
+
+def test_followup_question_sees_the_previous_turn() -> None:
+    # ADR-041: turn 2's prompt must carry turn 1 — "spell that" is answerable only with history.
+    class _ChatLLM:
+        def __init__(self): self.users: list[str] = []
+        def generate(self, system_prompt, sentence): return "[]"
+        def generate_text(self, system_prompt, user, max_tokens=64):
+            self.users.append(user)
+            return "Jupiter." if len(self.users) == 1 else "J-U-P-I-T-E-R."
+    asst = _ChatLLM()
+    with Brain(cycles_per_step=50) as brain:
+        j = Jarvis(Translator(_QLLM()), MemoryStore(), brain, assistant=asst)
+        assert j.converse("name one planet") == "Jupiter."
+        assert "RECENT CONVERSATION" not in asst.users[0]               # first turn: no history block
+        out = j.converse("now spell the planet you just named")
+        assert out == "J-U-P-I-T-E-R."
+        assert "RECENT CONVERSATION" in asst.users[1]                   # second turn carries the first
+        assert "name one planet" in asst.users[1] and "Jupiter." in asst.users[1]
+        j.clear_conversation()                                          # explicit session boundary
+        j.converse("hello again")
+        assert "RECENT CONVERSATION" not in asst.users[2]               # cleared -> stateless again
