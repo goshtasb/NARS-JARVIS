@@ -177,6 +177,10 @@ def render_action_prompt(actions: list[tuple[str, str]]) -> str:
         "Do-Not-Disturb), say plainly that you can't do that yet. Do NOT improvise by opening apps or "
         "System Settings panes to work around a missing capability, and NEVER claim to have changed a "
         "setting you have no action for.",
+        "Use report_system ONLY when the user EXPLICITLY asks about the computer's system status or "
+        "performance — CPU, memory, disk, battery, or 'is my Mac OK / is anything wrong'. Do NOT use it "
+        "for greetings or conversational openers like 'how are you', \"how's it going\", or 'how is "
+        "everything' — answer those in plain words with NO action.",
         "When you emit [[DO: report_system]], do NOT state or guess any system metric (CPU, memory, "
         "disk, battery) in your prose — the real report is appended automatically below your reply; "
         "defer to it entirely (e.g. say 'Let me check.' not 'Your CPU is at 0%').",

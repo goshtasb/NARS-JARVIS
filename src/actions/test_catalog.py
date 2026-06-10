@@ -118,6 +118,14 @@ def test_render_action_prompt_forbids_improvising_unavailable_actions() -> None:
     assert "Do NOT improvise" in text and "NEVER claim to have changed a setting" in text
 
 
+def test_report_system_only_on_explicit_status_questions() -> None:
+    # v1.8.1 bugfix: spoken conversational openers ("how's it going") were firing report_system.
+    # The prompt must restrict it to explicit system/performance questions, not greetings.
+    text = catalog.render_action_prompt(catalog.available())
+    assert "Use report_system ONLY when" in text
+    assert "how is everything" in text and "NO action" in text
+
+
 def test_schema_describes_actions_and_excludes_ax() -> None:
     # ADR-033: machine-readable palette for the Batch Canvas — fields present, AX verbs excluded.
     rows = catalog.schema()
