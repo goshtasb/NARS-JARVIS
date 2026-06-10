@@ -157,6 +157,11 @@ _SYSTEM_QUERY = re.compile(
     re.I,
 )
 
+# ADR-042: words showing the user actually wants a BROWSER opened (tab/window) — the only case where
+# the model's web_search (argv tab-opener, returns nothing) choice is honored; otherwise a web_search
+# directive is rerouted to web_lookup (the research loop), because the intent was to gather facts.
+_BROWSER_INTENT = re.compile(r"\b(open|browser|tab|chrome|safari|firefox)\b", re.I)
+
 # ADR-040: the matching intent gate for the audio sensor — audio_status runs only when the user is
 # actually asking about sound/volume, the same proposal/disposal split as _SYSTEM_QUERY above.
 _AUDIO_QUERY = re.compile(
@@ -443,6 +448,13 @@ class Jarvis:
         clean, facts = split_memory_directives(clean)
         clean, forgets = split_forget_directives(clean)
         clean = clean.strip()
+        # Deterministic tool-choice reroute (ADR-042): the 7B sometimes grabs web_search (the
+        # browser-tab opener that RETURNS NOTHING) to gather facts, despite the prompt forbidding it —
+        # observed live on "how is the weather tomorrow" (a Google tab opened; no research ran). If the
+        # user's text doesn't actually ask for a browser, the intent was research: reroute to
+        # web_lookup. Code disposes; an explicit "open a search in my browser" still gets the tab.
+        actions = [("web_lookup" if (n == "web_search" and not _BROWSER_INTENT.search(question))
+                    else n, a) for n, a in actions]
         # Actions: run normal ones (results appended as a tail below). Research actions (web_lookup /
         # read_article, ADR-035) instead get a SECOND model pass that synthesizes the answer FROM the
         # findings — so the user sees a real answer, not raw search results dumped into the chat.

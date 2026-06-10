@@ -794,3 +794,39 @@ def test_followup_question_sees_the_previous_turn() -> None:
         j.clear_conversation()                                          # explicit session boundary
         j.converse("hello again")
         assert "RECENT CONVERSATION" not in asst.users[2]               # cleared -> stateless again
+
+
+def test_web_search_rerouted_to_research_unless_browser_asked() -> None:
+    # ADR-042: the 7B grabbing web_search (tab-opener, returns nothing) for a fact question is
+    # rerouted to the research loop; an explicit browser request still gets the tab.
+    class _LLM:
+        def __init__(self): self.n = 0
+        def generate(self, s, x): return "[]"
+        def generate_text(self, system, user, max_tokens=64):
+            self.n += 1
+            if system.startswith("You are researching"): return "ANSWER"
+            if system.startswith("You researched the web"): return "High 81F tomorrow."
+            return "Let me check.\n[[DO: web_search: weather tomorrow]]"
+    class _Runner:
+        def __init__(self): self.performed = []
+        def available(self): return [("web_search", "opens a browser tab")]
+        def perform(self, name, arg):
+            self.performed.append(name)
+            if name == "web_lookup":
+                return "1. T\n   snippet\n   https://t.example/x"
+            if name == "browse_page":
+                return "Title: T\nSource: https://t.example/x\n\nHigh 81F."
+            return f"(Done: {name})"
+        def propose(self, name, arg=""):
+            self.performed.append(name); return (f"(Done: {name})", None)
+    with Brain(cycles_per_step=50) as brain:
+        r = _Runner()
+        j = Jarvis(Translator(_QLLM()), MemoryStore(), brain, assistant=_LLM(), action_runner=r)
+        out = j.converse("how is the weather tomorrow")          # no browser words -> research
+        assert "web_search" not in r.performed                   # the tab never opened
+        assert "web_lookup" in r.performed and "browse_page" in r.performed  # researched + floor-read
+        assert out == "High 81F tomorrow."
+        r.performed.clear()
+        j.clear_conversation()
+        j.converse("open a web search for weather tomorrow in my browser")   # explicit -> honored
+        assert "web_search" in r.performed and "web_lookup" not in r.performed
