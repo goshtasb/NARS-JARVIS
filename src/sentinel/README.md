@@ -68,8 +68,14 @@ detects a fragmentation spike, and offers ONE reversible action.
   stream, category, or title ever enters this path — the only thing that leaves the machine is a
   human reading these numbers off `health` and relaying them.
 
-Opt-in via `sentinel on` in the console. Tests (pure/deterministic, no sleep):
-`test_fragmentation | test_surprise | test_intervention | test_focusblock`, plus `test_sentinel_v2`.
+**Auto-starts at daemon boot** (ADR-048): the Flow Sentinel now starts itself whenever the daemon
+boots, persisting the user's on/off choice (`SentinelStore.enabled()`, default on) — a deliberate
+`sentinel off` survives restarts, but observation/learning no longer needs a manual `sentinel on` every
+session. Actuation (hide) stays consent-gated. Tests (pure/deterministic, no sleep):
+`test_fragmentation | test_surprise | test_intervention | test_focusblock`, plus `test_sentinel_v2`;
+`test_store.test_enabled_defaults_on_and_persists` guards the auto-start preference.
 
 ## Related
-PRD C3 / M2; ADR-001.
+PRD C3 / M2; [ADR-011](../../docs/adrs/ADR-011-sentinel-persistence.md) (belief persistence + replay),
+[ADR-016](../../docs/adrs/ADR-016-sentinel-observability.md) (observability),
+[ADR-048](../../docs/adrs/ADR-048-sentinel-autostart.md) (auto-start at boot).

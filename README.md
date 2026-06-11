@@ -201,9 +201,25 @@ Released in tagged increments **v1.0.0 → v1.14.9**; **507 automated tests** cu
 - **A field-test monitor** — [`tools/overnight_monitor.py`](tools/overnight_monitor.py) logs the daemon's
   memory/CPU/thermals overnight so you can catch a leak or crash by morning.
 
-### Watching your machine
-- **A "sentinel"** — a second, isolated reasoner that learns your machine's normal behavior and flags
-  surprises (CPU/memory spikes, focus patterns). ([ADR-011], [ADR-016])
+### Watching your machine — the Sentinel
+- **What it is:** a **second, fully separate brain** (its own isolated NARS reasoner, so it can never
+  contaminate the conversational one) that quietly watches how you and your machine behave and learns
+  what "normal" looks like for *you*.
+- **What it observes:** which app is in the foreground and how often your attention switches between
+  apps, plus coarse system signals (CPU/memory level changes). **Privacy by design:** it only ever sees
+  an app's broad *category* (e.g. "comms", "dev") — **never window titles, URLs, or contents** — which
+  is also what keeps it out of macOS permission prompts. Nothing it observes leaves your machine.
+- **What it learns:** your baseline — e.g. whether your attention is *steady* or *fragmenting*. It
+  builds that belief slowly: it stays completely silent until it has seen a pattern about **six times**
+  (an "epistemic burn-in"), so a one-off busy moment never makes it cry wolf.
+- **What it does about it:** when it detects a genuine attention-fragmentation spike against your
+  learned normal, it offers **one gentle, reversible action** — "hide your comms apps for 25 minutes?
+  [y/n]". It only acts **with your explicit yes**, one prompt at a time, and only ever on that single
+  permissionless, undoable operation. It measures whether accepting actually protected your focus
+  (median focus-block length before vs after) and shows that in `health`.
+- **Always on, automatically:** the Sentinel **starts itself every time JARVIS starts** and remembers
+  if you ever turn it off — so it learns continuously without you having to enable it each session.
+  ([ADR-011], [ADR-016], [ADR-048])
 
 ---
 
