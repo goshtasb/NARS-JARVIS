@@ -11,7 +11,7 @@ import sys
 from dataclasses import dataclass, replace
 from typing import Callable
 
-from actions import render_action_prompt
+from actions import drop_nominal_verdict, render_action_prompt
 from actions import resolve as _resolve_action
 from brain import Brain, canonical_input, input_accepted
 from context import (
@@ -156,6 +156,17 @@ _SYSTEM_QUERY = re.compile(
     r"|\bcheck\s+(on\s+)?(my|the)\s+(mac|computer|machine|laptop|system)\b",
     re.I,
 )
+
+# ADR-045: the NARROWER subset of system questions that are actually about HEALTH ("is something
+# wrong / slow / hot / ok"). report_system still fires for any _SYSTEM_QUERY (a memory/CPU data
+# question needs the data), but the unsolicited "Nothing looks wrong" verdict is dropped unless the
+# user asked a health question — "which app uses the most memory" is data, not "is anything wrong".
+# A real anomaly is ALWAYS surfaced regardless (a problem is never unsolicited).
+_HEALTH_QUERY = re.compile(
+    r"\b(wrong|ok|okay|fine|alright|healthy|broken|slow|laggy|lag|freez\w*|hot|overheat\w*|"
+    r"crash\w*|problem|issue|trouble|diagnos\w*|health)\b"
+    r"|\bsystem\s+(report|status|health|check)\b"
+    r"|\brunning\s+(hot|slow|fine|ok)\b", re.I)
 
 # ADR-042: words showing the user actually wants a BROWSER opened (tab/window) — the only case where
 # the model's web_search (argv tab-opener, returns nothing) choice is honored; otherwise a web_search
@@ -589,6 +600,12 @@ class Jarvis:
         return bool(_AUDIO_QUERY.search(text or ""))
 
     @staticmethod
+    def _is_health_query(text: str) -> bool:
+        """True iff the user asked about system HEALTH (something wrong/slow/ok), not just a system
+        DATA point. Gates the report's reassurance verdict (ADR-045), never the report itself."""
+        return bool(_HEALTH_QUERY.search(text or ""))
+
+    @staticmethod
     def _is_ui_action_request(text: str) -> bool:
         """True iff the user's text asks to manipulate an on-screen control — the gate (ADR-044) for
         BOTH showing the focused-window AX controls in the prompt AND honoring any ax_* directive, so a
@@ -662,6 +679,11 @@ class Jarvis:
                 continue
             if spec is None:
                 if result is not None:
+                    # ADR-045: a system report for a neutral data question ("which app uses the most
+                    # memory") drops the unsolicited "nothing looks wrong" verdict — the user didn't
+                    # ask whether anything was wrong. A real anomaly line is kept (drop_ is selective).
+                    if name == "report_system" and not self._is_health_query(question):
+                        result = drop_nominal_verdict(result)
                     results.append(result)
                     self._record_habit(name, arg)          # ADR-026: user-asked -> habit evidence
             elif self._consent_opener is not None:                 # destructive -> gate it

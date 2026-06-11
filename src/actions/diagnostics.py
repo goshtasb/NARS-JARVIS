@@ -55,6 +55,12 @@ def anomaly_flags(r: dict) -> list[str]:
     return flags
 
 
+# The "all clear" verdict line (ADR-040 scope-honest). Pulled out as a constant so the conversational
+# layer can DROP it (ADR-045) when the user asked a neutral data question rather than a health one —
+# "which app uses the most memory" should not get an unsolicited "nothing looks wrong" editorial.
+NOMINAL_VERDICT = "Nothing looks wrong in these metrics (CPU / memory / disk / battery)."
+
+
 def system_report(readings: dict | None = None) -> str:
     """A human-readable system report with anomaly flags. `readings` injectable for tests; defaults
     to a live psutil read. Pure given `readings`."""
@@ -75,9 +81,15 @@ def system_report(readings: dict | None = None) -> str:
     flags = anomaly_flags(r)
     # Scope-honest verdict (ADR-040): name what was measured, so a clean report can never masquerade
     # as "X is fine" for an X (audio, keyboard, …) this report does not cover.
-    lines.append(("Anomalies: " + "; ".join(flags)) if flags
-                 else "Nothing looks wrong in these metrics (CPU / memory / disk / battery).")
+    lines.append(("Anomalies: " + "; ".join(flags)) if flags else NOMINAL_VERDICT)
     return "\n".join(lines)
+
+
+def drop_nominal_verdict(report: str) -> str:
+    """Strip ONLY the 'all clear' verdict line (ADR-045) — a real `Anomalies:` line is always kept,
+    because a surfaced problem is never unsolicited. Pure; idempotent; a no-op on any non-report
+    string (e.g. a test stub's 'ran report_system')."""
+    return "\n".join(ln for ln in report.splitlines() if ln.strip() != NOMINAL_VERDICT)
 
 
 # ── audio (ADR-040): the read-back sensor for the volume/mute actuators ──

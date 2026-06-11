@@ -84,3 +84,18 @@ def test_system_report_verdict_names_its_scope() -> None:
     # ADR-040: a clean report must say WHAT it measured — it can never read as "your audio is fine".
     out = system_report({"cpu": 5.0, "mem": 10.0, "disk": 10.0, "battery": (90.0, True), "top": []})
     assert "CPU / memory / disk / battery" in out
+
+
+def test_drop_nominal_verdict_is_selective() -> None:
+    # ADR-045: drop the "all clear" line for a data question; ALWAYS keep a real anomaly line.
+    clean = system_report({"cpu": 5.0, "mem": 88.0, "disk": 7.0, "battery": (100.0, True),
+                           "top": [("Python", 29.0)]})
+    assert diagnostics.NOMINAL_VERDICT in clean
+    stripped = diagnostics.drop_nominal_verdict(clean)
+    assert "Nothing looks wrong" not in stripped
+    assert "Top memory: Python 29%" in stripped and "CPU: 5%" in stripped   # data preserved
+
+    anomalous = system_report({"cpu": 99.0, "mem": 95.0, "disk": 10.0, "battery": (90.0, True), "top": []})
+    assert diagnostics.drop_nominal_verdict(anomalous) == anomalous          # anomaly line never dropped
+    assert "⚠ CPU pegged" in diagnostics.drop_nominal_verdict(anomalous)
+    assert diagnostics.drop_nominal_verdict("ran report_system") == "ran report_system"  # no-op on junk

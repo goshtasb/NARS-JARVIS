@@ -862,3 +862,26 @@ def test_ax_directive_honored_when_user_asks_to_act() -> None:
         assert calls == [("ax_press", "button_23")]                    # honored
         assert "AXButton" in asst.last_user                            # controls shown for the action
         assert "Awaiting your approval" in out
+
+
+def test_report_system_drops_allclear_verdict_for_data_question() -> None:
+    # ADR-045: "which app uses the most memory" needs the report data but NOT the "nothing looks wrong"
+    # editorial the user explicitly objected to. A health question still gets the verdict.
+    assert Jarvis._is_health_query("is something wrong with my mac")
+    assert Jarvis._is_health_query("give me a system report")
+    assert not Jarvis._is_health_query("which one of these applications is using the most memory")
+    assert not Jarvis._is_health_query("what's my cpu at")
+
+    full = ("System report:\n- CPU: 16%\n- Memory: 88% used\n- Top memory: Python 29%\n"
+            "Nothing looks wrong in these metrics (CPU / memory / disk / battery).")
+    class _Runner:
+        def available(self): return []
+        def perform(self, name, arg=""): return full
+        def propose(self, name, arg=""): return (full, None)
+    with Brain(cycles_per_step=50) as brain:
+        j = Jarvis(Translator(_QLLM()), MemoryStore(), brain, action_runner=_Runner())
+        data = j._run_actions([("report_system", "")], "which app is using the most memory")
+        assert "Top memory: Python 29%" in data[0]                  # the data the user asked for
+        assert "Nothing looks wrong" not in data[0]                 # the unsolicited verdict is gone
+        health = j._run_actions([("report_system", "")], "is anything wrong with my mac")
+        assert "Nothing looks wrong" in health[0]                   # health question keeps the verdict
