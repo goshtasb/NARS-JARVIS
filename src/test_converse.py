@@ -538,15 +538,18 @@ def test_converse_destructive_action_refused_without_consent_channel() -> None:
 
 
 def test_converse_injects_ax_dom() -> None:
-    # ADR-021: when an ax_provider supplies a focused-window DOM, it's injected into the prompt.
+    # ADR-021/044: the focused-window DOM is injected ONLY when the user asked to act on a control.
     asst = _RememberLLM("ok")
     dom = ("On-screen controls (focused window — you may act on these):\n"
            "[sld_1] AXSlider \"Brightness\" = 0.6")
     with Brain(cycles_per_step=50) as brain:
         j = Jarvis(Translator(asst), MemoryStore(), brain, assistant=asst,
                    ax_provider=lambda: dom)
-        j.converse("how bright is my screen?")
+        j.converse("drag the brightness slider to 50%")                 # a UI-action request
         assert "[sld_1] AXSlider \"Brightness\"" in asst.last_user      # AX DOM injected
+        asst.last_user = ""
+        j.converse("so is your name actually Jarvis?")                  # ADR-044: a plain chat turn
+        assert "AXSlider" not in asst.last_user                         # controls NOT injected/provoked
 
 
 def test_web_research_synthesizes_an_answer_not_raw_results() -> None:
@@ -830,3 +833,32 @@ def test_web_search_rerouted_to_research_unless_browser_asked() -> None:
         j.clear_conversation()
         j.converse("open a web search for weather tomorrow in my browser")   # explicit -> honored
         assert "web_search" in r.performed and "web_lookup" not in r.performed
+
+
+def test_ax_directive_dropped_on_plain_chat_turn() -> None:
+    # ADR-044 (the bug): the 7B answered a chat turn AND appended a spurious ax_press; the firewall must
+    # drop it (no dispatch, no consent prompt) because the user expressed no UI-action intent.
+    calls: list[tuple[str, str]] = []
+    asst = _RememberLLM("I'm called JARVIS.\n[[DO: ax_press: button_23]]")
+    with Brain(cycles_per_step=50) as brain:
+        j = Jarvis(Translator(asst), MemoryStore(), brain, assistant=asst,
+                   ax_provider=lambda: '[button_23] AXButton "X"',
+                   ax_dispatch=lambda verb, arg: calls.append((verb, arg)) or "clicked")
+        out = j.converse("is your name actually Jarvis or something else?")
+        assert calls == []                                             # phantom click never dispatched
+        assert "AXButton" not in asst.last_user                        # controls weren't even shown
+        assert out == "I'm called JARVIS."                             # the real answer survives, clean
+
+
+def test_ax_directive_honored_when_user_asks_to_act() -> None:
+    # The other side of ADR-044: a genuine UI-action request still routes the ax verb to dispatch.
+    calls: list[tuple[str, str]] = []
+    asst = _RememberLLM("On it.\n[[DO: ax_press: button_23]]")
+    with Brain(cycles_per_step=50) as brain:
+        j = Jarvis(Translator(asst), MemoryStore(), brain, assistant=asst,
+                   ax_provider=lambda: '[button_23] AXButton "Submit"',
+                   ax_dispatch=lambda verb, arg: calls.append((verb, arg)) or "⏳ Awaiting your approval")
+        out = j.converse("click the submit button")
+        assert calls == [("ax_press", "button_23")]                    # honored
+        assert "AXButton" in asst.last_user                            # controls shown for the action
+        assert "Awaiting your approval" in out

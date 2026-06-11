@@ -162,6 +162,21 @@ _SYSTEM_QUERY = re.compile(
 # directive is rerouted to web_lookup (the research loop), because the intent was to gather facts.
 _BROWSER_INTENT = re.compile(r"\b(open|browser|tab|chrome|safari|firefox)\b", re.I)
 
+# ADR-044: words showing the user actually wants to MANIPULATE an on-screen control. The focused
+# window's accessibility controls are injected into converse with "you may act on these", and a small
+# 7B answered a plain chat turn ("is your name actually Jarvis?") and ALSO tacked on a spurious
+# [[DO: ax_press: button_23]] — the consent gate then queued a random click. This gate decides, in
+# code, whether the AX controls are shown at all AND whether any ax_* directive is honored. Strong,
+# rarely-conversational tokens only (conservative: a missed "select the option" is a smaller failure
+# than a phantom click; the user just rephrases). NOT the audio "volume button" case — that routes to
+# audio_status (ADR-040), never to actuation.
+_UI_ACTION_INTENT = re.compile(
+    r"\b(click|clicks|clicked|press|presses|pressed|tap|toggle|toggled|untoggle|"
+    r"uncheck|tick|checkbox|check\s?box|slider|sliders|button|buttons|radio button|"
+    r"drag|drop\s?down|dropdown|menu item|scroll\s?bar)\b"
+    r"|\bset\s+\S+\s+to\b"                                    # "set brightness to 45%", "set it to 50"
+    r"|\b(select|choose|enable|disable)\s+(the|that|this|it)\b", re.I)
+
 # ADR-040: the matching intent gate for the audio sensor — audio_status runs only when the user is
 # actually asking about sound/volume, the same proposal/disposal split as _SYSTEM_QUERY above.
 _AUDIO_QUERY = re.compile(
@@ -411,7 +426,11 @@ class Jarvis:
         memory = self._recall(question)
         live = self._context_provider() if self._context_provider is not None else ""
         habits = self._habits_provider() if self._habits_provider is not None else ""
-        ax = self._ax_provider() if self._ax_provider is not None else ""
+        # ADR-044: only show the focused-window controls when the user actually asked to act on a
+        # control — otherwise the "you may act on these" block provokes spurious clicks on chat turns
+        # (and wastes prefill on every turn). Disposal is also gated below as the firewall.
+        ax = (self._ax_provider() if (self._ax_provider is not None
+                                      and self._is_ui_action_request(question)) else "")
         blocks: list[str] = []
         if live:
             blocks.append(live)
@@ -569,6 +588,13 @@ class Jarvis:
         audio_status sensor (ADR-040), so it can never become the 7B's next generic escape hatch."""
         return bool(_AUDIO_QUERY.search(text or ""))
 
+    @staticmethod
+    def _is_ui_action_request(text: str) -> bool:
+        """True iff the user's text asks to manipulate an on-screen control — the gate (ADR-044) for
+        BOTH showing the focused-window AX controls in the prompt AND honoring any ax_* directive, so a
+        plain chat turn can never produce a phantom click no matter what the 7B appends."""
+        return bool(_UI_ACTION_INTENT.search(text or ""))
+
     def _run_actions(self, actions: list[tuple[str, str]], question: str = "") -> list[str]:
         """Execute parsed [[DO:]] directives through the wired runner; return each result string. A
         reversible action runs immediately; a destructive (`confirm`) action is routed through the
@@ -590,6 +616,10 @@ class Jarvis:
                 continue
             act = _resolve_action(name)
             if act is not None and act.kind == "ax":           # ADR-021: GUI actuation verb
+                # ADR-044 firewall: drop a spurious ax_* the model appended to a non-action turn — even
+                # if the controls weren't injected, it could echo an id from a prior turn. Code disposes.
+                if not self._is_ui_action_request(question):
+                    continue
                 if self._ax_dispatch is not None:
                     try:
                         results.append(self._ax_dispatch(name, arg))
