@@ -99,3 +99,54 @@ def test_drop_nominal_verdict_is_selective() -> None:
     assert diagnostics.drop_nominal_verdict(anomalous) == anomalous          # anomaly line never dropped
     assert "⚠ CPU pegged" in diagnostics.drop_nominal_verdict(anomalous)
     assert diagnostics.drop_nominal_verdict("ran report_system") == "ran report_system"  # no-op on junk
+
+
+# ── network sensor (ADR-046) ──
+def test_parse_nettop_delta_keeps_last_occurrence() -> None:
+    # nettop -d emits each process twice: cumulative THEN delta. Last value = the interval delta.
+    raw = (",bytes_in,bytes_out,\n"
+           "launchd.1,0,0,\n"
+           "Chrome.500,126765500,17034038,\n"          # sample 1 (cumulative — must be discarded)
+           "Spotify.600,9000,1000,\n"
+           ",bytes_in,bytes_out,\n"
+           "launchd.1,0,0,\n"
+           "Chrome.500,40000,8000,\n"                  # sample 2 (delta — kept)
+           "Spotify.600,0,0,\n")
+    out = diagnostics.parse_nettop_delta(raw)
+    assert out == [("Chrome", 48000)]                  # last Chrome = 48000; Spotify delta 0 dropped
+    assert diagnostics.parse_nettop_delta("") == []
+
+
+def test_parse_connections_counts_and_skips_loopback() -> None:
+    raw = ("COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\n"
+           "Google\\x20Chrome 1 u IPv4 1 0t0 TCP 192.168.0.10:50->1.1.1.1:443 (ESTABLISHED)\n"
+           "Google\\x20Chrome 1 u IPv4 1 0t0 TCP 192.168.0.10:51->8.8.8.8:443 (ESTABLISHED)\n"
+           "loopd 2 u IPv4 2 0t0 TCP 127.0.0.1:5->127.0.0.1:6 (ESTABLISHED)\n")
+    out = diagnostics.parse_connections(raw)
+    assert out == [("Google Chrome", 2)]               # \x20 -> space; loopback skipped
+
+
+def test_parse_wifi_reads_current_network_block() -> None:
+    raw = ("Other Local Wi-Fi Networks:\n  PHY Mode: ignored\n"
+           "Current Network Information:\n      MyNet:\n"
+           "        PHY Mode: 802.11ac\n        Channel: 149 (5GHz, 80MHz)\n"
+           "        Signal / Noise: -55 dBm / -94 dBm\n        Transmit Rate: 468\n")
+    w = diagnostics.parse_wifi(raw)
+    assert w == {"phy": "802.11ac", "channel": "149 (5GHz, 80MHz)",
+                 "signal": "-55 dBm / -94 dBm", "rate": "468"}
+    assert diagnostics.parse_wifi("no wifi here") == {}
+
+
+def test_net_report_composes_and_is_scope_honest() -> None:
+    # Fake spawn returns canned output per command — no real network access.
+    def spawn(argv, **kw):
+        tool = argv[0]
+        out = {"nettop": ",bytes_in,bytes_out,\nSpotify.6,0,0,\n,bytes_in,bytes_out,\nSpotify.6,500000,2000,\n",
+               "lsof": "H\nSpotify 1 u IPv4 1 0 TCP 192.168.0.10:5->1.2.3.4:443 (ESTABLISHED)\n",
+               "system_profiler": "Current Network Information:\n  PHY Mode: 802.11ac\n  Channel: 149\n"
+                                  "  Signal / Noise: -55 dBm / -94 dBm\n  Transmit Rate: 468\n"}[tool]
+        return type("R", (), {"stdout": out, "returncode": 0})()
+    rep = diagnostics.net_report(spawn)
+    assert "Spotify" in rep and "KB/2s" in rep                  # top consumer named with a rate
+    assert "Wi-Fi: 802.11ac" in rep and "468" in rep           # link quality surfaced
+    assert "not JARVIS" in rep and "can't see your router" in rep   # scope-honest verdict

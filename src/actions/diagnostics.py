@@ -144,3 +144,107 @@ def audio_report(spawn) -> str:
                       "test speakers/keys — if a physical volume key does nothing, check Keyboard "
                       "settings ('Use F1, F2… as standard function keys') or the key itself.")
     return "\n".join(lines)
+
+
+# ── network (ADR-046): the read-only "what's using my connection" sensor. Local inspection only —
+# per-process bandwidth (nettop), established connections (lsof), Wi-Fi link quality (system_profiler).
+# No egress: it never pings or fetches; it reports what THIS machine is doing, which is exactly the
+# gap that made JARVIS fall back to generic web advice for "what's slowing my internet". ──
+def _human_bytes(n: float) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} GB"
+
+
+def _clean_proc(name: str) -> str:
+    """nettop process tokens look like 'Google Chrome H.98583'; drop the trailing .PID for display."""
+    base = name.rsplit(".", 1)
+    return base[0] if len(base) == 2 and base[1].isdigit() else name
+
+
+def parse_nettop_delta(raw: str) -> list[tuple[str, int]]:
+    """`nettop -P -d -L 2 -s N -J bytes_in,bytes_out` emits each process TWICE — cumulative then the
+    interval delta. Keeping the LAST value per process yields the delta (bytes moved in the sample).
+    Pure -> [(process, bytes), …] sorted descending, zero-traffic processes dropped."""
+    last: dict[str, int] = {}
+    for line in (raw or "").splitlines():
+        parts = line.split(",")
+        if len(parts) >= 3 and parts[1].strip().isdigit() and parts[2].strip().isdigit():
+            last[_clean_proc(parts[0].strip())] = int(parts[1]) + int(parts[2])
+    return sorted(((p, b) for p, b in last.items() if b > 0), key=lambda x: -x[1])
+
+
+def parse_connections(raw: str) -> list[tuple[str, int]]:
+    """Count ESTABLISHED TCP connections per process from `lsof +c 0 -nP -iTCP -sTCP:ESTABLISHED`,
+    skipping loopback. Pure -> [(process, count), …] sorted descending. Locates the peer by the '->'
+    token (not a fixed column) so it's robust to lsof's IPv4/IPv6 column-count differences."""
+    counts: dict[str, int] = {}
+    for line in (raw or "").splitlines()[1:]:
+        parts = line.split()
+        peer = next((p for p in parts if "->" in p), "")
+        if not peer or "127.0.0.1" in peer or "[::1]" in peer:
+            continue
+        name = parts[0].replace("\\x20", " ")
+        counts[name] = counts.get(name, 0) + 1
+    return sorted(counts.items(), key=lambda x: -x[1])
+
+
+def parse_wifi(raw: str) -> dict:
+    """Pull PHY mode / channel / signal / tx-rate from `system_profiler SPAirPortDataType` (the
+    'Current Network Information' block — the first values after it). Pure; {} when off/ethernet."""
+    out: dict = {}
+    seen_current = False
+    for line in (raw or "").splitlines():
+        s = line.strip()
+        if "Current Network Information" in s:
+            seen_current = True
+        if not seen_current:
+            continue
+        for key, field in (("PHY Mode:", "phy"), ("Channel:", "channel"),
+                           ("Signal / Noise:", "signal"), ("Transmit Rate:", "rate")):
+            if s.startswith(key) and field not in out:
+                out[field] = s[len(key):].strip()
+        if {"phy", "channel", "signal", "rate"} <= out.keys():
+            break
+    return out
+
+
+def net_report(spawn) -> str:
+    """The network report behind `network_status` (ADR-046): top bandwidth talkers, busiest
+    connections, and Wi-Fi link quality — read-only, local, no egress. `spawn` is the safespawn seam."""
+    def run(argv, timeout):
+        try:
+            r = spawn(argv, capture_output=True, text=True, timeout=timeout)
+            return getattr(r, "stdout", "") or ""
+        except Exception:  # noqa: BLE001 — a missing tool / timeout degrades that section, never crashes
+            return ""
+
+    talkers = parse_nettop_delta(run(["nettop", "-P", "-d", "-L", "2", "-s", "2",
+                                      "-J", "bytes_in,bytes_out"], 10))
+    conns = parse_connections(run(["lsof", "+c", "0", "-nP", "-iTCP", "-sTCP:ESTABLISHED"], 10))
+    wifi = parse_wifi(run(["system_profiler", "SPAirPortDataType"], 10))
+
+    lines = ["Network activity (this Mac, last ~2s):"]
+    if talkers:
+        lines.append("- Top bandwidth right now: "
+                     + ", ".join(f"{p} {_human_bytes(b)}/2s" for p, b in talkers[:4]))
+    else:
+        lines.append("- Top bandwidth right now: (nothing measurable in the sample)")
+    if conns:
+        lines.append("- Most open connections: "
+                     + ", ".join(f"{p} ({n})" for p, n in conns[:4]))
+    if wifi:
+        wifi_bits = [v for k in ("phy", "channel", "signal", "rate") if (v := wifi.get(k))]
+        lines.append("- Wi-Fi: " + " | ".join(wifi_bits))
+    # Scope-honest verdict (ADR-040/045): this is LOCAL only — it can't see the router, ISP, or other
+    # devices. JARVIS itself (the `python -m service` daemon) holding any bandwidth would show above.
+    top = talkers[0] if talkers else None
+    if top and not any(j in top[0].lower() for j in ("python", "jarvis", "nar")):
+        lines.append(f"Biggest local consumer is {top[0]} — not JARVIS. This shows only this Mac; it "
+                     "can't see your router, ISP, or other devices on the network.")
+    else:
+        lines.append("This shows only this Mac's own network use — it can't see your router, ISP, or "
+                     "other devices. For whole-network slowness, check those separately.")
+    return "\n".join(lines)

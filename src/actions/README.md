@@ -52,6 +52,8 @@ family ships a read-only status sensor with its own intent gate; reports name th
 no phantom clicks on chat turns),
 [ADR-045](../../docs/adrs/ADR-045-report-verdict-on-health-intent.md) (the system report's "all clear"
 verdict only on health questions, never on neutral data questions),
+[ADR-046](../../docs/adrs/ADR-046-network-inspection-sensor.md) (the read-only network sensor —
+per-process bandwidth + connections + Wi-Fi, intent-gated, no egress),
 [ADR-025](../../docs/adrs/ADR-025-file-search.md) (find_file),
 [ADR-032](../../docs/adrs/ADR-032-work-primitives.md) (the work primitives),
 [ADR-034](../../docs/adrs/ADR-034-web-search.md) (web search/read),

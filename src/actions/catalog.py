@@ -39,6 +39,8 @@ _ACTIONS: tuple[Action, ...] = (
     Action("report_system", "report CPU / memory / disk / battery and flag anomalies", "diag"),
     # ADR-040 sensor–actuator parity: the read-back sensor matching the volume/mute actuators below.
     Action("audio_status", "report the current sound state — output volume, mute, mic, alerts", "diag"),
+    # ADR-046: the network-inspection sensor — which apps are using the connection + Wi-Fi link quality.
+    Action("network_status", "report what's using the internet connection and Wi-Fi link quality", "diag"),
     Action("dark_mode", "toggle dark / light mode", "argv"),
     Action("volume_up", "turn the volume up", "argv"),
     Action("volume_down", "turn the volume down", "argv"),
@@ -202,6 +204,10 @@ def render_action_prompt(actions: list[tuple[str, str]]) -> str:
         "related. If no status action matches that capability, say plainly that you can't check it yet. "
         "NEVER substitute report_system (or any other report) for a check you cannot take — a CPU/memory "
         "report says nothing about sound, and presenting it as the answer is misleading.",
+        "For anything about the internet / network / Wi-Fi being slow or 'what's using my connection', "
+        "use network_status — it inspects THIS Mac (which apps are using bandwidth, Wi-Fi link quality). "
+        "Do NOT use web_lookup for that: web research only returns generic advice, never your machine's "
+        "actual state. Use network_status first; only search the web if the user then asks for tips.",
         "When you emit [[DO: report_system]], do NOT state or guess any system metric (CPU, memory, "
         "disk, battery) in your prose — the real report is appended automatically below your reply; "
         "defer to it entirely (e.g. say 'Let me check.' not 'Your CPU is at 0%').",

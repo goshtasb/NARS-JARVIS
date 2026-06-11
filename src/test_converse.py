@@ -885,3 +885,25 @@ def test_report_system_drops_allclear_verdict_for_data_question() -> None:
         assert "Nothing looks wrong" not in data[0]                 # the unsolicited verdict is gone
         health = j._run_actions([("report_system", "")], "is anything wrong with my mac")
         assert "Nothing looks wrong" in health[0]                   # health question keeps the verdict
+
+
+def test_network_status_gated_and_routed_not_web_research() -> None:
+    # ADR-046: a "what's slowing my internet" turn fires network_status (local sensor), gated on intent.
+    assert Jarvis._is_network_query("something is slowing down the internet, find out what it is")
+    assert Jarvis._is_network_query("what's using my wifi")
+    assert not Jarvis._is_network_query("what is the capital of France")
+    assert not Jarvis._is_network_query("connected to JARVIS")
+
+    class _Runner:
+        def __init__(self): self.ran = []
+        def available(self): return [("network_status", "inspect the network")]
+        def perform(self, name, arg=""): return f"ran {name}"
+        def propose(self, name, arg=""): self.ran.append((name, arg)); return (f"ran {name}", None)
+    with Brain(cycles_per_step=50) as brain:
+        r = _Runner()
+        j = Jarvis(Translator(_QLLM()), MemoryStore(), brain, action_runner=r)
+        out = j._run_actions([("network_status", "")], "why is my internet so slow")    # network intent
+        assert r.ran == [("network_status", "")] and "ran network_status" in out[0]
+        r.ran.clear()
+        assert j._run_actions([("network_status", "")], "what is the capital of France") == []  # gated out
+        assert r.ran == []

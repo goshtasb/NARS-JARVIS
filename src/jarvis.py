@@ -196,6 +196,15 @@ _AUDIO_QUERY = re.compile(
     re.I,
 )
 
+# ADR-046: the intent gate for the network-inspection sensor. network_status runs only when the user
+# asks about the internet/network/Wi-Fi — so the 7B can't grab it as a generic "let me check", and so
+# a network question stops falling back to generic web research (the gap that motivated this sensor).
+_NETWORK_QUERY = re.compile(
+    r"\b(internet|wi-?fi|wlan|bandwidth|ethernet|network|connectivity|latency|"
+    r"download speed|upload speed|router|hotspot)\b"
+    r"|\b(slow|fast|speed|laggy|dropping).{0,20}\b(internet|connection|network|online|download|stream)\b"
+    r"|\b(connection|online).{0,20}\b(slow|fast|down|dropping|laggy)\b", re.I)
+
 # ADR-035/039: web actions that trigger the bounded research loop (research/) instead of dumping raw
 # results into the chat — the loop searches, opens the links the model judges relevant, and synthesizes.
 _RESEARCH_ACTIONS = ("web_lookup", "read_article")
@@ -600,6 +609,12 @@ class Jarvis:
         return bool(_AUDIO_QUERY.search(text or ""))
 
     @staticmethod
+    def _is_network_query(text: str) -> bool:
+        """True iff the user is asking about the internet/network/Wi-Fi — the gate for network_status
+        (ADR-046), so a network question gets the local sensor instead of generic web research."""
+        return bool(_NETWORK_QUERY.search(text or ""))
+
+    @staticmethod
     def _is_health_query(text: str) -> bool:
         """True iff the user asked about system HEALTH (something wrong/slow/ok), not just a system
         DATA point. Gates the report's reassurance verdict (ADR-045), never the report itself."""
@@ -670,6 +685,8 @@ class Jarvis:
             if name == "report_system" and not self._is_system_query(question):
                 continue
             if name == "audio_status" and not self._is_audio_query(question):
+                continue
+            if name == "network_status" and not self._is_network_query(question):
                 continue
             if self._action_runner is None:
                 continue
