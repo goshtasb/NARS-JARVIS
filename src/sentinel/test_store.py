@@ -34,3 +34,13 @@ if __name__ == "__main__":
     test_record_belief_upserts_latest_truth()
     test_beliefs_coexist_with_kpi_tables()
     print("sentinel/test_store: OK")
+
+
+def test_enabled_defaults_on_and_persists(tmp_path) -> None:
+    # ADR-048: auto-start preference. Defaults ON when never set; a choice survives a reopen (restart).
+    db = str(tmp_path / "s.db")
+    assert SentinelStore(db).enabled() is True                  # never set -> default ON
+    s = SentinelStore(db); s.set_enabled(False)
+    assert SentinelStore(db).enabled() is False                 # deliberate OFF persists across restart
+    SentinelStore(db).set_enabled(True)
+    assert SentinelStore(db).enabled() is True                  # back ON persists

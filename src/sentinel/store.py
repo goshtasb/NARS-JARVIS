@@ -42,6 +42,12 @@ CREATE TABLE IF NOT EXISTS sentinel_beliefs (
     confidence REAL NOT NULL,
     updated_at REAL NOT NULL
 );
+-- ADR-048: remember whether the user wants the Flow Sentinel on, so it AUTO-STARTS at the next daemon
+-- boot instead of needing a manual `sentinel on` every restart (the silent-no-learning bug).
+CREATE TABLE IF NOT EXISTS sentinel_settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 
@@ -55,6 +61,19 @@ class SentinelStore:
         self._cache: dict[str, str] = dict(
             self._db.execute("SELECT bundle_id, bucket FROM app_categories").fetchall()
         )
+
+    def enabled(self) -> bool:
+        """Whether the Flow Sentinel should auto-start at daemon boot (ADR-048). Defaults to **on**
+        when the user has never set a preference — observing habits is the assistant's core job, so it
+        should learn by default; a deliberate `sentinel off` is persisted and survives restarts."""
+        row = self._db.execute("SELECT value FROM sentinel_settings WHERE key='enabled'").fetchone()
+        return row is None or row[0] == "1"
+
+    def set_enabled(self, on: bool) -> None:
+        """Persist the user's on/off choice so it survives a restart (ADR-048)."""
+        self._db.execute("INSERT OR REPLACE INTO sentinel_settings(key, value) VALUES ('enabled', ?)",
+                         ("1" if on else "0",))
+        self._db.commit()
 
     def resolve(self, bundle_id: str, ls_category: str = "") -> str:
         """Return the cached bucket, or classify once (override -> UTI -> other), cache, and return."""

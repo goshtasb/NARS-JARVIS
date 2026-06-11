@@ -125,6 +125,14 @@ class Session:
         self._voice_jobs: dict[int, WhisperJob] = {}   # fd -> in-flight transcription
         self._token = 0
         self._shutdown = False                          # set by the `shutdown` command (kill switch)
+        # ADR-048: AUTO-START the Flow Sentinel at boot if the user hasn't turned it off — so app-focus
+        # learning resumes on every restart without a manual `sentinel on` (the silent-no-learning bug).
+        # Failure (no swiftc, etc.) is swallowed: the sensor stays off, the daemon boots normally.
+        if self._sentinel_store.enabled():
+            try:
+                self._flow.cmd("on")
+            except Exception:  # noqa: BLE001 — sentinel start must never block daemon boot
+                pass
 
     # ── command plane ─────────────────────────────────────────────────
     def dispatch(self, cmd: str, arg: object = "") -> tuple[bool, object]:
@@ -578,7 +586,11 @@ class Session:
         return True, {"text": "\n".join(out)}
 
     def _sentinel(self, arg: object) -> tuple[bool, object]:
-        return True, {"text": self._flow.cmd(str(arg))}
+        a = str(arg).strip().lower()
+        result = self._flow.cmd(str(arg))
+        if a in ("on", "off"):                          # ADR-048: persist the choice so it survives a restart
+            self._sentinel_store.set_enabled(a == "on")
+        return True, {"text": result}
 
     def _intervene(self, arg: object) -> tuple[bool, object]:
         if not isinstance(arg, dict):
