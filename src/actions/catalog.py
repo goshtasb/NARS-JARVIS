@@ -44,6 +44,9 @@ _ACTIONS: tuple[Action, ...] = (
     # ADR-047: the installed-apps disk sensor — largest applications by on-disk size.
     Action("largest_apps", "report the largest installed applications by disk size", "diag"),
     Action("dark_mode", "toggle dark / light mode", "argv"),
+    # ADR-049 Context Orchestration bootstrap: set a SPECIFIC volume level, verified by read-back.
+    # Reversible + single -> ungated (no consent prompt), per ADR-020 proportional-consent.
+    Action("set_volume", "set the output volume to a specific level (0-100)", "orchestrate", takes_arg=True),
     Action("volume_up", "turn the volume up", "argv"),
     Action("volume_down", "turn the volume down", "argv"),
     Action("mute", "mute system audio", "argv"),
@@ -230,6 +233,9 @@ def render_action_prompt(actions: list[tuple[str, str]]) -> str:
         "User: mute the volume",
         "Assistant: Muted.",
         "[[DO: mute]]",
+        "User: set my volume to 20",
+        "Assistant: Done.",
+        "[[DO: set_volume: 20]]",
         "User: what's my CPU doing?",
         "Assistant: Let me check.",
         "[[DO: report_system]]",

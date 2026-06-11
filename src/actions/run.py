@@ -16,6 +16,7 @@ import safespawn
 
 from . import catalog
 from . import documents
+from . import orchestrate
 from .diagnostics import audio_report, largest_apps_report, net_report, system_report
 from .files import find_file
 
@@ -78,6 +79,8 @@ def perform(name: str, arg: str = "", *, spawn: Callable = safespawn.run, llm=No
         if action.name in _WEB_MODES:
             return _web(action.name, arg, spawn)
         return find_file(arg, spawn=spawn)
+    if action.kind == "orchestrate":     # ADR-049: verified actuation (actuate -> read-back -> report)
+        return orchestrate.dispatch(action.name, arg, spawn)
     if action.kind == "work":            # read-only document work (ADR-032): read / summarize
         return _work(action.name, arg, llm)
     argv = catalog.argv_for(action, arg)
