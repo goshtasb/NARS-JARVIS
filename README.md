@@ -1,8 +1,10 @@
 # NARS-JARVIS
 
-**A private, local-first AI assistant for your Mac that learns your habits, can take actions on your
-computer (with your permission), and can work through a queue of tasks overnight while you sleep —
-all running on your own machine, with nothing sent to the cloud.**
+**A private, local-first AI assistant for your Mac that holds a conversation, researches the live web
+(reading the actual pages, not just snippets), learns your habits and working style, can take actions
+on your computer (with your permission), and can work through a queue of tasks overnight while you
+sleep — all running on your own machine. The only thing that ever leaves it is the web traffic you
+explicitly ask for.**
 
 It pairs two different kinds of "brain":
 
@@ -74,12 +76,16 @@ they can confidently make things up. NARS-JARVIS is designed differently around 
 Safety isn't a feature here; it's the architecture. The guarantees:
 
 - **Local-first, with one declared network egress.** No cloud account, no telemetry, no API keys. The
-  *only* outbound traffic is the ADR-034 read-only web search/article-read: it sends your search query
-  (or a URL you point it at) to DuckDuckGo and reads the result — nothing else leaves. It runs in an
+  *only* outbound traffic is the ADR-034/039 read-only web research: it sends your search query (or a
+  URL you point it at) to DuckDuckGo and reads result pages — nothing else leaves. It runs in an
   isolated subprocess (the brain process itself never opens a socket), only does GET requests (it cannot
   log in, submit forms, or write to the web), blocks private/loopback addresses (SSRF guard), and caps
-  what it downloads. The **autonomous execution sandbox tier stays fully air-gapped** — a test still
-  fails the build if *that* tier ever gains network.
+  what it downloads. When a page needs JavaScript to show its content, a **transient headless Chromium**
+  renders it — launched per page inside that same subprocess, no persistent profile or cookies, dead
+  seconds later; page JS runs inside Chromium's own sandbox. The research loop **cannot fetch a URL the
+  model invents**: the model only picks an index into links that code extracted from pages already
+  vetted. The **autonomous execution sandbox tier stays fully air-gapped** — a test still fails the
+  build if *that* tier ever gains network.
 - **It asks before doing anything with consequences.** Reversible things (e.g. toggling dark mode) it
   can do; anything destructive or that controls the GUI goes through an **explicit Approve/Deny consent
   gate**. Approval is always a human click.
@@ -102,10 +108,14 @@ Safety isn't a feature here; it's the architecture. The guarantees:
 ## What it can do today
 
 Each capability links to the Architecture Decision Record (ADR) that documents how and why it was built.
-Released in tagged increments **v1.0.0 → v1.8.0**; **435 automated tests** currently pass.
+Released in tagged increments **v1.0.0 → v1.14.4**; **494 automated tests** currently pass.
 
 ### Conversation & memory
 - **Chat in plain English** — ask questions, give it facts to remember. ([ADR-007], [ADR-008])
+- **Short-term conversational memory** — follow-up questions work ("what about that?", "are you
+  sure?"): the last few exchanges ride along in a bounded sliding window (15-minute session boundary,
+  in-memory only, never baked into durable state). Warm follow-up turns answer in ~1 second thanks to
+  a per-prompt-family state cache. ([ADR-041])
 - **Durable, grounded memory** — facts persist in a local SQLite database and are grounded so the
   assistant doesn't contradict itself or hallucinate. ([ADR-009], [ADR-013], [ADR-014])
 - **Push-to-talk voice** — speak to it (offline speech-to-text via whisper.cpp) and it can speak back
@@ -122,9 +132,18 @@ Released in tagged increments **v1.0.0 → v1.8.0**; **435 automated tests** cur
 - **Self-navigation recipes** — higher-level skills like "set brightness to 40%" that open the right
   settings pane and operate the control themselves. ([ADR-022], [ADR-023])
 - **File search** — find files by name via Spotlight, ranked for relevance. ([ADR-025])
-- **Web search & reading (keyless)** — ask it to look something up and it searches DuckDuckGo and reads
-  the page, then **synthesizes a source-cited answer** (not a raw result dump). Read-only, no API key, in
-  an isolated subprocess; the only thing that leaves your machine is the search query. ([ADR-034], [ADR-035])
+- **Agentic web research (keyless)** — ask it to look something up and it doesn't stop at search
+  snippets: it **opens the results it judges relevant** (picking links *by number* from a
+  code-extracted menu — it can never type a URL, which is the prompt-injection bound), escalates to a
+  **transient headless browser** when a page renders its data with JavaScript (weather, dashboards),
+  follows links deeper, and synthesizes a **source-cited answer**. Hard-bounded (≤3 page reads,
+  ≤2 searches, 120 s wall clock, minimum one page read so it can never answer from snippets alone) and
+  every step is logged. Read-only, no API key, all in an isolated subprocess. ([ADR-034], [ADR-035],
+  [ADR-039], [ADR-042])
+- **Device-state sensors with honest scope** — "why isn't my volume working?" gets the actual sound
+  state (level, mute, mic), and every report names what it measured so a clean CPU report can never
+  masquerade as "your audio is fine". Rule: any actuator the assistant has, it can also read back.
+  ([ADR-040])
 
 ### Learning how you work (persona)
 - **Continuous persona learning** — over idle moments it learns your stable *style* and *focus* (e.g.
@@ -240,8 +259,11 @@ sh src/ui/setup-signing.sh             # one-time: create the stable signing ide
 sh src/ui/build.sh                     # compile JARVIS.app
 sh src/ui/restart.sh                   # launch the daemon + app (🔵 appears in your menu bar)
 
+# 4c. Optional: enable the rendered-fetch tier for JS-heavy pages (weather, dashboards)
+python3 -m playwright install chromium # one-time ~160MB; without it the web layer stays static-only
+
 # 5. Run the tests
-cd src && python3 -m pytest .          # 446 passing
+cd src && python3 -m pytest .          # 494 passing
 ```
 
 > The reference folders (`OpenNARS-for-Applications/`, `NARS-GPT/`, `OmniGlass/`) and your model weights
@@ -277,7 +299,11 @@ next steps (and things deliberately deferred, stated honestly):
 - **Richer habit context** — a third dimension (e.g. part-of-day, power source), *after* field data shows
   the current two dimensions arm reliably in real use.
 - **Implicit overnight queue** — let the assistant *propose* a queue from the day's conversation for your
-  approval. Requires durable conversation history (not stored today).
+  approval. (Short-term conversation history now exists per ADR-041; a durable day-level record doesn't.)
+- **Desktop context perception** — ADR-038 (screenshot → native Apple OCR → closed-vocabulary context
+  inference) is drafted and ratified on its branch, gated on a field-test review before merge.
+- **Overnight test/doc writing** — feasibility measured (a local coder-7B passes 81% of the unit tests
+  it writes for this repo's pure functions); blocked, by design, on a real OS execution sandbox first.
 - **A scheduler** — auto-start the overnight run at a set time (today: you start it manually at bedtime).
 - **Piped task chains** — let one task's output feed the next (today: a flat list of independent tasks).
 - **Token-accurate chunking** for summaries (today: a conservative character-based heuristic).
@@ -327,10 +353,11 @@ editing working code. Common extension points:
 ## Project conventions
 - **Source of truth for scope:** [`docs/prd/PRD.md`](docs/prd/PRD.md).
 - **Engineering rules:** [`CLAUDE.md`](CLAUDE.md) + [`standards/`](standards/).
-- **Architecture history:** [`docs/adrs/`](docs/adrs/) — **ADR-001 through ADR-033** (ADR-029 is
+- **Architecture history:** [`docs/adrs/`](docs/adrs/) — **ADR-001 through ADR-042** (ADR-029 is
   intentionally skipped; a cloud/Drive integration was proposed and dropped to preserve the local-first
-  air-gap). Each module also has its own `README.md`.
-- **Releases:** annotated tags `v1.0.0` → `v1.8.0`, each tied to its ADR(s).
+  air-gap. ADR-038 is drafted on branch `adr-038-omniglass-draft`, merge gated on field-test review).
+  Each module also has its own `README.md`.
+- **Releases:** annotated tags `v1.0.0` → `v1.14.4`, each tied to its ADR(s).
 
 ---
 
@@ -341,6 +368,9 @@ editing working code. Common extension points:
   over long overnight runs is something this project measures rather than assumes.
 - **You bring the model** — no weights are shipped; offline-only by design.
 - **Single machine, single user.** No multi-user, no remote access, no scheduler yet.
+- **Web research turns take 45–60 seconds** — the assistant reads up to three rendered pages and makes
+  several model decisions per research answer. Bounded and logged, but not instant. Plain chat turns
+  run ~1 s warm / up to ~10 s after the model state goes cold.
 - Summaries can't extract text from scanned/image-only PDFs (it says so rather than invent text).
 
 ---
@@ -382,3 +412,7 @@ separately are governed by their own (MIT) licenses.
 [ADR-035]: docs/adrs/ADR-035-web-answer-synthesis.md
 [ADR-036]: docs/adrs/ADR-036-continuous-persona-learning.md
 [ADR-037]: docs/adrs/ADR-037-persona-introspection.md
+[ADR-039]: docs/adrs/ADR-039-agentic-web-research.md
+[ADR-040]: docs/adrs/ADR-040-sensor-actuator-parity.md
+[ADR-041]: docs/adrs/ADR-041-conversational-history.md
+[ADR-042]: docs/adrs/ADR-042-research-floor.md
