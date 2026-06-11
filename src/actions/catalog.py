@@ -41,6 +41,8 @@ _ACTIONS: tuple[Action, ...] = (
     Action("audio_status", "report the current sound state — output volume, mute, mic, alerts", "diag"),
     # ADR-046: the network-inspection sensor — which apps are using the connection + Wi-Fi link quality.
     Action("network_status", "report what's using the internet connection and Wi-Fi link quality", "diag"),
+    # ADR-047: the installed-apps disk sensor — largest applications by on-disk size.
+    Action("largest_apps", "report the largest installed applications by disk size", "diag"),
     Action("dark_mode", "toggle dark / light mode", "argv"),
     Action("volume_up", "turn the volume up", "argv"),
     Action("volume_down", "turn the volume down", "argv"),
@@ -208,6 +210,9 @@ def render_action_prompt(actions: list[tuple[str, str]]) -> str:
         "use network_status — it inspects THIS Mac (which apps are using bandwidth, Wi-Fi link quality). "
         "Do NOT use web_lookup for that: web research only returns generic advice, never your machine's "
         "actual state. Use network_status first; only search the web if the user then asks for tips.",
+        "For 'what's the largest / biggest app', 'which apps take up the most space', or app disk usage, "
+        "use largest_apps — it measures installed app sizes. Do NOT use find_file (that searches by "
+        "filename, not size) and do NOT guess.",
         "When you emit [[DO: report_system]], do NOT state or guess any system metric (CPU, memory, "
         "disk, battery) in your prose — the real report is appended automatically below your reply; "
         "defer to it entirely (e.g. say 'Let me check.' not 'Your CPU is at 0%').",

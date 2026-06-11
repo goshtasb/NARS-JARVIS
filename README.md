@@ -126,7 +126,7 @@ Safety isn't a feature here; it's the architecture. The guarantees:
 ## What it can do today
 
 Each capability links to the Architecture Decision Record (ADR) that documents how and why it was built.
-Released in tagged increments **v1.0.0 → v1.14.7**; **503 automated tests** currently pass.
+Released in tagged increments **v1.0.0 → v1.14.8**; **506 automated tests** currently pass.
 
 ### Conversation & memory
 - **Chat in plain English** — ask questions, give it facts to remember. ([ADR-007], [ADR-008])
@@ -168,6 +168,9 @@ Released in tagged increments **v1.0.0 → v1.14.7**; **503 automated tests** cu
   are using bandwidth, how many connections each holds, Wi-Fi link quality) instead of returning
   generic web advice. Read-only, local, no egress; it says plainly whether JARVIS itself is involved
   (it isn't) and that it can't see your router or ISP. ([ADR-046])
+- **Disk / app inspection** — "what's the largest app installed?" measures real on-disk sizes. (This
+  is the last of several bespoke read-only sensors; they're being unified into one general read-only
+  inspector — read anything, mutate nothing — see [ADR-047].) ([ADR-047])
 
 ### Learning how you work (persona)
 - **Continuous persona learning** — over idle moments it learns your stable *style* and *focus* (e.g.
@@ -298,7 +301,7 @@ sh src/ui/restart.sh                   # launch the daemon + app (🔵 appears i
 python3 -m playwright install chromium # one-time ~160MB; without it the web layer stays static-only
 
 # 5. Run the tests
-cd src && python3 -m pytest .          # 503 passing
+cd src && python3 -m pytest .          # 506 passing
 ```
 
 > The reference folders (`OpenNARS-for-Applications/`, `NARS-GPT/`, `OmniGlass/`) and your model weights
@@ -388,11 +391,11 @@ editing working code. Common extension points:
 ## Project conventions
 - **Source of truth for scope:** [`docs/prd/PRD.md`](docs/prd/PRD.md).
 - **Engineering rules:** [`CLAUDE.md`](CLAUDE.md) + [`standards/`](standards/).
-- **Architecture history:** [`docs/adrs/`](docs/adrs/) — **ADR-001 through ADR-046** (ADR-029 is
+- **Architecture history:** [`docs/adrs/`](docs/adrs/) — **ADR-001 through ADR-047** (ADR-029 is
   intentionally skipped; a cloud/Drive integration was proposed and dropped to preserve the local-first
   air-gap. ADR-038 is drafted on branch `adr-038-omniglass-draft`, merge gated on field-test review).
   Each module also has its own `README.md`.
-- **Releases:** annotated tags `v1.0.0` → `v1.14.7`, each tied to its ADR(s).
+- **Releases:** annotated tags `v1.0.0` → `v1.14.8`, each tied to its ADR(s).
 
 ---
 
@@ -455,3 +458,4 @@ separately are governed by their own (MIT) licenses.
 [ADR-044]: docs/adrs/ADR-044-ax-actuation-intent-gate.md
 [ADR-045]: docs/adrs/ADR-045-report-verdict-on-health-intent.md
 [ADR-046]: docs/adrs/ADR-046-network-inspection-sensor.md
+[ADR-047]: docs/adrs/ADR-047-largest-apps-and-unified-inspection-decision.md

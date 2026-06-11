@@ -9,6 +9,8 @@ something it didn't measure). Injected readings/spawn keep both unit-testable wi
 """
 from __future__ import annotations
 
+import re
+
 # Thresholds at/above which a metric is flagged as anomalous. Conservative — these are "something is
 # clearly wrong" levels, not routine load.
 CPU_HIGH = 90.0
@@ -247,4 +249,45 @@ def net_report(spawn) -> str:
     else:
         lines.append("This shows only this Mac's own network use — it can't see your router, ISP, or "
                      "other devices. For whole-network slowness, check those separately.")
+    return "\n".join(lines)
+
+
+# ── installed-apps disk usage (ADR-047): the sensor for "what's the largest application?" — there was
+# no app/disk-by-app organ, so the 7B fell back to find_file (a filename search) and returned nothing. ──
+_APPS_ROOT = "/Applications"
+
+
+def parse_du_sizes(raw: str, root: str) -> list[tuple[str, int]]:
+    """Parse `du -k -d 1 <root>` (each line: '<KB>\\t<path>') -> [(basename, KB), …] sorted desc.
+    Pure. The <root> total line is dropped; tolerant of tab- OR space-separated du output (app names
+    contain spaces, so the path is everything after the leading number)."""
+    out: list[tuple[str, int]] = []
+    for line in (raw or "").splitlines():
+        m = re.match(r"\s*(\d+)\s+(.+?)\s*$", line)
+        if not m:
+            continue
+        kb, path = int(m.group(1)), m.group(2)
+        if path.rstrip("/") == root.rstrip("/"):
+            continue
+        out.append((path.rsplit("/", 1)[-1], kb))
+    return sorted(out, key=lambda x: -x[1])
+
+
+def largest_apps_report(spawn) -> str:
+    """The report behind `largest_apps` (ADR-047): the biggest app bundles in /Applications by on-disk
+    size. Read-only `du` through the safespawn seam; never raises."""
+    try:
+        r = spawn(["du", "-k", "-d", "1", _APPS_ROOT], capture_output=True, text=True, timeout=30)
+    except Exception as exc:  # noqa: BLE001 — a slow/again-denied scan reports, never crashes the turn
+        return f"Couldn't measure the applications folder ({exc})."
+    apps = parse_du_sizes(getattr(r, "stdout", "") or "", _APPS_ROOT)
+    if not apps:
+        return "Couldn't read application sizes (no readable apps in /Applications)."
+    lines = ["Largest applications (in /Applications, by on-disk size):"]
+    for name, kb in apps[:6]:
+        label = name[:-4] if name.endswith(".app") else name
+        lines.append(f"- {label}: {_human_bytes(kb * 1024)}")
+    # Scope-honest verdict (ADR-040): these are /Applications bundle sizes only.
+    lines.append(f"The largest is {apps[0][0][:-4] if apps[0][0].endswith('.app') else apps[0][0]}. "
+                 "Sizes cover /Applications only — not apps in your user folder, caches, or system files.")
     return "\n".join(lines)

@@ -205,6 +205,16 @@ _NETWORK_QUERY = re.compile(
     r"|\b(slow|fast|speed|laggy|dropping).{0,20}\b(internet|connection|network|online|download|stream)\b"
     r"|\b(connection|online).{0,20}\b(slow|fast|down|dropping|laggy)\b", re.I)
 
+# ADR-047: the intent gate for the installed-apps disk sensor — largest_apps fires only when the user
+# asks about app sizes / disk space, so "what's the largest app" stops falling through to find_file.
+_APPS_QUERY = re.compile(
+    r"\b(large|larg\w*|big|bigg\w*|huge|heav\w*)\b.{0,20}\b(app|apps|application|applications|"
+    r"program|programs|software)\b"
+    r"|\b(app|apps|application|applications|program|programs|software)\b.{0,30}"
+    r"\b(install|size|large|big|space|storage|disk|gb|mb|taking)\b"
+    r"|\binstalled (app|apps|application|applications|program|software)\b"
+    r"|\b(disk space|storage space|taking up.{0,15}space)\b", re.I)
+
 # ADR-035/039: web actions that trigger the bounded research loop (research/) instead of dumping raw
 # results into the chat — the loop searches, opens the links the model judges relevant, and synthesizes.
 _RESEARCH_ACTIONS = ("web_lookup", "read_article")
@@ -615,6 +625,12 @@ class Jarvis:
         return bool(_NETWORK_QUERY.search(text or ""))
 
     @staticmethod
+    def _is_apps_query(text: str) -> bool:
+        """True iff the user is asking about installed-app sizes / disk space — the gate for
+        largest_apps (ADR-047), so "what's the largest app" doesn't fall through to find_file."""
+        return bool(_APPS_QUERY.search(text or ""))
+
+    @staticmethod
     def _is_health_query(text: str) -> bool:
         """True iff the user asked about system HEALTH (something wrong/slow/ok), not just a system
         DATA point. Gates the report's reassurance verdict (ADR-045), never the report itself."""
@@ -687,6 +703,8 @@ class Jarvis:
             if name == "audio_status" and not self._is_audio_query(question):
                 continue
             if name == "network_status" and not self._is_network_query(question):
+                continue
+            if name == "largest_apps" and not self._is_apps_query(question):
                 continue
             if self._action_runner is None:
                 continue

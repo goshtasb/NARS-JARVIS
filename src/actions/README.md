@@ -54,6 +54,8 @@ no phantom clicks on chat turns),
 verdict only on health questions, never on neutral data questions),
 [ADR-046](../../docs/adrs/ADR-046-network-inspection-sensor.md) (the read-only network sensor —
 per-process bandwidth + connections + Wi-Fi, intent-gated, no egress),
+[ADR-047](../../docs/adrs/ADR-047-largest-apps-and-unified-inspection-decision.md) (largest_apps +
+the decision to unify all read-only sensors into one inspect_system tool — read anything, mutate nothing),
 [ADR-025](../../docs/adrs/ADR-025-file-search.md) (find_file),
 [ADR-032](../../docs/adrs/ADR-032-work-primitives.md) (the work primitives),
 [ADR-034](../../docs/adrs/ADR-034-web-search.md) (web search/read),

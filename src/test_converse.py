@@ -907,3 +907,24 @@ def test_network_status_gated_and_routed_not_web_research() -> None:
         r.ran.clear()
         assert j._run_actions([("network_status", "")], "what is the capital of France") == []  # gated out
         assert r.ran == []
+
+
+def test_largest_apps_gated_not_find_file() -> None:
+    # ADR-047: "what's the largest app" fires largest_apps (gated), not find_file.
+    assert Jarvis._is_apps_query("what's the largest application installed on this computer")
+    assert Jarvis._is_apps_query("which apps take up the most space")
+    assert not Jarvis._is_apps_query("open the calculator app")
+    assert not Jarvis._is_apps_query("what is the capital of France")
+
+    class _Runner:
+        def __init__(self): self.ran = []
+        def available(self): return [("largest_apps", "largest apps")]
+        def perform(self, name, arg=""): return f"ran {name}"
+        def propose(self, name, arg=""): self.ran.append((name, arg)); return (f"ran {name}", None)
+    with Brain(cycles_per_step=50) as brain:
+        r = _Runner()
+        j = Jarvis(Translator(_QLLM()), MemoryStore(), brain, action_runner=r)
+        out = j._run_actions([("largest_apps", "")], "what's the biggest app on my mac")
+        assert r.ran == [("largest_apps", "")] and "ran largest_apps" in out[0]
+        r.ran.clear()
+        assert j._run_actions([("largest_apps", "")], "open the calculator app") == []   # gated out

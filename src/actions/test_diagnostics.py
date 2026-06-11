@@ -150,3 +150,31 @@ def test_net_report_composes_and_is_scope_honest() -> None:
     assert "Spotify" in rep and "KB/2s" in rep                  # top consumer named with a rate
     assert "Wi-Fi: 802.11ac" in rep and "468" in rep           # link quality surfaced
     assert "not JARVIS" in rep and "can't see your router" in rep   # scope-honest verdict
+
+
+# ── installed-apps disk sensor (ADR-047) ──
+def test_parse_du_sizes_handles_spaces_and_drops_root() -> None:
+    raw = ("52000000\t/Applications\n"                          # the root total — dropped
+           "38400000\t/Applications/League of Legends.app\n"   # name with spaces
+           "1200000\t/Applications/Cursor.app\n"
+           "500\t/Applications/Utilities\n")
+    out = diagnostics.parse_du_sizes(raw, "/Applications")
+    assert out[0] == ("League of Legends.app", 38400000)        # spaces preserved, sorted desc
+    assert ("/Applications", 52000000) not in out and len(out) == 3
+    assert diagnostics.parse_du_sizes("", "/Applications") == []
+
+
+def test_largest_apps_report_ranks_and_is_scope_honest() -> None:
+    gb = 1048576                                                # 1 GB in KB, for clean assertions
+    def spawn(argv, **kw):
+        assert argv[:2] == ["du", "-k"]                         # read-only du, via the seam
+        return type("R", (), {"stdout": f"{60*gb}\t/Applications\n"
+                              f"{40*gb}\t/Applications/League of Legends.app\n"
+                              f"{2*gb}\t/Applications/Cursor.app\n", "returncode": 0})()
+    rep = diagnostics.largest_apps_report(spawn)
+    assert "League of Legends: 40.0 GB" in rep and "Cursor: 2.0 GB" in rep
+    assert "The largest is League of Legends" in rep
+    assert "/Applications only" in rep                          # scope-honest
+    # failure path
+    assert diagnostics.largest_apps_report(
+        lambda *a, **k: (_ for _ in ()).throw(OSError("boom"))).startswith("Couldn't measure")
