@@ -126,7 +126,7 @@ Safety isn't a feature here; it's the architecture. The guarantees:
 ## What it can do today
 
 Each capability links to the Architecture Decision Record (ADR) that documents how and why it was built.
-Released in tagged increments **v1.0.0 → v1.14.4**; **494 automated tests** currently pass.
+Released in tagged increments **v1.0.0 → v1.14.6**; **498 automated tests** currently pass.
 
 ### Conversation & memory
 - **Chat in plain English** — ask questions, give it facts to remember. ([ADR-007], [ADR-008])
@@ -145,8 +145,9 @@ Released in tagged increments **v1.0.0 → v1.14.4**; **494 automated tests** cu
 - **Consent state machine** — a non-blocking Approve/Deny system; risky actions wait for your click and
   never freeze the assistant. ([ADR-020])
 - **GUI automation** — it can actually click buttons, move sliders, and toggle checkboxes in other apps
-  via macOS Accessibility, always behind the consent gate. Uses a stable code-signing identity so the
-  macOS permission grant survives app rebuilds. ([ADR-021], [ADR-024])
+  via macOS Accessibility, always behind the consent gate, and **only when you actually ask to operate a
+  control** (a plain chat turn can never trigger a stray click). Uses a stable code-signing identity so
+  the macOS permission grant survives app rebuilds. ([ADR-021], [ADR-024], [ADR-044])
 - **Self-navigation recipes** — higher-level skills like "set brightness to 40%" that open the right
   settings pane and operate the control themselves. ([ADR-022], [ADR-023])
 - **File search** — find files by name via Spotlight, ranked for relevance. ([ADR-025])
@@ -160,8 +161,9 @@ Released in tagged increments **v1.0.0 → v1.14.4**; **494 automated tests** cu
   [ADR-039], [ADR-042])
 - **Device-state sensors with honest scope** — "why isn't my volume working?" gets the actual sound
   state (level, mute, mic), and every report names what it measured so a clean CPU report can never
-  masquerade as "your audio is fine". Rule: any actuator the assistant has, it can also read back.
-  ([ADR-040])
+  masquerade as "your audio is fine". Rule: any actuator the assistant has, it can also read back. A
+  neutral data question ("which app uses the most memory?") gets the data without an unsolicited
+  "nothing looks wrong" verdict — that only appears when you ask about health. ([ADR-040], [ADR-045])
 
 ### Learning how you work (persona)
 - **Continuous persona learning** — over idle moments it learns your stable *style* and *focus* (e.g.
@@ -292,7 +294,7 @@ sh src/ui/restart.sh                   # launch the daemon + app (🔵 appears i
 python3 -m playwright install chromium # one-time ~160MB; without it the web layer stays static-only
 
 # 5. Run the tests
-cd src && python3 -m pytest .          # 494 passing
+cd src && python3 -m pytest .          # 498 passing
 ```
 
 > The reference folders (`OpenNARS-for-Applications/`, `NARS-GPT/`, `OmniGlass/`) and your model weights
@@ -382,11 +384,11 @@ editing working code. Common extension points:
 ## Project conventions
 - **Source of truth for scope:** [`docs/prd/PRD.md`](docs/prd/PRD.md).
 - **Engineering rules:** [`CLAUDE.md`](CLAUDE.md) + [`standards/`](standards/).
-- **Architecture history:** [`docs/adrs/`](docs/adrs/) — **ADR-001 through ADR-043** (ADR-029 is
+- **Architecture history:** [`docs/adrs/`](docs/adrs/) — **ADR-001 through ADR-045** (ADR-029 is
   intentionally skipped; a cloud/Drive integration was proposed and dropped to preserve the local-first
   air-gap. ADR-038 is drafted on branch `adr-038-omniglass-draft`, merge gated on field-test review).
   Each module also has its own `README.md`.
-- **Releases:** annotated tags `v1.0.0` → `v1.14.4`, each tied to its ADR(s).
+- **Releases:** annotated tags `v1.0.0` → `v1.14.6`, each tied to its ADR(s).
 
 ---
 
@@ -445,3 +447,6 @@ separately are governed by their own (MIT) licenses.
 [ADR-040]: docs/adrs/ADR-040-sensor-actuator-parity.md
 [ADR-041]: docs/adrs/ADR-041-conversational-history.md
 [ADR-042]: docs/adrs/ADR-042-research-floor.md
+[ADR-043]: docs/adrs/ADR-043-onboarding-distribution.md
+[ADR-044]: docs/adrs/ADR-044-ax-actuation-intent-gate.md
+[ADR-045]: docs/adrs/ADR-045-report-verdict-on-health-intent.md
