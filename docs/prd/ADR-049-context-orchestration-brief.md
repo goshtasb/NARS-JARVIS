@@ -78,6 +78,37 @@ existing KPI/calibration precedent). Thresholds are tunable dials.
   to the bound shortcut. Hallucination surface neutralized.
 
 ---
-*Phase 1 (boundary defense) cleared across vectors 1–5: data scope (content-blind, NSWorkspace), JtBD
-(one-tap routine orchestration), NARS pipeline (quantized threshold-crossings only), TCC containment
-(three guided one-time grants), and the measured go-gate above. Build executes post-2026-06-16.*
+## 11. Validated Implementation Roadmap (locked, execute in order)
+Phase-1 deconstruction (multiple rounds) hardened the design against environmental chaos. The build
+sequence is now fixed — **the durability foundation precedes the async engine** (building async on
+volatile/cwd-relative state is throwaway code):
+
+1. **Durability foundation.** Anchor `jarvis.db` to an absolute path (`~/Library/Application Support/…`
+   or source-anchored — never the cwd-relative default that produced the stray root db); add a
+   `routine_journal` WAL in `jarvis.db`. **Ordering invariant:** read the inverse (pre-state) →
+   SQLite-COMMIT it → *then* actuate → then record result. **Boot-time recovery:** scan for non-terminal
+   atomic routines → replay rollback from persisted inverses (the ADR-011 replay + ADR-031
+   crash-orphan-recovery pattern, applied to physical state). A `launchd` LaunchAgent pins
+   WorkingDirectory + absolute env + auto-restart.
+2. **Application-boundary enforcement.** TCC-requiring actuation (System Events automation, Accessibility)
+   and the `AEDeterminePermissionToAutomateTarget` pre-flight live **strictly in the foreground Swift
+   app** (which holds the grants and can surface prompts), **never the headless launchd daemon** (which
+   would be silently TCC-shadow-banned). The daemon runs only the zero-TCC tier + reasoning, and
+   delegates TCC actuation to the app via the existing actuate-event channel. **Architectural invariant.**
+3. **Deterministic async barrel.** Verify the END STATE, not transition events (`didLaunch` is
+   cold-start-only → warm-start would hang). Pre-resolve the URI scheme to a specific handler Bundle ID
+   via `LSCopyDefaultApplicationURLForURL` / `NSWorkspace.urlForApplication(toOpen:)`, then poll
+   `runningApplications` + `isFinishedLaunching` for THAT bundle. Tri-state: `open` nonzero → `FAILED`
+   immediately; warm-start present → `VERIFIED` instantly; resolved bundle never appears after open-0 →
+   fast `FAILED` (helper/quarantine case); appeared-but-never-finished → generous ~30s backstop →
+   `FAILED`. No event dependency, no warm-start hang, no activate race.
+4. **Consent & rollback integration.** Cooperative, single-threaded, tick-advanced routine state machine
+   (the ADR-024 `_drive_agent` pattern → no races by construction). Irreversible launches fire
+   concurrently/best-effort; the reversible atomic core commits transactionally (rollback on any required
+   failure, window minimized by the cached capability pre-flight). One proportional consent prompt per
+   multi-step/irreversible routine; reversible single primitives stay ungated.
+
+*Phase 1 cleared across all vectors: data scope (content-blind, NSWorkspace), JtBD (one-tap routine
+orchestration), NARS pipeline (quantized threshold-crossings), TCC containment + app-boundary invariant,
+durability WAL, deterministic URI→bundle verification, and the measured go-gate. v1.15.0 shipped the
+synchronous bootstrap (`set_volume`, ADR-049); the four-step roadmap above is the post-bake build order.*
