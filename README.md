@@ -18,7 +18,25 @@ It pairs two different kinds of "brain":
 
 ---
 
+## ⚡ Install (one command)
+
+> Requires a Mac with **Apple Silicon** (M1 or newer) and a few GB of free disk for the local model.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/goshtasb/NARS-JARVIS/main/install.sh | sh
+```
+
+The installer sets up an isolated Python environment, fetches a **prebuilt, SHA256-verified** ONA
+reasoner binary (no compiler needed), **asks before each model download** (chat 7B ~4.7 GB / embedder /
+voice — each skippable), walks you through the macOS permission grants no script should automate, and
+launches the menu-bar app (🔵). Everything runs on your machine.
+
+Prefer to see every step, or build from source? → [Getting started](#getting-started).
+
+---
+
 ## Table of contents
+- [⚡ Install (one command)](#-install-one-command)
 - [Who is this for?](#who-is-this-for)
 - [The big idea, in plain language](#the-big-idea-in-plain-language)
 - [Safety first (why you can trust it on your machine)](#safety-first-why-you-can-trust-it-on-your-machine)
@@ -364,7 +382,7 @@ editing working code. Common extension points:
 ## Project conventions
 - **Source of truth for scope:** [`docs/prd/PRD.md`](docs/prd/PRD.md).
 - **Engineering rules:** [`CLAUDE.md`](CLAUDE.md) + [`standards/`](standards/).
-- **Architecture history:** [`docs/adrs/`](docs/adrs/) — **ADR-001 through ADR-042** (ADR-029 is
+- **Architecture history:** [`docs/adrs/`](docs/adrs/) — **ADR-001 through ADR-043** (ADR-029 is
   intentionally skipped; a cloud/Drive integration was proposed and dropped to preserve the local-first
   air-gap. ADR-038 is drafted on branch `adr-038-omniglass-draft`, merge gated on field-test review).
   Each module also has its own `README.md`.
