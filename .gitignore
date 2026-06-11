@@ -23,3 +23,10 @@ src/sentinel/.sensor.bin
 
 # compiled menu-bar app bundle (built on demand via ui/build.sh)
 src/ui/build/
+
+# macOS junk
+.DS_Store
+
+# local telemetry/output artifacts
+*.csv
+nohup.out
