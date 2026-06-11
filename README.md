@@ -233,10 +233,21 @@ Dependencies flow inward toward `shared/`; modules never reach into each other's
 
 ## Getting started
 
-> **Platform:** macOS (Apple Silicon recommended). It uses Accessibility, the menu bar, and `say`.
-> **You will need:** Xcode Command Line Tools, Python 3, and a **local GGUF chat model** you download
-> yourself (e.g. a 7B such as Qwen2.5-7B-Instruct). Expect to keep several GB of RAM free for the model
-> (observed ~4.5 GB resident for a 7B). Everything runs offline.
+> **Platform:** macOS on **Apple Silicon** (the local 7B needs Metal; Intel would be unusably slow,
+> so it isn't pretended at). Expect ~4.5 GB of RAM resident for the model. Everything runs offline.
+
+### The one-command way
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/goshtasb/NARS-JARVIS/main/install.sh | sh
+```
+
+That clones the repo, sets up an isolated Python venv, fetches a **prebuilt, SHA256-verified ONA
+reasoner binary** from the release (no C toolchain needed), asks before each model download (chat 7B
+~4.7 GB / embedder / voice — your bandwidth, your call), then walks you through the macOS permission
+grants no script can (or should) automate, and launches the menu-bar app.
+
+### The manual way
 
 ```sh
 # 1. Python dependencies (local inference + PDF reading; both fully offline)

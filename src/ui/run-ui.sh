@@ -4,6 +4,8 @@
 set -e
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
+# Prefer the installer-created venv (ADR-043) so the daemon uses the isolated deps; no venv -> system.
+[ -x "$root/.venv/bin/python3" ] && PATH="$root/.venv/bin:$PATH"
 
 LLM="$root/models/qwen2.5-7b-instruct-q4_k_m.gguf"          # prefer the 7B brain (ADR-007)
 [ -f "$LLM" ] || LLM="$root/models/qwen2.5-3b-instruct-q4_k_m.gguf"
