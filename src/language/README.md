@@ -12,6 +12,11 @@ is grounded via **local embeddings** + a dedup threshold (PRD R1).
 - **Model shells (require local GGUF):** `llm.py` (`LocalLLM`, GBNF-constrained generation),
   `embed.py` (`LocalEmbedder`, nomic-embed-text). `llama_cpp` is imported lazily, so the pure
   layers import and test without any model.
+- **Prompt-state cache (v1.14.4):** the daemon interleaves different prompt families (converse,
+  persona extractor, research, voice) on one `Llama` instance, which used to force a full
+  ~1.9k-token prefill on nearly every chat turn (measured live: 10.2 s cold vs 1.3 s warm).
+  `LocalLLM` now installs a capacity-bounded `LlamaRAMCache` keyed by prompt prefix (default 1 GB;
+  `NARS_JARVIS_PROMPT_CACHE_MB=0` disables it on RAM-tight hosts).
 
 ## Local setup (the model step runs on your machine)
 ```sh

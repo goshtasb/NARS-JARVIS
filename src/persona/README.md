@@ -27,7 +27,10 @@ and `jarvis.converse()` prepends `render_persona(...)` to the system prompt.
   the prompt-injection bound (untrusted scraped text can only nudge known dimensions). `render_persona`.
 - **`extract.py`** (functional core) — the 7B emits **JSON** (never raw Narsese); code validates each
   item against `vocab` and renders the term. Malformed/out-of-vocab is dropped, so the NAR only ever
-  receives clean statements. `generate` is injected (testable without a model).
+  receives clean statements. `generate` is injected (testable without a model). The prompt carries
+  **few-shot semantic anchoring** (v1.11.1) — colloquial phrasings mapped to vocabulary pairs, plus a
+  negative anchor — measured on the live 7B at **94.1% recall / 100% precision** (was 58.8%/83.3%) via
+  the opt-in eval harness `test_extractor_recall.py` (`RUN_RECALL_EVAL=1`, loads the real GGUF).
 - **`store.py`** — `PersonaStore`: the O(1) `persona_events_pending` buffer + the `persona_concepts`
   checkpoint `(term, frequency, confidence)` that doubles as the injection source and the replay source;
   `delete(term)` for user-initiated forgetting.
