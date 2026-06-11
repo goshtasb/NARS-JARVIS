@@ -33,6 +33,17 @@ class LocalLLM:
         n_gpu_layers = int(os.environ.get("NARS_JARVIS_GPU_LAYERS", "-1"))
         self._grammar = LlamaGrammar.from_file(str(_GRAMMAR_PATH))
         self._llm = Llama(model_path=path, n_ctx=n_ctx, n_gpu_layers=n_gpu_layers, verbose=False)
+        # Prompt-state cache (the latency fix): the daemon interleaves DIFFERENT prompts on this one
+        # instance (converse, persona extractor, research decide/synth, voice), and llama.cpp's
+        # built-in reuse only matches the IMMEDIATELY PREVIOUS call — so every interleave forced a
+        # full ~1.9k-token prefill on the next chat turn (measured live: 10.2s cold vs 1.3s warm).
+        # LlamaRAMCache keeps KV states per prompt family; returning to a cached prefix skips its
+        # prefill (measured: 3.1s -> 0.8s on the 3B after a simulated drain). Capacity-bounded; set
+        # NARS_JARVIS_PROMPT_CACHE_MB=0 to disable on RAM-tight hosts.
+        cache_mb = int(os.environ.get("NARS_JARVIS_PROMPT_CACHE_MB", "1024"))
+        if cache_mb > 0:
+            from llama_cpp import LlamaRAMCache
+            self._llm.set_cache(LlamaRAMCache(capacity_bytes=cache_mb * 1024 * 1024))
 
     def generate(self, system_prompt: str, sentence: str) -> str:
         """Generate the raw, GBNF-constrained claim JSON for one sentence (temp 0)."""
