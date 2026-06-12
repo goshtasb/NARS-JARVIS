@@ -106,3 +106,21 @@ if __name__ == "__main__":
     test_dispatch_enqueue_batch_queues_valid_and_rejects_unknown()
     test_dispatch_briefing_dismiss_done_purges()
     print("service/test_overnight_runner: OK")
+
+
+class _ErrRunner:
+    """Stand-in whose read-only action REPORTS an error as an [ERROR:] string (never raises) — the
+    exact case that was silently stamped 'done' before the fix."""
+    def perform(self, name, arg=""):
+        return "[ERROR: \"x.pdf\" is a local file or non-URL, not a web page. Use summarize_file.]"
+
+
+def test_error_string_result_is_marked_failed_not_done() -> None:
+    # The silent-failure bug: a safe action returning an [ERROR:] string must land as FAILED, not done.
+    q, led = OvernightQueue(), HeldLedger()
+    q.enqueue("read_article", "/Users/me/doc.pdf")          # safe (query) -> runs, returns [ERROR]
+    runner = OvernightRunner(q, led, _ErrRunner(), lambda k, b: None)
+    runner.start(); _drain(runner)
+    row = q.list_all()[0]
+    assert row["status"] == "failed"                        # not silently "done"
+    assert row["result"].startswith("[ERROR")              # the error is preserved + surfaced

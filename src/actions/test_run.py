@@ -181,3 +181,17 @@ def test_audio_status_runs_readonly_osascript() -> None:
     out = perform("audio_status", spawn=fake)
     assert calls == [["osascript", "-e", "get volume settings"]]
     assert "Sound state:" in out and "30/100" in out
+
+
+def test_read_article_local_path_gives_actionable_error() -> None:
+    # The routing bug: a local document sent to the WEB reader -> a clear pointer to summarize_file,
+    # not a jargon SSRF error, and WITHOUT spawning the web subprocess.
+    calls = []
+    def fake(argv, **kw):
+        calls.append(argv); return type("R", (), {"stdout": "", "returncode": 0})()
+    out = perform("read_article", "/Users/me/PRD.pdf", spawn=fake)
+    assert "[ERROR" in out and "summarize" in out.lower() and "local file" in out.lower()
+    assert calls == []                                      # never spawned web.py for a local path
+    # a real URL still flows through to the (faked) web subprocess
+    perform("read_article", "https://example.com/x", spawn=fake)
+    assert calls and calls[0][2] == "read"

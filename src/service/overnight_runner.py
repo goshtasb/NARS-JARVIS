@@ -54,8 +54,12 @@ class OvernightRunner:
                 self._queue.mark(tid, "failed", result=str(exc))
                 self._emit("overnight_progress", {"id": tid, "action": name, "status": "failed"})
                 return
-            self._queue.mark(tid, "done", result=result)
-            self._emit("overnight_progress", {"id": tid, "action": name, "status": "done"})
+            # A read-only action REPORTS errors as an `[ERROR: …]` string (it never raises), so the
+            # except above can't catch them. Without this check a failed task was stamped "done" and the
+            # error silently swallowed — the exact "I queued it and nothing happened" bug.
+            status = "failed" if result.lstrip().startswith("[ERROR") else "done"
+            self._queue.mark(tid, status, result=result)
+            self._emit("overnight_progress", {"id": tid, "action": name, "status": status})
         else:                                               # held for explicit morning approval
             reason = "unknown action" if action is None else f"{action.kind} requires approval"
             self._ledger.hold(tid, name, arg, reason=reason)

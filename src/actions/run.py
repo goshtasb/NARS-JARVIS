@@ -33,6 +33,12 @@ def _web(name: str, arg: str, spawn: Callable) -> str:
     process. Returns the child's stdout (an `[ERROR: …]` string on the child's side) or an error if
     the fetch times out. Never raises."""
     mode = _WEB_MODES[name]
+    # read_article / browse_page are the WEB readers (ADR-034); a LOCAL file path can't be fetched and
+    # would die in the SSRF guard with a jargon error. Catch it early with an actionable message — the
+    # user almost certainly wants the document primitive (summarize_file / read_file, ADR-032).
+    if name in ("read_article", "browse_page") and not arg.strip().lower().startswith(("http://", "https://")):
+        return (f"[ERROR: \"{arg}\" is a local file or non-URL, not a web page. To process a document "
+                "(PDF, text, markdown…), use \"summarize a document\" (summarize_file) instead.]")
     try:
         result = spawn([sys.executable, _WEB_PY, mode, arg],
                        capture_output=True, text=True, timeout=_WEB_TIMEOUT)
