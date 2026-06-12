@@ -14,7 +14,7 @@ swiftc -O \
   "$here/JarvisClient.swift" "$here/AudioRecorder.swift" "$here/HotKey.swift" \
   "$here/AXPermission.swift" "$here/AXSerializer.swift" "$here/AXActuator.swift" \
   "$here/ChatView.swift" "$here/HabitsView.swift" "$here/UnifiedCanvasView.swift" \
-  "$here/MainTabViewController.swift" "$here/AppDelegate.swift" "$here/main.swift" \
+  "$here/DesignSystem.swift" "$here/WorkspaceController.swift" "$here/AppDelegate.swift" "$here/main.swift" \
   -o "$macos/JARVIS"
 
 cat > "$app/Contents/Info.plist" <<'PLIST'

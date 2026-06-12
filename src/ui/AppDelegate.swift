@@ -11,9 +11,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private let chat = ChatViewController()
     private let habits = HabitsViewController()
     private let unifiedCanvas = UnifiedCanvasViewController()  // ADR-053: Now / Scheduled / Activity
-    // ADR-055: the three panes now live as tabs in ONE workspace window (no more transient popovers).
-    private var mainTabs: MainTabViewController?
-    private var mainWindow: NSWindow?                     // retained; close hides, menu-bar reopens
+    // ADR-055/design: the three panes live in ONE workspace window with a unified toolbar.
+    private var workspace: WorkspaceController!
     private var client: JarvisClient?
     private var sockPath = ""                     // ADR-017: remembered for auto-reconnect
     private let recorder = AudioRecorder()
@@ -39,6 +38,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         statusItem.button?.target = self
         statusItem.button?.action = #selector(statusClick)
         statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])  // right-click -> quit menu
+        workspace = WorkspaceController(panes: [
+            .init(vc: chat, symbol: "message", label: "Chat"),
+            .init(vc: unifiedCanvas, symbol: "square.grid.2x2", label: "Canvas"),
+            .init(vc: habits, symbol: "person.crop.circle", label: "Cognitive Identity"),
+        ])
+        workspace.onStop = { [weak self] in self?.emergencyStop() }
         chat.onQuit = { NSApp.terminate(nil) }
         chat.onStop = { [weak self] in self?.emergencyStop() }
         chat.onConsent = { [weak self] id, approved in    // ADR-021: inline Approve/Deny -> daemon
@@ -134,8 +139,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         _log("UI: \(reconnect ? "reconnected" : "connected") to daemon at \(sockPath)")
     }
 
-    private func setConnected(_ up: Bool) {            // main thread — reflect IPC state in the menu bar
+    private func setConnected(_ up: Bool) {            // main thread — reflect IPC state in the menu bar + toolbar
         statusItem?.button?.title = up ? "🔵 JARVIS" : "⚪ JARVIS"
+        workspace?.setConnected(up)
     }
 
     // ── push-to-talk: click-to-toggle from the Chat tab (no global hotkey -> no conflicts) ──
@@ -197,49 +203,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
     }
 
-    /// ADR-055: build the single workspace window — one NSWindow hosting the three panes as tabs.
-    /// Standard window level (not floating), does NOT hide on deactivate (a workspace, not a sticky
-    /// note), retained across close so the menu bar reopens it. The panes are dropped in UNCHANGED.
-    private func buildMainWindow() {
-        let tabs = MainTabViewController()
-        chat.preferredContentSize = NSSize(width: 460, height: 360)
-        unifiedCanvas.preferredContentSize = NSSize(width: 860, height: 620)
-        habits.preferredContentSize = NSSize(width: 460, height: 440)
-        let panes: [(NSViewController, String, String)] = [
-            (chat, "Chat", "bubble.left"),
-            (unifiedCanvas, "Canvas", "square.grid.2x2"),
-            (habits, "Cognitive Identity", "brain.head.profile"),
-        ]
-        for (vc, label, symbol) in panes {
-            let item = NSTabViewItem(viewController: vc)
-            item.label = label
-            item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
-            tabs.addTabViewItem(item)
-        }
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 860, height: 620),
-                         styleMask: [.titled, .closable, .miniaturizable, .resizable],
-                         backing: .buffered, defer: false)
-        w.title = "JARVIS"
-        w.contentViewController = tabs
-        w.isReleasedWhenClosed = false           // close hides; reopen via the menu bar
-        w.center()
-        mainTabs = tabs
-        mainWindow = w
-    }
-
-    /// Left-click / "Open JARVIS": toggle-or-focus the workspace window. `.accessory` apps must
-    /// activate to bring a window forward.
-    @objc private func openMain() {
-        if mainWindow == nil { buildMainWindow() }
-        guard let w = mainWindow else { return }
-        if w.isVisible && w.isKeyWindow {        // already focused -> a second click hides it
-            w.orderOut(nil)
-            return
-        }
-        w.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        if mainTabs?.selectedTabViewItemIndex == 0 { chat.focusInput() }   // land in the chat input
-    }
+    /// Left-click / "Open JARVIS": toggle-or-focus the one workspace window.
+    @objc private func openMain() { workspace.toggle() }
 
     @objc private func quitApp() { NSApp.terminate(nil) }
 
