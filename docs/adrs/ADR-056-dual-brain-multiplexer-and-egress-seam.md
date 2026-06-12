@@ -21,8 +21,23 @@ the backend proves it juggles them invisibly):
     structured output is byte-shape-identical to OpenAI's.
   - `make_claim_source()` now returns the Multiplexer (default private → behavior unchanged).
   - Suite 558 → 571.
-- **Remaining:** socket wiring (per-request key from the signed client) + the UI toggle / settings pane /
-  egress ledger. **Not started** (deliberately deferred per the UI-handoff constraint).
+- **Phase 3 — socket wiring + live concurrency check + the full client UI** — landed:
+  - `session.py` — `cloud_ask` (General Mode, off-loop CloudJob, per-request key, async `cloud_answer`
+    event) + `egress_log` (Privacy Receipts). Registered in extra_fds/handle_fd.
+  - **LIVE-FIRE concurrency check passed** (`test_cloud_concurrency.py`): the REAL daemon over a REAL
+    socket, a 1.5 s cloud call in flight — 21 concurrent `status` round-trips, max **3.7 ms**, median
+    **0.4 ms**. The select loop never blocked → the Sentinel's sensor fd (same loop) cannot drop a frame.
+    A second test proves a cloud failure becomes a recovery event, not a crash.
+  - Swift UI: `CloudMode.swift` (Keychain key storage, one-time disclosure sheet framed by negative
+    space, key-entry sheet); the `[🔒 On-device] / [☁️ Cloud]` composer toggle with idle auto-revert;
+    the inline egress footer in Chat; the Privacy Receipts section in the Identity tab. All three surfaces
+    render-verified (PNG).
+  - NFR-1/2 amended in the README + `language/llm.py` header (no silent edits).
+  - Suite 558 → 573.
+- **Remaining (follow-ons, tracked):** cloud claim-extraction → local NARS ingest (a chained off-loop
+  job — today the cloud answer feeds persona-observe but not yet ONA); the "Default brain" power-user
+  setting (deliberately withheld per ratification — "let the power users complain first"); cloud-without-
+  any-local-model (today the Multiplexer wraps a local model; cloud requires a GGUF present).
 
 **Ratified rulings (binding):**
 - **Key delivery:** the signed Swift client passes the API key **per-request over the local socket**;

@@ -61,13 +61,14 @@ final class HabitsViewController: NSViewController {
         let habits = [habitRow(["description": "You open Slack around 9 AM most weekdays", "state": "armed", "key": "h1"]),
                       habitRow(["description": "You switch to Spotify after lunch", "state": "learning", "key": "h2"])]
         let persona = [personaRow(["phrase": "Prefers terse answers with code first", "state": "Active", "term": "p1"])]
-        rebuild(mirror: mirror, habits: habits, persona: persona)
+        let receipts = [receiptRow(["provider": "openai", "asked": "best fixtures today", "bytes": 412, "t": Date().timeIntervalSince1970])]
+        rebuild(mirror: mirror, habits: habits, persona: persona, receipts: receipts)
     }
 
     @objc func refresh() {
         guard !refreshing else { return }
         refreshing = true
-        var mirror = "", habits: [NSView] = [], persona: [NSView] = []
+        var mirror = "", habits: [NSView] = [], persona: [NSView] = [], receipts: [NSView] = []
         let group = DispatchGroup()
         group.enter(); client?.call("usage", "7") { _, b in mirror = (b["text"] as? String) ?? ""; group.leave() }
         group.enter(); client?.call("habits") { [weak self] _, b in
@@ -76,13 +77,16 @@ final class HabitsViewController: NSViewController {
         group.enter(); client?.call("persona_list") { [weak self] _, b in
             let rows = (b["rows"] as? [[String: Any]]) ?? []
             persona = rows.compactMap { self?.personaRow($0) }; group.leave() }
+        group.enter(); client?.call("egress_log") { [weak self] _, b in    // ADR-056: Privacy Receipts
+            let rows = (b["receipts"] as? [[String: Any]]) ?? []
+            receipts = rows.compactMap { self?.receiptRow($0) }; group.leave() }
         group.notify(queue: .main) { [weak self] in
             self?.refreshing = false
-            self?.rebuild(mirror: mirror, habits: habits, persona: persona)
+            self?.rebuild(mirror: mirror, habits: habits, persona: persona, receipts: receipts)
         }
     }
 
-    private func rebuild(mirror: String, habits: [NSView], persona: [NSView]) {
+    private func rebuild(mirror: String, habits: [NSView], persona: [NSView], receipts: [NSView]) {
         column.arrangedSubviews.forEach { $0.removeFromSuperview() }
         column.addArrangedSubview(mirrorCard(mirror))
         column.addArrangedSubview(DS.sectionHeader("Learned habits — when & where you act"))
@@ -91,9 +95,43 @@ final class HabitsViewController: NSViewController {
         column.addArrangedSubview(DS.sectionHeader("Style & preferences"))
         if persona.isEmpty { column.addArrangedSubview(DS.text("No style learned yet — JARVIS infers it as you work.", 12, .regular, DS.label3)) }
         else { persona.forEach { column.addArrangedSubview($0) } }
+        // ── Data sovereignty: what of you has LEFT (the other half of "what JARVIS knows") ──
+        column.addArrangedSubview(DS.sectionHeader("What has left this Mac (Cloud mode)"))
+        if receipts.isEmpty {
+            column.addArrangedSubview(DS.text("Nothing has left this Mac this session. On-device questions never leave.", 12, .regular, DS.label3, wrap: true))
+        } else {
+            receipts.forEach { column.addArrangedSubview($0) }
+        }
         column.arrangedSubviews.forEach { v in
             v.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true
         }
+    }
+
+    /// A Privacy Receipt: plain language (what was asked, to whom), with the negative-space reassurance.
+    /// The byte count is a detail, not the headline.
+    private func receiptRow(_ r: [String: Any]) -> NSView {
+        let provider = (r["provider"] as? String) == "anthropic" ? "Claude" : "OpenAI"
+        let asked = (r["asked"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let bytes = (r["bytes"] as? Int) ?? Int((r["bytes"] as? Double) ?? 0)
+        let when = (r["t"] as? Double).map { ts -> String in
+            let f = DateFormatter(); f.dateFormat = "EEE h:mm a"
+            return f.string(from: Date(timeIntervalSince1970: ts))
+        } ?? ""
+        let card = DS.rounded(bg: DS.card, radius: 10, border: DS.separator)
+        let glyph = DS.symbol("cloud", 13, .medium, DS.accent)
+        let head = DS.text("\(when.isEmpty ? "" : when + " — ")Asked \(provider): “\(asked)”", 12.5, .medium, DS.label, wrap: true)
+        let sub = DS.text("Your habits, files & memory did not leave · \(bytes) bytes sent", 11, .regular, DS.label3, wrap: true)
+        let textCol = NSStackView(views: [head, sub]); textCol.orientation = .vertical; textCol.alignment = .leading; textCol.spacing = 2
+        let st = NSStackView(views: [glyph, textCol]); st.orientation = .horizontal; st.spacing = 9; st.alignment = .top
+        st.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(st)
+        NSLayoutConstraint.activate([
+            st.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
+            st.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
+            st.topAnchor.constraint(equalTo: card.topAnchor, constant: 9),
+            st.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -9),
+        ])
+        return card
     }
 
     // ── the Mirror card ──

@@ -29,6 +29,15 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
     private var verbs: [ActionPicker.Verb] = []
     private var hasMessages = false
 
+    // ── Dual-Brain (ADR-056): per-conversation brain mode. On-device is the resting state; Cloud is a
+    // deliberate, temporary escalation that auto-reverts (new conversation / relaunch). ──
+    private var brainToggle: DSButton!
+    private var cloudMode = false
+    private var cloudProvider: CloudProvider { CloudPrefs.provider }
+    private var cloudThinkingRows: [Int: NSView] = [:]   // token -> the transient "thinking…" row
+    private var cloudIdleTimer: Timer?                    // decays the conversation back to On-device when idle
+    private static let cloudIdleRevert: TimeInterval = 300   // 5 min of no cloud use -> return home
+
     // friendly name · description · SF Symbol per catalog verb (design catalog table)
     private static let meta: [String: (String, String, String)] = [
         "summarize_file": ("Summarize a document", "Condense a local file into key points", "doc.text.magnifyingglass"),
@@ -143,6 +152,9 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
         let fieldBorder = DS.dynamic(light: NSColor(white: 0, alpha: 0.16), dark: NSColor(white: 1, alpha: 0.16))
         composer = DS.rounded(bg: DS.fieldBG, radius: 13, border: fieldBorder, borderWidth: 1)
         // all controls are 30×30 (design spec: .input-ctl / .send-btn)
+        // the brain toggle sits leftmost: [🔒 On-device] <-> [☁️ Cloud]. A tap escalates/returns.
+        brainToggle = DSButton("On-device", symbol: "lock.fill", variant: .secondary, size: 11.5) { [weak self] in self?.toggleBrain() }
+        brainToggle.toolTip = "On-device — your question never leaves this Mac. Tap to ask the Cloud."
         let plus = DSButton(nil, symbol: "plus", variant: .icon, square: 30, radius: 8) { [weak self] in self?.attach() }
         let slash = DSButton(nil, symbol: "line.diagonal", variant: .icon, square: 30, radius: 8) { [weak self] in self?.togglePicker() }
         pickerHost.orientation = .horizontal; pickerHost.spacing = 6
@@ -155,7 +167,7 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
         micBtn = DSButton(nil, symbol: "mic", variant: .icon, square: 30, radius: 8) { [weak self] in self?.onToggleVoice?() }
         sendBtn = DSButton(nil, symbol: "arrow.up", variant: .primary, square: 30, radius: 9) { [weak self] in self?.submit() }
 
-        let stack = NSStackView(views: [plus, slash, pickerHost, input, micBtn, sendBtn])
+        let stack = NSStackView(views: [brainToggle, plus, slash, pickerHost, input, micBtn, sendBtn])
         stack.orientation = .horizontal; stack.spacing = 4; stack.alignment = .centerY
         stack.translatesAutoresizingMaskIntoConstraints = false
         composer.addSubview(stack)
@@ -213,6 +225,14 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
             .init(name: "empty_trash", label: "Empty trash", desc: "Permanently delete trashed items", symbol: "trash", auto: false),
         ]
         picker.setVerbs(verbs); input.stringValue = "/"; showPicker("")
+    }
+
+    /// Headless preview of General Mode (cloud toggle engaged + a cloud answer with the egress footer).
+    func previewCloud() {
+        loadViewIfNeeded()
+        setCloudMode(true)
+        addUser("what's the capital of France?")
+        cloudAnswer(["ok": true, "provider": "openai", "text": "Paris is the capital of France."])
     }
 
     private func fetchVerbs() {
@@ -318,6 +338,10 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
         }
         let parts = line.split(separator: " ", maxSplits: 1).map(String.init)
         let head = parts[0].lowercased(), known = Self.known.contains(head)
+        // General Mode: a plain question (not a known REPL command) goes to the cloud brain, off-loop.
+        if cloudMode && !known {
+            sendToCloud(line); return
+        }
         let cmd = known ? head : "ask", arg = known ? (parts.count > 1 ? parts[1] : "") : line
         client.call(cmd, arg) { [weak self] _, body in
             DispatchQueue.main.async {
@@ -327,6 +351,109 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
                 }
             }
         }
+    }
+
+    // ── Dual-Brain: the toggle, the cloud send, and the answer footer ──
+    private func toggleBrain() {
+        if cloudMode { setCloudMode(false); return }                 // returning home is always one tap
+        let go = { [weak self] in self?.ensureKeyThenEngage() }
+        if CloudPrefs.disclosureShown { go() }                       // escalating: disclose once, then engage
+        else {
+            CloudUI.presentDisclosure(on: view.window, provider: cloudProvider) { accepted in
+                guard accepted else { return }
+                CloudPrefs.disclosureShown = true; go()
+            }
+        }
+    }
+
+    private func ensureKeyThenEngage() {
+        if (CloudKeychain.load(cloudProvider) ?? "").isEmpty {
+            CloudUI.presentKeyEntry(on: view.window, provider: cloudProvider) { [weak self] saved in
+                if saved { self?.setCloudMode(true) }
+            }
+        } else { setCloudMode(true) }
+    }
+
+    private func setCloudMode(_ on: Bool) {
+        cloudMode = on
+        loadViewIfNeeded()
+        brainToggle.titleField?.stringValue = on ? cloudProvider.display : "On-device"
+        brainToggle.setSymbol(on ? "cloud.fill" : "lock.fill")
+        brainToggle.titleField?.textColor = on ? DS.accent : DS.label
+        brainToggle.toolTip = on
+            ? "Cloud (\(cloudProvider.display)) — this turn leaves your Mac. Tap to return On-device."
+            : "On-device — your question never leaves this Mac. Tap to ask the Cloud."
+        if pinnedVerb == nil {
+            input.placeholderString = on ? "Ask \(cloudProvider.display)… (this turn leaves your Mac)"
+                                         : "Ask, or type / to run a job…"
+        }
+        cloudIdleTimer?.invalidate(); cloudIdleTimer = nil
+        if on { armCloudIdleRevert() }
+    }
+
+    /// Cloud is a temporary escalation — after a stretch of no cloud use, decay back to the safe default.
+    private func armCloudIdleRevert() {
+        cloudIdleTimer?.invalidate()
+        cloudIdleTimer = Timer.scheduledTimer(withTimeInterval: Self.cloudIdleRevert, repeats: false) {
+            [weak self] _ in self?.setCloudMode(false)
+        }
+    }
+
+    private func sendToCloud(_ text: String) {
+        guard let client = client else { return }
+        let key = CloudKeychain.load(cloudProvider) ?? ""
+        if key.isEmpty { setCloudMode(false); ensureKeyThenEngage(); return }   // key vanished -> re-prompt
+        armCloudIdleRevert()                        // fresh cloud activity resets the decay-home clock
+        let row = cloudThinkingRow()
+        client.call("cloud_ask", ["text": text, "key": key, "provider": cloudProvider.rawValue]) { [weak self] ok, body in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if !ok || (body["status"] as? String) != "thinking" {           // rejected before dispatch
+                    self.replaceThinking(row, token: nil)
+                    self.addAssistant(body["text"] as? String ?? "Couldn't reach the cloud brain.", error: true)
+                    return
+                }
+                if let token = body["token"] as? Int { self.cloudThinkingRows[token] = row }  // await the event
+            }
+        }
+    }
+
+    /// Called by AppDelegate when a `cloud_answer` event arrives (the off-loop reply).
+    func cloudAnswer(_ body: [String: Any]) {
+        loadViewIfNeeded()
+        let token = body["token"] as? Int
+        if let token, let row = cloudThinkingRows[token] { replaceThinking(row, token: token) }
+        let provider = (body["provider"] as? String).flatMap(CloudProvider.init(rawValue:)) ?? cloudProvider
+        if (body["ok"] as? Bool) == true {
+            let text = body["text"] as? String ?? ""
+            addRow(answerWithFooter(text, provider: provider), align: .leading)
+        } else {
+            // structured failure -> a recovery bubble, never a crash/hang
+            let err = body["error"] as? String ?? "The cloud call failed."
+            addAssistant("☁️ " + err, error: true)
+        }
+    }
+
+    private func cloudThinkingRow() -> NSView {
+        let v = bubble("Thinking… ☁️ \(cloudProvider.display)", bg: DS.fill(0.07), fg: DS.label2)
+        addRow(v, align: .leading)
+        return v.superview ?? v       // the wrap row inserted by addRow
+    }
+    private func replaceThinking(_ row: NSView, token: Int?) {
+        if let token { cloudThinkingRows[token] = nil }
+        row.removeFromSuperview()
+    }
+
+    /// An assistant bubble with the honest egress footer: which brain answered, and what stayed local.
+    private func answerWithFooter(_ s: String, provider: CloudProvider) -> NSView {
+        let b = bubble(s, bg: DS.fill(0.07), fg: DS.label)
+        let footer = DS.text("☁️ Answered by \(provider.display) · your memory, habits & files stayed on your Mac",
+                             11, .regular, DS.label2)
+        footer.translatesAutoresizingMaskIntoConstraints = false
+        let col = NSStackView(views: [b, footer])
+        col.orientation = .vertical; col.alignment = .leading; col.spacing = 4
+        col.translatesAutoresizingMaskIntoConstraints = false
+        return col
     }
 
     private func handleIntent(_ body: [String: Any]) {

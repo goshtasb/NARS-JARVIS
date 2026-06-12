@@ -81,11 +81,14 @@ they can confidently make things up. NARS-JARVIS is designed differently around 
    patterns in what you actually do ("you mute audio around 4 PM on weekdays when Zoom is open") and,
    once it has seen the pattern enough times, *offers* to do it for you. You're always asked first.
 
-3. **Local and private.** The language model, the reasoner, your memory, and your habits all live on
-   your machine. The system is local-first with **one explicit, narrow exception**: a read-only web
-   search (ADR-034) that sends your *search query* to DuckDuckGo when you ask it to look something up.
-   No local files, memory, or telemetry are ever uploaded, and the autonomous execution sandbox stays
-   fully air-gapped (test-locked). See "Safety first" below for exactly what crosses the network.
+3. **Local and private by default.** The language model, the reasoner, your memory, and your habits all
+   live on your machine. The default is **On-device**, strictly local. Two opt-in exceptions exist, and
+   both are explicit: a read-only web search (ADR-034) that sends your *search query* to DuckDuckGo when
+   you ask it to look something up; and **General Mode** (ADR-056), where — only when you flip the
+   composer toggle to Cloud and supply your own API key — your *current question* is sent to your chosen
+   provider (OpenAI/Anthropic) through a single audited egress seam. Even then, your memory, habits,
+   files, and identity never leave (the seam structurally cannot read them), and every cloud turn is
+   logged as a Privacy Receipt. See "Safety first" below for exactly what crosses the network.
 
 ---
 
@@ -93,8 +96,13 @@ they can confidently make things up. NARS-JARVIS is designed differently around 
 
 Safety isn't a feature here; it's the architecture. The guarantees:
 
-- **Local-first, with one declared network egress.** No cloud account, no telemetry, no API keys. The
-  *only* outbound traffic is the ADR-034/039 read-only web research: it sends your search query (or a
+- **Local-first, with declared, opt-in network egress.** No telemetry, ever. By default the system is
+  air-gapped. **General Mode (ADR-056)** is the one place a cloud account/API key is involved, and it is
+  off by default: only when you toggle the composer to Cloud and supply your own key does your *current
+  question* go to your provider — through a single audited seam (`cloud_egress.py`) that structurally
+  cannot read your memory, habits, files, persona, or NARS graph (a test asserts it imports none of
+  them), logs every call as a Privacy Receipt, and reverts to On-device on idle. The other outbound
+  path is the ADR-034/039 read-only web research: it sends your search query (or a
   URL you point it at) to DuckDuckGo and reads result pages — nothing else leaves. It runs in an
   isolated subprocess (the brain process itself never opens a socket), only does GET requests (it cannot
   log in, submit forms, or write to the web), blocks private/loopback addresses (SSRF guard), and caps

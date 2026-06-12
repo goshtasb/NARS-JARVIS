@@ -1,8 +1,12 @@
 """Local LLM client (llama.cpp) — Imperative Shell (S-02). GBNF-constrained generation.
 
-Strictly local / air-gapped (NFR-1/2): no network at runtime. Requires `llama-cpp-python`
-and a local GGUF chat model. `llama_cpp` is imported lazily so the pure layers
-(schema/compiler/ground) import and test WITHOUT a model present. See README for setup.
+This is the LOCAL brain (Private Mode) — strictly local, no network: it talks only to an in-process
+llama.cpp model. Requires `llama-cpp-python` and a local GGUF chat model. `llama_cpp` is imported lazily
+so the pure layers (schema/compiler/ground) import and test WITHOUT a model present.
+
+NFR-1/2 note (amended by ADR-056): JARVIS is air-gapped by default and private-first. This module never
+touches the network. Cloud egress exists ONLY in General Mode, ONLY through the separate, audited
+`cloud_egress.py` seam, ONLY with an explicit user toggle + per-request key — never here. See README.
 """
 from __future__ import annotations
 
