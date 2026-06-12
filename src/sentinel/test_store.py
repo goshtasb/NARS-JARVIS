@@ -56,3 +56,14 @@ def test_usage_log_records_and_reads_recent() -> None:
     assert [e["bundle"] for e in recent] == ["com.todesktop.x", "com.tinyspeck.slackmacgap"]  # oldest first, filtered
     assert recent[0]["bucket"] == "dev" and recent[0]["created_at"] == 1000.0
     assert s.recent_usage(since=2000.0) == []                  # nothing newer
+
+
+def test_usage_retention_prunes_old_rows_deterministically() -> None:
+    # ADR-050: the 30-day window is enforced by elapsed-time pruning (boot + hourly), not a coincidence.
+    s = SentinelStore()
+    now = 1_781_000_000.0
+    s.record_usage("com.old", "dev", now - 40 * 86400)   # 40 days old
+    s.record_usage("com.new", "dev", now)                # current -> hourly gap triggers the prune
+    bundles = [e["bundle"] for e in s.recent_usage(now - 60 * 86400)]
+    assert "com.old" not in bundles and "com.new" in bundles   # old row dropped, new kept
+    assert s.prune_usage(now) == 0                              # idempotent — nothing left to prune

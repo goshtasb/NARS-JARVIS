@@ -72,6 +72,7 @@ class SentinelStore:
         self._cache: dict[str, str] = dict(
             self._db.execute("SELECT bundle_id, bucket FROM app_categories").fetchall()
         )
+        self._last_usage_prune = 0.0   # ADR-050: drives the deterministic (boot + hourly) usage prune
 
     def enabled(self) -> bool:
         """Whether the Flow Sentinel should auto-start at daemon boot (ADR-048). Defaults to **on**
@@ -81,14 +82,24 @@ class SentinelStore:
         return row is None or row[0] == "1"
 
     # ── passive-usage log (ADR-050 slice) ──
+    def prune_usage(self, now: float, retain_days: float = 30.0) -> int:
+        """Delete usage rows older than the retention window; returns rows removed. Deterministic —
+        the bounded-disk guarantee, not the old probabilistic `%50` heuristic."""
+        cur = self._db.execute("DELETE FROM usage_events WHERE created_at < ?",
+                              (now - retain_days * 86400,))
+        self._db.commit()
+        self._last_usage_prune = now
+        return cur.rowcount
+
     def record_usage(self, bundle: str, bucket: str, now: float, *, retain_days: float = 30.0) -> None:
-        """Append one foreground-app-switch observation (content-blind). Lazily prunes rows older than
-        `retain_days` so the log stays bounded without a separate job."""
+        """Append one foreground-app-switch observation (content-blind). The 30-day window is enforced
+        deterministically: prune on the FIRST write after boot (`_last_usage_prune == 0`) and at most
+        hourly thereafter — bounded frequency, not coincidence-of-timestamp."""
         self._db.execute("INSERT INTO usage_events(bundle, bucket, created_at) VALUES (?,?,?)",
                          (bundle, bucket, now))
-        if int(now) % 50 == 0:                          # cheap, occasional prune (not every insert)
-            self._db.execute("DELETE FROM usage_events WHERE created_at < ?", (now - retain_days * 86400,))
         self._db.commit()
+        if now - self._last_usage_prune >= 3600.0:      # boot (last=0) + hourly — deterministic
+            self.prune_usage(now, retain_days)
 
     def recent_usage(self, since: float) -> list[dict]:
         """All usage observations at/after `since` (unix seconds), oldest first. Read-only."""
