@@ -135,6 +135,7 @@ class Session:
         from retrieval.lexicon import LexiconStore     # ADR-056/Gate 2: the L2 namespace index
         self._lexicon = LexiconStore(db_path)          # populated at ingest (terms + aliases)
         self._cloud_loop_gap_max = 0.0                 # Gate 1: worst select()-loop gap during a cloud call
+        self._recall_jobs: dict[int, object] = {}      # ADR-056/Gate 2: fd -> in-flight off-loop Stage-4 worker
         self._token = 0
         self._shutdown = False                          # set by the `shutdown` command (kill switch)
         # ADR-048: AUTO-START the Flow Sentinel at boot if the user hasn't turned it off — so app-focus
@@ -898,19 +899,64 @@ class Session:
         return True, out
 
     def _recall(self, arg: object) -> tuple[bool, object]:
-        """ADR-056/Gate 2: answer a question by HYBRID RETRIEVAL over the live L2 graph, returning the
-        ONA-derived answer + its STAMP provenance (the 'Why' panel). On abstention (no local subgraph,
-        chain too deep, or no derivation) the body carries escalate:'cloud' so the client offers Ask Cloud
-        — never a crash or a hang. Stage 4 uses a FRESH ISOLATED ONA loaded with ONLY the top_k beliefs,
-        so the stamp is clean and the main brain is never polluted."""
+        """ADR-056/Gate 2: answer a question by HYBRID RETRIEVAL over the live L2 graph. Stages 0-3 (parse
+        -> resolve -> FTS traverse -> rank) run synchronously here in single-digit ms; Stage 4 (the ONA
+        derivation) runs OFF-LOOP in an ephemeral worker so a pathological deep query can't block the
+        select loop — it's SIGKILL'd at a hard deadline and escalated. The answer/abstention arrives as a
+        `recall_result` event. An immediate abstain (no local subgraph) returns synchronously."""
         query = str(arg).strip()
         if not query:
             return False, {"text": "usage: recall <question>"}
-        from brain import Brain
-        from retrieval.pipeline import recall
-        res = recall(query, store=self._store, lexicon=self._lexicon,
-                     brain_factory=lambda: Brain(cycles_per_step=300), now=time.time())
-        return True, res.to_body()
+        from retrieval.pipeline import plan
+        planned = plan(query, store=self._store, lexicon=self._lexicon, now=time.time())
+        self._token += 1
+        token = self._token
+        if planned is None:                              # Stages 0-3 abstained -> no worker, escalate now
+            return True, {"grounded": False, "escalate": "cloud", "token": token,
+                          "text": "I don't have enough local context to answer this — Ask Cloud?"}
+        beliefs, question = planned
+        from service.recall_job import RecallJob
+        job = RecallJob(beliefs, question, token)
+        self._recall_jobs[job.fileno()] = job
+        return True, {"status": "reasoning", "token": token}
+
+    def _read_recall(self, fd: int) -> None:
+        job = self._recall_jobs.get(fd)
+        if job is None:
+            return
+        res = job.read()
+        if res is None:
+            return                                       # still accumulating the worker's output
+        del self._recall_jobs[fd]
+        job.cleanup()
+        self._emit_recall(job.token, res)
+
+    def _emit_recall(self, token: int, res: dict) -> None:
+        """Enrich the worker's STAMP from L2 (main thread owns the store) and emit. No answer / no
+        provenance / a timeout-kill all collapse to the same honest abstention -> the Ask-Cloud bridge."""
+        if res.get("grounded") and res.get("answer"):
+            from retrieval.pipeline import enrich_provenance
+            prov = enrich_provenance(self._store, res["answer"], res.get("stamp", []))
+            if prov:
+                self._emit("recall_result", {"token": token, "grounded": True, "answer": res["answer"],
+                                             "truth": res.get("truth"), "provenance": prov})
+                return
+        self._emit("recall_result", {"token": token, "grounded": False, "escalate": "cloud",
+                                     "text": "I don't have enough local context to answer this — Ask Cloud?"})
+
+    # ── the time-bomb (hard 5s ceiling on the Stage-4 worker) ──
+    def next_recall_deadline(self):
+        """Soonest in-flight worker deadline (monotonic), so the daemon can wake select() exactly then."""
+        ds = [j.deadline for j in self._recall_jobs.values()]
+        return min(ds) if ds else None
+
+    def reap_expired_recalls(self, now: float) -> None:
+        """SIGKILL + reap any worker past its deadline (no zombies) and escalate that query to Cloud."""
+        for fd, job in list(self._recall_jobs.items()):
+            if job.expired(now):
+                job.kill()
+                del self._recall_jobs[fd]
+                self._emit_recall(job.token, {"grounded": False})   # timeout -> abstain -> Ask Cloud
 
     def _do_shutdown(self, arg: object) -> tuple[bool, object]:
         """Emergency stop / kill switch: the daemon loop exits after replying, closing the brains,
@@ -929,12 +975,15 @@ class Session:
             fds.append(sfd)
         fds += list(self._voice_jobs)
         fds += list(self._cloud_jobs)           # ADR-056: in-flight off-loop cloud calls
+        fds += list(self._recall_jobs)          # ADR-056/Gate 2: in-flight off-loop Stage-4 workers
         fds += self._overnight.extra_fds()      # ADR-052: the offloaded summary worker's stdout
         return fds
 
     def handle_fd(self, fd: int) -> None:
         if fd in self._voice_jobs:
             self._read_voice(fd)
+        elif fd in self._recall_jobs:            # ADR-056/Gate 2: drain a completed Stage-4 derivation
+            self._read_recall(fd)
         elif fd in self._cloud_jobs:             # ADR-056: drain a completed cloud answer
             self._read_cloud(fd)
         elif fd in self._overnight.extra_fds():  # ADR-052: drain the detached summary worker
@@ -971,6 +1020,9 @@ class Session:
             self._emit("alert", {"text": f"[sentinel error] {exc}"})
 
     def close(self) -> None:
+        for job in list(self._recall_jobs.values()):   # ADR-056/Gate 2: SIGKILL + reap any in-flight worker
+            job.cleanup()
+        self._recall_jobs.clear()
         self._flow.close()
         self._brain.close()
         self._lexicon.close()             # ADR-056/Gate 2: the L2 namespace index

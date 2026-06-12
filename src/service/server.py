@@ -48,7 +48,13 @@ class Daemon:
                 # The session contributes child-process fds (sensor pipe + any in-flight whisper
                 # jobs); we multiplex them alongside clients so ML never blocks the loop.
                 watch: list = [self._srv, *self._clients, *self._session.extra_fds()]
-                ready, _, _ = select.select(watch, [], [], self._poll)
+                # Wake by the soonest in-flight Stage-4 worker deadline (ADR-056/Gate 2) so the hard 5s
+                # time-bomb fires tightly, not just on the next poll tick.
+                timeout = self._poll
+                deadline = self._session.next_recall_deadline()
+                if deadline is not None:
+                    timeout = max(0.0, min(timeout, deadline - time.monotonic()))
+                ready, _, _ = select.select(watch, [], [], timeout)
                 for obj in ready:
                     if obj is self._srv:
                         self._accept()
@@ -67,6 +73,7 @@ class Daemon:
                 if self._last_iter and self._session.cloud_in_flight():
                     self._session.note_loop_gap(now - self._last_iter)
                 self._last_iter = now
+                self._session.reap_expired_recalls(now)   # ADR-056/Gate 2: SIGKILL workers past the 5s ceiling
                 if now - self._last_tick >= self._poll:
                     self._session.tick()
                     self._last_tick = now

@@ -165,26 +165,70 @@ def _req(sock, buf, rid, cmd, arg, timeout=6.0):
     return None
 
 
-def test_recall_grounds_a_real_question_against_live_sqlite(tmp_path):
-    """Gate 2 live wire: a question over the socket hits the real L2 store, runs the hybrid pipeline, and
-    returns the ONA-derived answer + STAMP provenance enriched with English mirrors + learned-at."""
+def _wait_event(sock, buf, kind, timeout=6.0):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        for f in _drain(sock, buf, end):
+            if f.get("t") == protocol.EVT and f.get("kind") == kind:
+                return f["body"]
+    return None
+
+
+def test_recall_offloop_grounds_via_event_without_blocking_the_loop(tmp_path):
+    """Gate 2 / Commit 2: the Stage-4 derivation runs OFF-LOOP. The handler returns a fast ack (Stages 0-3
+    only); the select loop stays responsive while the worker derives; the grounded answer + STAMP arrives
+    as a `recall_result` event. (`a` = recall+events, `b` = concurrent probes — separate sockets so a
+    status request can't swallow the event.)"""
     sock_path = os.path.join(tempfile.mkdtemp(prefix="jx", dir="/tmp"), "j.sock")
     server = _start_daemon(sock_path, str(tmp_path / "j.db"))
     a = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); a.connect(sock_path)
-    buf = protocol.LineBuffer()
+    b = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); b.connect(sock_path)
+    abuf, bbuf = protocol.LineBuffer(), protocol.LineBuffer()
     try:
-        # teach the local vault the chain (tell -> L1 + L2 + lexicon term sink)
-        assert _req(a, buf, 1, "tell", "<solana --> timeout>.")["ok"]
-        assert _req(a, buf, 2, "tell", "<timeout --> dropped_tx>.")["ok"]
-        # ask a real question; 'Solana' is the entity anchor, 'dropped_tx' the target (both resolve from L2)
-        r = _req(a, buf, 3, "recall", "Why did Solana cause dropped_tx?", timeout=8.0)
-        assert r is not None and r["ok"], r
-        body = r["body"]
-        assert body.get("grounded") is True, body
-        assert body["answer"] == "<solana --> dropped_tx>", body
-        cited = {p["narsese"] for p in body["provenance"]}
-        assert cited == {"<solana --> timeout>", "<timeout --> dropped_tx>"}, body   # exactly the chain
-        assert all("learned_at" in p for p in body["provenance"])                     # dated provenance for the panel
+        assert _req(a, abuf, 1, "tell", "<solana --> timeout>.")["ok"]
+        assert _req(a, abuf, 2, "tell", "<timeout --> dropped_tx>.")["ok"]
+        # the handler returns a FAST ack — Stages 0-3 only, never waiting on the ONA derivation
+        t0 = time.monotonic()
+        ack = _req(a, abuf, 3, "recall", "Why did Solana cause dropped_tx?", timeout=2.0)
+        ack_ms = (time.monotonic() - t0) * 1000
+        assert ack is not None and ack["ok"] and ack["body"]["status"] == "reasoning", ack
+        # while the worker derives off-loop, the loop answers concurrent traffic promptly
+        latencies = []
+        for rid in range(100, 112):
+            s = time.monotonic(); got = _req(b, bbuf, rid, "status", "", timeout=1.0)
+            assert got is not None, "status stalled while a Stage-4 worker was in flight"
+            latencies.append(time.monotonic() - s)
+        # the grounded answer arrives asynchronously
+        evt = _wait_event(a, abuf, "recall_result", timeout=6.0)
+        assert evt is not None and evt["grounded"] is True, evt
+        assert evt["answer"] == "<solana --> dropped_tx>", evt
+        assert {p["narsese"] for p in evt["provenance"]} == {"<solana --> timeout>", "<timeout --> dropped_tx>"}
+        assert all("learned_at" in p for p in evt["provenance"])
+        print(f"\n[recall] handler ack={ack_ms:.1f}ms (Stages 0-3, off-loop); "
+              f"concurrent status RTT during derivation: max={max(latencies)*1000:.1f}ms")
+        assert ack_ms < 250, f"handler blocked on Stage 4: ack took {ack_ms:.0f}ms"
+        assert max(latencies) < 0.25, f"loop stalled during derivation: {max(latencies):.3f}s"
+    finally:
+        _send(a, 999, "shutdown"); time.sleep(0.3); a.close(); b.close(); server.join(timeout=3.0)
+
+
+def test_recall_hard_timeout_kills_worker_and_escalates(tmp_path, monkeypatch):
+    """The time-bomb: a worker that doesn't answer within the ceiling is SIGKILL'd and the query escalates
+    to Cloud — no hang. Forced by shrinking the ceiling below the worker's spawn time."""
+    monkeypatch.setattr("service.recall_job.TIMEOUT_S", 0.05)   # 50ms < ONA spawn -> always times out
+    sock_path = os.path.join(tempfile.mkdtemp(prefix="jx", dir="/tmp"), "j.sock")
+    server = _start_daemon(sock_path, str(tmp_path / "j.db"))
+    a = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); a.connect(sock_path)
+    abuf = protocol.LineBuffer()
+    try:
+        assert _req(a, abuf, 1, "tell", "<solana --> timeout>.")["ok"]
+        assert _req(a, abuf, 2, "tell", "<timeout --> dropped_tx>.")["ok"]
+        ack = _req(a, abuf, 3, "recall", "Why did Solana cause dropped_tx?", timeout=2.0)
+        assert ack["body"]["status"] == "reasoning", ack       # a worker DID spawn
+        evt = _wait_event(a, abuf, "recall_result", timeout=3.0)
+        assert evt is not None and evt["grounded"] is False and evt["escalate"] == "cloud", evt   # killed -> escalate
+        # the daemon is still alive and responsive after the SIGKILL+reap
+        assert _req(a, abuf, 4, "status", "", timeout=2.0) is not None
     finally:
         _send(a, 999, "shutdown"); time.sleep(0.3); a.close(); server.join(timeout=3.0)
 

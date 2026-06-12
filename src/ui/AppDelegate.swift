@@ -250,6 +250,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             chat.cloudAnswer(body)
         case "cloud_learned":                                // ADR-056: the cloud's claims hit the vault
             chat.cloudLearned((body["count"] as? Int) ?? 0)
+        case "recall_result":                                // ADR-056/Gate 2: off-loop Stage-4 outcome
+            chat.recallResult(body)
         case "overnight_progress", "overnight_started", "overnight_done":  // ADR-053: drive the Canvas, not chat
             unifiedCanvas.onOvernightEvent()
         default:                                             // "alert" (sentinel / system)

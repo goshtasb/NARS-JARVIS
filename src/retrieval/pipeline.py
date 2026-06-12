@@ -30,59 +30,65 @@ class RecallResult:
     provenance: list[dict] = field(default_factory=list)   # enriched stamp beliefs (the "Why" panel)
     reason: str = ""                                        # why we abstained (diagnostic)
 
-    def to_body(self) -> dict:
-        if not self.grounded:
-            return {"grounded": False, "escalate": "cloud",
-                    "text": "I don't have enough in local memory to answer that — Ask Cloud?",
-                    "reason": self.reason}
-        return {"grounded": True, "answer": self.answer, "truth": self.truth, "provenance": self.provenance}
-
 
 def _abstain(reason: str) -> RecallResult:
     return RecallResult(grounded=False, reason=reason)
 
 
-def recall(query: str, *, store, lexicon, brain_factory, now: float,
-           max_hops: int = 4, top_k: int = 12) -> RecallResult:
+def plan(query: str, *, store, lexicon, now: float, max_hops: int = 4, top_k: int = 12):
+    """Stages 0-3 (parse -> resolve -> traverse -> rank), SYNCHRONOUS — single-digit ms with FTS. Returns
+    `(beliefs, question)` for the off-loop Stage-4 worker, or None to abstain. `beliefs` is a list of plain
+    dicts (raw Narsese + truth) — the only thing the worker is handed (payload boundary: no store, no
+    private state)."""
     qm = extract_mentions(query)
     if not qm.anchors:
-        return _abstain("no entity anchor in the query")
-
-    # Stage 1: resolve anchors + targets via the deterministic lexicon (exact -> alias). Unresolved
-    # mentions fall back to their own atom (which may itself be a graph term); a truly unknown one is
-    # simply absent from the graph and contributes nothing.
+        return None                                          # no entity anchor -> abstain
+    # Stage 1: deterministic lexicon resolution (exact -> alias); unresolved mentions fall back to their
+    # own atom (which may itself be a graph term); a truly unknown one is simply absent from the graph.
     anchors = [lexicon.resolve(a) or a for a in qm.anchors]
     targets = {(lexicon.resolve(m) or m) for m in qm.mentions if m not in qm.anchors}
-
     facts = _fetch_neighborhood(store, anchors + list(targets), max_hops=max_hops)
-    graph = BeliefGraph(beliefs_from_facts(facts))
-    top = select_grounded(graph, anchors, targets, now=now, max_hops=max_hops, top_k=top_k)
+    top = select_grounded(BeliefGraph(beliefs_from_facts(facts)), anchors, targets,
+                          now=now, max_hops=max_hops, top_k=top_k)
     if not top:
-        return _abstain("no local subgraph connects the query (missing facts or chain too deep)")
-
+        return None                                          # no connecting subgraph / chain too deep
     question = _question(anchors, targets, {b.narsese for b in top})
     if question is None:
-        return _abstain("could not form a question term from the resolved anchors/targets")
+        return None
+    beliefs = [{"narsese": b.narsese, "frequency": b.frequency, "confidence": b.confidence} for b in top]
+    return beliefs, question
 
-    # Stage 4: isolated ONA derivation -> evidential STAMP
+
+def enrich_provenance(store, answer_term: str, stamp_terms: list[str]) -> list[dict]:
+    """A STAMP (bare premise terms from ONA) -> "Why" panel cards from L2. A conclusion citing ITSELF is
+    not provenance: show the premises that derived it; keep the answer term only when it's the sole
+    evidence (a direct told belief — "I know this because you told me")."""
+    chain = [t for t in stamp_terms if t != answer_term]
+    terms = chain or stamp_terms
+    return [p for p in (_enrich(store, t) for t in terms) if p is not None]
+
+
+def recall(query: str, *, store, lexicon, brain_factory, now: float,
+           max_hops: int = 4, top_k: int = 12) -> RecallResult:
+    """In-process convenience (the direct/test path): plan -> derive in a fresh ONA -> enrich. The DAEMON
+    uses `plan()` + an off-loop worker instead, so a pathological derivation can't block the select loop."""
+    planned = plan(query, store=store, lexicon=lexicon, now=now, max_hops=max_hops, top_k=top_k)
+    if planned is None:
+        return _abstain("no local subgraph connects the query")
+    beliefs, question = planned
     brain = brain_factory()
     try:
-        for b in top:
-            brain.add_belief(to_statement(b.narsese, b.frequency, b.confidence))
+        for b in beliefs:
+            brain.add_belief(to_statement(b["narsese"], b["frequency"], b["confidence"]))
         answer = brain.ask(question)
         prov_terms = brain.evidence_terms(answer.stamp) if answer is not None else []
     finally:
         brain.close()
     if answer is None or not prov_terms:
         return _abstain("local derivation produced no grounded answer")
-
-    # A conclusion citing ITSELF is not provenance: show the premises that derived it. Keep the answer
-    # term only when it's the sole evidence (a direct, told belief — "I know this because you told me").
-    chain_terms = [t for t in prov_terms if t != answer.term]
-    prov_terms = chain_terms or prov_terms
-    provenance = [p for p in (_enrich(store, t) for t in prov_terms) if p is not None]
     truth = {"frequency": answer.truth.frequency, "confidence": answer.truth.confidence} if answer.truth else None
-    return RecallResult(grounded=True, answer=answer.term, truth=truth, provenance=provenance)
+    return RecallResult(grounded=True, answer=answer.term, truth=truth,
+                        provenance=enrich_provenance(store, answer.term, prov_terms))
 
 
 def _fetch_neighborhood(store, seeds, *, max_hops):

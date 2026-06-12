@@ -459,22 +459,41 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
         case abstained(query: String)
     }
 
+    private var recallPending: [Int: (NSView, String)] = [:]            // token -> (reasoning row, query)
+
     private func sendToRecall(_ text: String) {
         guard let client = client else { return }
         let reasoning = reasoningRow()                                   // .reasoning (muted, transient)
         client.call("recall", text) { [weak self] _, body in
             DispatchQueue.main.async {
                 guard let self else { return }
-                reasoning.removeFromSuperview()
-                if (body["grounded"] as? Bool) == true {
-                    let conf = ((body["truth"] as? [String: Any])?["confidence"] as? Double)
-                        .map { String(format: "%.0f%%", $0 * 100) } ?? ""
-                    self.renderRecall(.grounded(answer: body["answer"] as? String ?? "", conf: conf,
-                                                sources: body["provenance"] as? [[String: Any]] ?? []))
+                // Stages 0-3 ran on the daemon thread; Stage 4 is OFF-LOOP. A grounded plan returns a fast
+                // ack and the answer arrives later as a `recall_result` event; an immediate abstain (no
+                // local subgraph) comes back right here.
+                if (body["status"] as? String) == "reasoning", let token = body["token"] as? Int {
+                    self.recallPending[token] = (reasoning, text)        // await the off-loop result
                 } else {
+                    reasoning.removeFromSuperview()
                     self.renderRecall(.abstained(query: text))          // honest abstention -> the flywheel
                 }
             }
+        }
+    }
+
+    /// Called by AppDelegate on a `recall_result` event — the off-loop Stage-4 outcome (grounded, or an
+    /// abstention from no-answer / a timeout SIGKILL). Replaces this turn's reasoning row.
+    func recallResult(_ body: [String: Any]) {
+        loadViewIfNeeded()
+        let token = body["token"] as? Int ?? -1
+        let pending = recallPending.removeValue(forKey: token)
+        pending?.0.removeFromSuperview()
+        if (body["grounded"] as? Bool) == true {
+            let conf = ((body["truth"] as? [String: Any])?["confidence"] as? Double)
+                .map { String(format: "%.0f%%", $0 * 100) } ?? ""
+            renderRecall(.grounded(answer: body["answer"] as? String ?? "", conf: conf,
+                                   sources: body["provenance"] as? [[String: Any]] ?? []))
+        } else {
+            renderRecall(.abstained(query: pending?.1 ?? ""))           // no-answer / timeout -> Ask Cloud
         }
     }
 
