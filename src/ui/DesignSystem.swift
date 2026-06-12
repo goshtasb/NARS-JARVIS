@@ -70,9 +70,7 @@ enum DS {
         let v = LayerView()
         v.wantsLayer = true
         v.layer?.cornerRadius = radius
-        v.layer?.backgroundColor = bg.cgColor
-        v.bg = bg
-        if let border { v.layer?.borderColor = border.cgColor; v.layer?.borderWidth = borderWidth; v.border = border }
+        v.bg = bg; v.border = border; v.borderW = borderWidth     // colored in updateLayer (appearance-correct)
         v.translatesAutoresizingMaskIntoConstraints = false
         return v
     }
@@ -155,26 +153,19 @@ enum DS {
 }
 
 /// A plain layer-backed view that re-applies its colors when the appearance flips (cgColor doesn't auto-adapt).
+/// A rounded, layer-backed view that colors itself in updateLayer() — AppKit calls that during the
+/// display cycle with NSAppearance.current already set to the view's effectiveAppearance, so dynamic
+/// (light/dark) colors always resolve correctly: on creation, on a runtime appearance toggle, and when
+/// a detached subtree is re-shown. (cgColor set imperatively elsewhere uses the stale current appearance.)
 final class LayerView: NSView {
-    var bg: NSColor?
-    var border: NSColor?
-    override func viewDidChangeEffectiveAppearance() {
-        super.viewDidChangeEffectiveAppearance()
-        // Resolve dynamic colors against THIS view's appearance — .cgColor otherwise uses the stale
-        // NSAppearance.current, so a runtime light/dark toggle wouldn't actually recolor the layer.
-        applyInCurrentAppearance {
-            if let bg { layer?.backgroundColor = bg.cgColor }
-            if let border { layer?.borderColor = border.cgColor }
-        }
-    }
-}
-
-extension NSView {
-    /// Run `body` with NSAppearance.current set to this view's effectiveAppearance, so `.cgColor`
-    /// resolutions inside pick the correct light/dark variant.
-    func applyInCurrentAppearance(_ body: () -> Void) {
-        if #available(macOS 11.0, *) { effectiveAppearance.performAsCurrentDrawingAppearance(body) }
-        else { let prev = NSAppearance.current; NSAppearance.current = effectiveAppearance; body(); NSAppearance.current = prev }
+    var bg: NSColor? { didSet { needsDisplay = true } }
+    var border: NSColor? { didSet { needsDisplay = true } }
+    var borderW: CGFloat = 0.5 { didSet { needsDisplay = true } }
+    override var wantsUpdateLayer: Bool { true }
+    override func updateLayer() {
+        layer?.backgroundColor = bg?.cgColor
+        layer?.borderColor = border?.cgColor
+        layer?.borderWidth = (border != nil) ? borderW : 0
     }
 }
 
@@ -224,7 +215,6 @@ final class DSButton: NSView {
             ])
             if variant == .icon { widthAnchor.constraint(equalToConstant: 30).isActive = true }
         }
-        applyColors()
         let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
                                   owner: self, userInfo: nil)
         addTrackingArea(area)
@@ -248,14 +238,17 @@ final class DSButton: NSView {
         default: return DS.contentBG
         }
     }
-    private func applyColors() {
+    override var wantsUpdateLayer: Bool { true }
+    override func updateLayer() {
         let base = baseBG()
-        let bg = hovering ? hoverBG(base) : base
-        layer?.backgroundColor = bg.cgColor
-        if variant == .secondary {
+        layer?.backgroundColor = (hovering ? hoverBG(base) : base).cgColor
+        switch variant {
+        case .secondary:
             layer?.borderWidth = 0.5; layer?.borderColor = DS.separator.withAlphaComponent(0.6).cgColor
-        } else if variant == .destructive || variant == .stopPill {
+        case .destructive, .stopPill:
             layer?.borderWidth = 0.5; layer?.borderColor = DS.red.withAlphaComponent(0.32).cgColor
+        default:
+            layer?.borderWidth = 0
         }
     }
     private func hoverBG(_ base: NSColor) -> NSColor {
@@ -271,15 +264,11 @@ final class DSButton: NSView {
         symbolView?.image = NSImage(systemSymbolName: name, accessibilityDescription: name)?.withSymbolConfiguration(cfg)
     }
     override func hitTest(_ point: NSPoint) -> NSView? { bounds.contains(convert(point, from: superview)) ? self : nil }
-    override func mouseEntered(with e: NSEvent) { hovering = true; applyColors() }
-    override func mouseExited(with e: NSEvent) { hovering = false; applyColors() }
+    override func mouseEntered(with e: NSEvent) { hovering = true; needsDisplay = true }
+    override func mouseExited(with e: NSEvent) { hovering = false; needsDisplay = true }
     override func mouseDown(with e: NSEvent) {}
     override func mouseUp(with e: NSEvent) {
         if bounds.contains(convert(e.locationInWindow, from: nil)) { handler() }
-    }
-    override func viewDidChangeEffectiveAppearance() {
-        super.viewDidChangeEffectiveAppearance()
-        applyInCurrentAppearance { applyColors() }
     }
 }
 

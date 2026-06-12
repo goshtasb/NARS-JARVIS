@@ -159,8 +159,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
     // ── connection pill + Canvas badge ──
     func setConnected(_ up: Bool) {
         connected = up
-        connDot?.bg = up ? DS.green : DS.amber
-        connDot?.applyInCurrentAppearance { connDot?.layer?.backgroundColor = (up ? DS.green : DS.amber).cgColor }
+        connDot?.bg = up ? DS.green : DS.amber          // LayerView.updateLayer recolors
         connLabel?.stringValue = up ? "Connected" : "Reconnecting…"
     }
     func setActiveTaskCount(_ n: Int) { tabSwitcher?.setBadge(n, at: 1) }   // the red badge on the Canvas tab

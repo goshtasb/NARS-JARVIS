@@ -92,23 +92,20 @@ final class TabSwitcher: NSView {
         }
         required init?(coder: NSCoder) { fatalError() }
 
-        func setSelected(_ on: Bool) {
-            selected = on; refresh()
-        }
+        func setSelected(_ on: Bool) { selected = on; updateFg(); needsDisplay = true }
         func setBadge(_ count: Int) {
             badge.isHidden = count <= 0
             badgeLabel.stringValue = "\(count)"
         }
-        private func refresh() {
+        private func updateFg() { let fg = selected ? DS.label : DS.label2; icon.contentTintColor = fg; label.textColor = fg }
+        override var wantsUpdateLayer: Bool { true }
+        override func updateLayer() {
             let bg: NSColor = selected ? DS.fill(0.10) : (hovering ? DS.fill(0.05) : .clear)
-            applyInCurrentAppearance { layer?.backgroundColor = bg.cgColor }
-            let fg = selected ? DS.label : DS.label2
-            icon.contentTintColor = fg; label.textColor = fg
+            layer?.backgroundColor = bg.cgColor       // appearance-correct (called during display)
         }
         override func hitTest(_ point: NSPoint) -> NSView? { bounds.contains(convert(point, from: superview)) ? self : nil }
-        override func mouseEntered(with e: NSEvent) { hovering = true; refresh() }
-        override func mouseExited(with e: NSEvent) { hovering = false; refresh() }
+        override func mouseEntered(with e: NSEvent) { hovering = true; needsDisplay = true }
+        override func mouseExited(with e: NSEvent) { hovering = false; needsDisplay = true }
         override func mouseUp(with e: NSEvent) { if bounds.contains(convert(e.locationInWindow, from: nil)) { onClick() } }
-        override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); refresh() }
     }
 }
