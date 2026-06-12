@@ -4,8 +4,25 @@
 > unified workspace window. (Truth over tidiness.)
 
 ## Status
-**Proposed** — design document for review (no code). When ratified it becomes the build spec for a
-user-toggled Local/Cloud "dual-brain," with OpenAI as the first cloud provider.
+**Accepted** (ratified). Build in progress: **Phase 1 — `cloud_egress.py` (the seam + contextual
+firewall + custom OpenAI HTTP wrapper) — landed and headless-tested** (8 tests; full suite 550→558),
+fully isolated (injected transport, no real network, not yet socket-wired). Remaining: the Multiplexer
++ Brain protocol, Keychain/per-request key delivery, off-loop execution, and the UI toggle/ledger.
+
+**Ratified rulings (binding):**
+- **Key delivery:** the signed Swift client passes the API key **per-request over the local socket**;
+  the daemon stays **stateless** about credentials (key lives only in the active worker's memory, gone
+  when the socket closes). No daemon-side Keychain access.
+- **Egress visibility:** **both** a per-turn inline indicator **and** a rolling session **egress ledger**
+  in the Cognitive Identity tab (timestamp · destination host · byte size · sanitized payload schema).
+- **Provider #2:** **Anthropic (Claude)** — best structured entity-relation extraction for NARS.
+
+**Build-phase verification (wired into the harness):**
+- **12 s hard egress timeout** (`EGRESS_TIMEOUT`) — no zombie workers on a dropped/handed-off connection.
+- **Structured failure interception** — `auth` / `rate_limit` / `timeout` / `bad_response` are returned
+  as a `CloudResult` (→ a Chat recovery card), never a crash/hang.
+- **Socket payload overhead** — verified when the per-request key path is wired (the key must not stall
+  the daemon's `select()` loop).
 
 ## Context
 We hit the hard ceiling of local-first compute. A quantized 7B doing live multi-hop web research is
@@ -143,10 +160,7 @@ seam and the **local** ONA ingests them. The cloud makes NARS smarter without ev
 - Cost/honesty: the README and NFR are amended; the default remains private; nothing leaves without an
   explicit user toggle and a visible indicator.
 
-## Open questions for review
-1. **Key delivery to the daemon:** daemon reads Keychain directly, or the Swift client passes the key
-   per-request over the local unix socket (keeps Keychain access in the signed app only)? I lean toward
-   the client passing it per-request — the daemon never persists a key.
-2. **Egress indicator granularity:** per-turn banner only, or also a running session egress log surfaced
-   in the UI?
-3. **Provider #2 order:** Anthropic (best ontological extraction) vs Google — both ~1 day via the driver.
+## Resolved (see ratified rulings in Status)
+1. Key delivery → client passes per-request over the socket; daemon stateless re credentials.
+2. Egress visibility → per-turn indicator **and** a session ledger in the Cognitive Identity tab.
+3. Provider #2 → Anthropic.
