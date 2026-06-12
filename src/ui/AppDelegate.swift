@@ -133,6 +133,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         chat.client = c
         habits.client = c                                   // ADR-030: dashboard talks over the same socket
         unifiedCanvas.client = c                            // ADR-053: canvas shares the same socket
+        chat.onOpenCanvas = { [weak self] in self?.openCanvas() }  // ADR-054: a / job opens the Canvas
         setConnected(true)
         chat.append(reconnect ? "↻ reconnected to JARVIS." : "✓ connected to JARVIS.")
         _log("UI: \(reconnect ? "reconnected" : "connected") to daemon at \(sockPath)")

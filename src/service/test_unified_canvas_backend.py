@@ -111,3 +111,30 @@ def test_action_alternatives_enriches_with_label_and_tag() -> None:
     names = [a["name"] for a in body["alternatives"]]
     assert names == ["summarize_file", "read_file"]
     assert all("label" in a and "autonomous" in a for a in body["alternatives"])
+
+
+# ── ADR-054: intent_parse wires grammar -> (fake) model -> gate ──
+def test_intent_parse_accepts_validated_intent() -> None:
+    import types
+    from service.session import Session
+
+    class _LLM:
+        def generate_json(self, s, u, g, max_tokens=200):
+            return '{"action":"summarize_file","arg":"/tmp/a.pdf","timing":null}'
+    ok, body = Session._intent_parse(types.SimpleNamespace(_llm=_LLM()), {"text": "summarize /tmp/a.pdf"})
+    assert ok and body["ok"] and body["intent"]["action"] == "summarize_file"
+    assert body["intent"]["arg"] == "/tmp/a.pdf"
+
+
+def test_intent_parse_returns_clarify_for_none_and_missing_model() -> None:
+    import types
+    from service.session import Session
+
+    class _None:
+        def generate_json(self, s, u, g, max_tokens=200):
+            return '{"action":"none","arg":"","timing":null}'
+    ok, body = Session._intent_parse(types.SimpleNamespace(_llm=_None()), {"text": "order a pizza"})
+    assert ok and body["ok"] is False and "clarify" in body
+    # no generate_json on the handle (model not loaded) -> graceful clarify, never a crash
+    ok, body = Session._intent_parse(types.SimpleNamespace(_llm=object()), {"text": "hi"})
+    assert ok and body["ok"] is False

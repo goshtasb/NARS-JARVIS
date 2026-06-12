@@ -375,8 +375,9 @@ final class UnifiedCanvasViewController: NSViewController {
 
     /// Vector 3: the FAILED affordances — Retry (same tool) + Change tool ▾ (daemon-supplied siblings).
     private func recoveryBar(action: String, arg: String) -> NSView {
-        let bar = NSStackView(); bar.orientation = .horizontal; bar.spacing = 8
-        bar.addArrangedSubview(ClosureButton("↻ Retry") { [weak self] in self?.requeue(action: action, arg: arg) })
+        let col = NSStackView(); col.orientation = .vertical; col.alignment = .leading; col.spacing = 4
+        let row = NSStackView(); row.orientation = .horizontal; row.spacing = 8
+        row.addArrangedSubview(ClosureButton("↻ Retry") { [weak self] in self?.requeue(action: action, arg: arg) })
         var changeBtn: ClosureButton!
         changeBtn = ClosureButton("Change tool ▾") { [weak self, weak changeBtn] in
             guard let self, let anchor = changeBtn else { return }
@@ -385,8 +386,23 @@ final class UnifiedCanvasViewController: NSViewController {
                 DispatchQueue.main.async { self.popAlternatives(alts, arg: arg, anchor: anchor) }
             }
         }
-        bar.addArrangedSubview(changeBtn)
-        return bar
+        row.addArrangedSubview(changeBtn)
+        col.addArrangedSubview(row)
+        // ADR-054 path editor: a typo'd / hallucinated path isn't fixed by Retry (same path) or Change
+        // tool (swaps the verb). Give the user an editable target + Re-run so the request isn't dropped.
+        if !arg.isEmpty {
+            let edit = NSStackView(); edit.orientation = .horizontal; edit.spacing = 6
+            let field = NSTextField(string: arg)
+            field.font = .systemFont(ofSize: 11); field.widthAnchor.constraint(equalToConstant: 360).isActive = true
+            field.toolTip = "Fix the path or URL, then Re-run with the same action."
+            edit.addArrangedSubview(field)
+            edit.addArrangedSubview(ClosureButton("Re-run ↦") { [weak self, weak field] in
+                let fixed = field?.stringValue.trimmingCharacters(in: .whitespaces) ?? ""
+                if !fixed.isEmpty { self?.requeue(action: action, arg: fixed) }
+            })
+            col.addArrangedSubview(edit)
+        }
+        return col
     }
 
     private func popAlternatives(_ alts: [[String: Any]], arg: String, anchor: NSView) {

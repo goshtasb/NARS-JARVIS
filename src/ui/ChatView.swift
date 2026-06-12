@@ -4,11 +4,13 @@
 // bare line is treated as a question. Actions/interventions arrive as native notifications.
 import AppKit
 
-final class ChatViewController: NSViewController {
+final class ChatViewController: NSViewController, NSTextFieldDelegate {
     weak var client: JarvisClient?
     var onQuit: (() -> Void)?            // set by AppDelegate
     var onStop: (() -> Void)?            // emergency stop (kill the daemon too)
     var onToggleVoice: (() -> Void)?    // click-to-toggle push-to-talk
+    var onOpenCanvas: (() -> Void)?     // ADR-054: a parsed job projects into the Unified Canvas
+    private var verbs: [String] = []    // ADR-054: catalog actions for the / completion popover
     private let transcript = NSTextView()
     private let input = NSTextField()
     private let voiceButton = NSButton()
@@ -68,9 +70,10 @@ final class ChatViewController: NSViewController {
         consentBar.addSubview(deny)
 
         input.frame = NSRect(x: 8, y: 8, width: 312, height: 24)
-        input.placeholderString = "learn / ask / tell …"
+        input.placeholderString = "ask, or type / to run a job…"
         input.target = self
         input.action = #selector(submit)
+        input.delegate = self                            // ADR-054: drive the / completion popover
         voiceButton.frame = NSRect(x: 326, y: 6, width: 86, height: 28)
         voiceButton.title = "🎙 Listen"
         voiceButton.bezelStyle = .rounded
@@ -117,6 +120,33 @@ final class ChatViewController: NSViewController {
 
     func focusInput() { view.window?.makeFirstResponder(input) }
 
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        if verbs.isEmpty {                               // ADR-054: pull the catalog once for / completion
+            client?.call("catalog_schema") { [weak self] _, body in
+                let actions = (body["actions"] as? [[String: Any]]) ?? []
+                DispatchQueue.main.async { self?.verbs = actions.compactMap { $0["name"] as? String } }
+            }
+        }
+    }
+
+    // ── ADR-054: the / verb popover, via the native field-editor completion (handles ↑↓⏎⎢ + placement) ──
+    func controlTextDidChange(_ note: Notification) {
+        guard let editor = note.userInfo?["NSFieldEditor"] as? NSTextView else { return }
+        if input.stringValue.hasPrefix("/") && !input.stringValue.contains(" ") {
+            editor.complete(nil)                          // only while typing the verb token itself
+        }
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, completions words: [String],
+                 forPartialWordRange charRange: NSRange, indexOfSelectedItem index: UnsafeMutablePointer<Int>
+    ) -> [String] {
+        let partial = (textView.string as NSString).substring(with: charRange)
+        guard partial.hasPrefix("/") else { return [] }   // only complete the / command, not normal text
+        let needle = partial.dropFirst().lowercased()
+        return verbs.filter { needle.isEmpty || $0.lowercased().contains(needle) }.map { "/" + $0 }
+    }
+
     func append(_ text: String) {
         guard !text.isEmpty else { return }
         transcript.string += (transcript.string.isEmpty ? "" : "\n") + text
@@ -128,6 +158,21 @@ final class ChatViewController: NSViewController {
         guard !line.isEmpty, let client = client else { return }
         input.stringValue = ""
         append("» " + line)
+        // ADR-054: a / line is a JOB — pin the verb, parse the rest as NL, project to the Canvas.
+        if line.hasPrefix("/") {
+            let body = String(line.dropFirst())
+            let parts = body.split(separator: " ", maxSplits: 1).map(String.init)
+            let verb = parts.first ?? ""
+            let rest = parts.count > 1 ? parts[1] : ""
+            if rest.isEmpty {
+                append("ℹ add a target, e.g. /\(verb.isEmpty ? "summarize_file" : verb) ~/Desktop/report.pdf tonight")
+                return
+            }
+            client.call("intent_parse", ["text": rest, "action": verb]) { [weak self] _, b in
+                DispatchQueue.main.async { self?.handleIntent(b) }
+            }
+            return
+        }
         let parts = line.split(separator: " ", maxSplits: 1).map(String.init)
         let head = parts[0].lowercased()                         // commands are case-insensitive
         let known = Self.known.contains(head)
@@ -135,6 +180,49 @@ final class ChatViewController: NSViewController {
         let arg = known ? (parts.count > 1 ? parts[1] : "") : line
         client.call(cmd, arg) { [weak self] ok, body in
             DispatchQueue.main.async { self?.render(cmd, ok, body) }
+        }
+    }
+
+    /// ADR-054: project a parsed intent into the Canvas. Resolve the relative timing to an absolute
+    /// epoch HERE (the client owns timezone math; the daemon stays timezone-free), then enqueue/schedule.
+    private func handleIntent(_ body: [String: Any]) {
+        if (body["ok"] as? Bool) != true {
+            append("🤔 " + ((body["clarify"] as? String) ?? (body["text"] as? String) ?? "I couldn't parse that."))
+            return
+        }
+        guard let intent = body["intent"] as? [String: Any],
+              let action = intent["action"] as? String else { append("⚠ couldn't read that job."); return }
+        let arg = intent["arg"] as? String ?? ""
+        let item: [String: String] = ["action": action, "arg": arg]
+        let target = arg.isEmpty ? "" : " — \((arg as NSString).lastPathComponent)"
+        if let epoch = resolveEpoch(intent["timing"] as? [String: Any]) {
+            client?.call("overnight_schedule_batch", ["items": [item], "run_at": epoch]) { _, _ in }
+            append("🗓 scheduled: \(action)\(target)")
+        } else {
+            client?.call("overnight_enqueue_batch", [item]) { [weak self] _, _ in
+                self?.client?.call("overnight_start") { _, _ in }
+            }
+            append("▶ running now: \(action)\(target)")
+        }
+        onOpenCanvas?()                                   // bring the Canvas forward so the row is seen
+    }
+
+    /// Relative timing {kind,value} -> absolute epoch, against LOCAL time. nil = run now.
+    private func resolveEpoch(_ timing: [String: Any]?) -> Double? {
+        guard let t = timing, let kind = t["kind"] as? String else { return nil }
+        let value = (t["value"] as? Int) ?? Int((t["value"] as? Double) ?? 0)
+        switch kind {
+        case "in_minutes":
+            return Date().addingTimeInterval(Double(value) * 60).timeIntervalSince1970
+        case "at_clock_hour":
+            let cal = Calendar.current; let now = Date()
+            var comps = cal.dateComponents([.year, .month, .day], from: now)
+            comps.hour = value; comps.minute = 0; comps.second = 0
+            var target = cal.date(from: comps) ?? now
+            if target <= now { target = cal.date(byAdding: .day, value: 1, to: target) ?? target }
+            return target.timeIntervalSince1970
+        default:
+            return nil
         }
     }
 

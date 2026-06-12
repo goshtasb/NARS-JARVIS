@@ -23,6 +23,12 @@ def test_grammar_handles_empty_action_list() -> None:
     assert r'"\"none\""' in g                              # still has the sentinel -> always valid
 
 
+def test_pinned_grammar_forces_verb_without_none() -> None:
+    # the / override: a single pinned verb, no escape hatch -> the model cannot decline the user's choice
+    g = build_intent_grammar(["summarize_file"], include_none=False)
+    assert r'"\"summarize_file\""' in g and r'"\"none\""' not in g
+
+
 # ── Interception Gate ──
 VALID = {"summarize_file", "read_article", "report_system"}
 ARG_REQ = {"summarize_file", "read_article"}

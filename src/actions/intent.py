@@ -39,9 +39,13 @@ ws     ::= [ \t\n]*
 '''
 
 
-def build_intent_grammar(action_names: list[str]) -> str:
-    """Compile a GBNF that constrains the action field to exactly `action_names ∪ {none}`."""
-    members = [f'"\\"{n}\\""' for n in [*action_names, NONE_ACTION]]
+def build_intent_grammar(action_names: list[str], include_none: bool = True) -> str:
+    """Compile a GBNF that constrains the action field to `action_names` (∪ `{none}` when
+    `include_none`). The `/` override pins a verb by passing a single name with `include_none=False`,
+    so the user's explicit choice can't be overridden back to `none`."""
+    members = [f'"\\"{n}\\""' for n in action_names]
+    if include_none or not members:                       # always keep at least the sentinel -> valid
+        members.append(f'"\\"{NONE_ACTION}\\""')
     return _GRAMMAR_TEMPLATE.replace("__ACTION_ENUM__", " | ".join(members))
 
 

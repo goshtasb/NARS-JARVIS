@@ -1,11 +1,12 @@
 # ADR-054: Hybrid Natural-Language Intent Router (+ `/` deterministic override)
 
 ## Status
-**Accepted** (design ratified). Implementation in progress: the **headless core landed** (grammar
-compiler + Interception Gate + `generate_json` seam, suite 536→547, live-verified against the real 7B).
-**Remaining:** the daemon socket command that runs the pipeline + emits the intent to the client, the
-client-side timing→epoch resolution + Canvas projection, and the `/` AppKit popover. Behind the Mirror
-validation hold — no live wiring until that opens / is greenlit.
+**Accepted & shipped** (v1.19.0). Headless core (grammar compiler + Interception Gate + `generate_json`)
++ live wiring (daemon `intent_parse` command, Swift client integration with timezone-free epoch
+resolution + Canvas projection, the editable-path recovery affordance, and the `/` verb popover via the
+native field-editor completion). Suite 536→550. Live-verified end-to-end against the real 7B (see below).
+Visual polish of the `/` popover + the chat→Canvas flow is the user's to confirm (AppKit can't be driven
+headlessly); everything testable is verified. This is the last feature before the Mirror gate opens.
 
 ## Context
 The Canvas (ADR-053) is a deterministic state machine, but reaching it still costs mechanical friction:

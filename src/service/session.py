@@ -7,14 +7,15 @@ clients of this same surface, so reasoning logic can never be polluted by — or
 """
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from datetime import datetime
 from typing import Callable
 
 from actions import (
-    ActionRunner, alternatives, recipe_for, resolve as resolve_action,
-    schema as catalog_schema, should_gate,
+    ActionRunner, alternatives, build_intent_grammar, build_system_prompt, recipe_for,
+    resolve as resolve_action, schema as catalog_schema, should_gate, validate_intent,
 )
 from brain import Brain
 from habits import HabitStore
@@ -59,6 +60,7 @@ class Session:
         self._act_buf: list[str] = []
         self._executor = build_air_gapped_executor(sink=lambda t: self._act_buf.append(str(t)))
         llm = make_claim_source()
+        self._llm = llm                  # ADR-054: handle for the GBNF-constrained intent router
         embedder = make_embedder()
         gate = IngestionGate(embedder) if embedder is not None else None
         grounding = SqliteGroundingStore(db_path) if embedder is not None else None
@@ -155,6 +157,7 @@ class Session:
             "overnight_enqueue_batch": self._overnight_enqueue_batch,     # ADR-033: batch commit
             "overnight_schedule_batch": self._overnight_schedule_batch,   # ADR-053: commit with a run_at
             "action_alternatives": self._action_alternatives,             # ADR-053: failed-task recovery routing
+            "intent_parse": self._intent_parse,                           # ADR-054: NL -> validated Canvas intent
             "catalog_schema": self._catalog_schema,                       # ADR-033: palette for the canvas
             "briefing": self._briefing, "briefing_resolve": self._briefing_resolve,  # ADR-031: morning
             "briefing_dismiss_done": self._briefing_dismiss_done,         # ADR-033: clear completed
@@ -513,6 +516,35 @@ class Session:
             if act is not None:
                 out.append({"name": n, "label": act.label, "autonomous": safe_autonomous(act)})
         return True, {"alternatives": out}
+
+    def _intent_parse(self, arg: object) -> tuple[bool, object]:
+        """ADR-054: turn one NL request into a VALIDATED Canvas intent via the GBNF-constrained 7B.
+        arg = {text, action?(a verb pinned by the / override)}. Returns {ok, intent:{action,arg,timing}}
+        or {ok:false, clarify}. Runs on the foreground pipeline (interactive); the offload worker is
+        untouched. Never commits — the client resolves timing->epoch and projects the row to the Canvas."""
+        if not isinstance(arg, dict) or not str(arg.get("text", "")).strip():
+            return False, {"text": "usage: {text, action?}"}
+        if not hasattr(self._llm, "generate_json"):
+            return True, {"ok": False, "clarify": "The local language model isn't loaded, so I can't parse that."}
+        text = str(arg["text"]).strip()
+        pinned = str(arg.get("action", "")).strip()
+        acts = [a for a in catalog_schema() if a["kind"] in _CANVAS_KINDS]
+        names = [a["name"] for a in acts]
+        valid, arg_req = set(names), {a["name"] for a in acts if a.get("takes_arg")}
+        # The / override pins the verb: FORCE the grammar to that action with NO `none` option, so the
+        # user's explicit choice can't be overridden — the model only extracts arg + timing. Otherwise
+        # it picks the verb from the full catalog and may decline via `none`.
+        is_pinned = pinned in valid
+        grammar = build_intent_grammar([pinned] if is_pinned else names, include_none=not is_pinned)
+        sysp = build_system_prompt([f"{a['name']} — {a['label']}" for a in acts],
+                                   time.strftime("%A %Y-%m-%d %H:%M"))
+        try:
+            raw = self._llm.generate_json(sysp, text, grammar, max_tokens=200)
+            payload = json.loads(raw)
+        except Exception as exc:  # noqa: BLE001 — a parse miss reports, never crashes the turn
+            return True, {"ok": False, "clarify": f"I couldn't parse that request ({exc})."}
+        ok, result = validate_intent(payload, valid, arg_req)
+        return True, ({"ok": True, "intent": result} if ok else {"ok": False, "clarify": result["clarify"]})
 
     def _briefing_dismiss_done(self, _arg: object) -> tuple[bool, object]:
         """Clear finished (done/failed) rows so the briefing doesn't grow forever. Held/pending untouched."""
