@@ -101,6 +101,10 @@ cat <<'TCC'
 TCC
 open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility" 2>/dev/null || true
 
+# ── 7. generate the launchd daemon agent (ADR-049) — GENERATE-ONLY, never auto-loaded here. The
+#       printed command turns JARVIS into a persistent login agent if/when the user wants it. ──
+sh src/ui/setup-launchd.sh || say "(skipped launchd agent generation)"
+
 say "Launching JARVIS (🔵 appears in your menu bar)…"
 sh src/ui/run-ui.sh
 say "Done. Chat from the menu bar, or terminal: ./run.sh"
