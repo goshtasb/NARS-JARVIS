@@ -369,6 +369,10 @@ things it can do — never by loosening the safety boundary.
 
 ## Build on top of it (contributor guide)
 
+> New here? Start with **[CONTRIBUTING.md](CONTRIBUTING.md)** — the binding standards, the
+> non-negotiable invariants, setup, and where help is genuinely wanted. It also sets honest
+> expectations: this is an active, fast-moving early-stage project.
+
 The architecture is designed so you add capability by **adding a module or a catalog entry**, not by
 editing working code. Common extension points:
 

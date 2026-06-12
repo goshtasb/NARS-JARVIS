@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: How to contribute
+    url: https://github.com/goshtasb/NARS-JARVIS/blob/main/CONTRIBUTING.md
+    about: Read this first — the standards, invariants, setup, and where help is genuinely wanted.
