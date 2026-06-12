@@ -1,14 +1,8 @@
-"""Gate 2.2 — the Planted Adversarial Corpus (ADR-056 §6.2).
+"""Gate 2.2 / 2.3 — the Planted Adversarial Matrix (ADR-056 §6.2).
 
-A tightly controlled Narsese world built to BREAK a naive retriever, with ground-truth labels (which
-beliefs are load-bearing vs noise) knowable BY CONSTRUCTION — the thing ordinary RAG evals lack. Three
-classes per case:
-
-- LOAD-BEARING : the chain that actually derives the answer (must be in top_k; must be in the STAMP).
-- SEMANTIC DECOYS : share an atom with the anchor neighborhood (so they ARE retrieved — recall is loose
-  by design) but belong to a different logical branch (must NOT appear in the STAMP).
-- DISTANT DISTRACTORS : highly confident + recent but structurally unrelated (must NOT be retrieved at
-  all — proving proximity gates them before ranking ever sees their tempting truth/recency).
+Tightly controlled Narsese worlds with ground-truth labels (load-bearing vs decoy vs distractor) knowable
+BY CONSTRUCTION. Each Case names the chain that must derive the answer, the noise that must be excluded
+from the STAMP, and the targets (chain endpoints) Stage 3 pins so a budget flood can't evict a deep link.
 """
 from __future__ import annotations
 
@@ -29,38 +23,59 @@ class Case:
     name: str
     query: str                       # the human query
     question: str                    # the Narsese question ONA answers
-    anchors: list[str]               # the Stage-1 resolved anchors (entities)
-    beliefs: list[Belief]            # the full planted world (shuffled order is irrelevant)
-    load_bearing: set[str]           # narsese that must derive the answer
+    anchors: list[str]               # Stage-1 resolved anchors (entities)
+    targets: set[str]                # chain endpoints Stage 3 pins (from the query's other content terms)
+    beliefs: list[Belief]            # the full planted world
+    load_bearing: set[str]           # narsese that must derive the answer (recall + STAMP)
     decoys: set[str]                 # adjacency-retrievable, wrong branch -> must NOT be in the STAMP
     distractors: set[str] = field(default_factory=set)   # unrelated, high conf/recent -> must NOT retrieve
 
 
-# ── Case: "Why did my tx drop on SOL?"  ->  <solana --> dropped_tx>? ──
-# chain:  <solana --> timeout> , <timeout --> dropped_tx>   (deduction)
-_LOAD = ["<solana --> timeout>", "<timeout --> dropped_tx>"]
-_DECOYS = [
-    "<solana --> has_token>",     # 1-hop via solana, but not on the dropped_tx branch
-    "<solana --> staking>",       # 1-hop via solana, different concern
-    "<timeout --> log_entry>",    # 2-hop via timeout, different concern
-]
-_CONTEXT = ["<solana --> blockchain>"]                    # 1-hop, relevant domain (fine if retrieved)
-_DISTRACTORS = ["<cursor --> editor>", "<chrome --> browser>"]   # unrelated, HIGH conf + brand new
-
+# ── Case 0: baseline — "Why did my tx drop on SOL?" ──
+_C0_LOAD = ["<solana --> timeout>", "<timeout --> dropped_tx>"]
+_C0_DECOY = ["<solana --> has_token>", "<solana --> staking>", "<timeout --> log_entry>"]
 SOLANA_CASE = Case(
-    name="solana_tx_drop",
-    query="Why did my tx drop on SOL?",
-    question="<solana --> dropped_tx>?",
-    anchors=["solana"],
-    beliefs=(
-        [_b(n) for n in _LOAD]
-        + [_b(n) for n in _DECOYS]
-        + [_b(n) for n in _CONTEXT]
-        + [_b(n, f=1.0, c=0.99, age_days=0.0) for n in _DISTRACTORS]   # the temptation: confident + recent
-    ),
-    load_bearing=set(_LOAD),
-    decoys=set(_DECOYS),
-    distractors=set(_DISTRACTORS),
+    name="solana_tx_drop", query="Why did my tx drop on SOL?", question="<solana --> dropped_tx>?",
+    anchors=["solana"], targets={"dropped_tx"},
+    beliefs=([_b(n) for n in _C0_LOAD] + [_b(n) for n in _C0_DECOY] + [_b("<solana --> blockchain>")]
+             + [_b(n, c=0.99, age_days=0.0) for n in ("<cursor --> editor>", "<chrome --> browser>")]),
+    load_bearing=set(_C0_LOAD), decoys=set(_C0_DECOY),
+    distractors={"<cursor --> editor>", "<chrome --> browser>"},
 )
 
-CASES = [SOLANA_CASE]
+# ── Case 1: Ambiguous Anchor Collision — 'mac' is BOTH a network interface and Apple hardware ──
+_C1_LOAD = ["<mac --> network_interface>", "<network_interface --> packet_loss>"]
+_C1_DECOY = ["<mac --> retina_display>", "<mac --> m2_chip>", "<mac --> high_cpu>"]   # Apple subgraph
+AMBIGUOUS_CASE = Case(
+    name="ambiguous_mac", query="Why is my MAC dropping packets?", question="<mac --> packet_loss>?",
+    anchors=["mac"], targets={"packet_loss"},
+    beliefs=([_b(n) for n in _C1_LOAD] + [_b(n, c=0.99, age_days=0.0) for n in _C1_DECOY]),  # Apple = confident+recent
+    load_bearing=set(_C1_LOAD), decoys=set(_C1_DECOY),
+)
+
+# ── Case 2: Temporal Contradiction — the user corrected where the key lives ──
+_C2_LOAD = ["<api_key --> in_keychain>"]
+_C2_OBSOLETE = "<api_key --> in_config>"
+REVISION_CASE = Case(
+    name="revision_api_key", query="Where is my API key now?", question="<api_key --> in_keychain>?",
+    anchors=["api_key"], targets={"in_keychain"},
+    beliefs=[
+        _b(_C2_OBSOLETE, f=1.0, c=0.9, age_days=60.0),     # Day 1: "it's in the config file"
+        _b(_C2_OBSOLETE, f=0.0, c=0.9, age_days=0.0),      # Day 60 CORRECTION: "no, not in config" -> revise
+        _b("<api_key --> in_keychain>", f=1.0, c=0.9, age_days=0.0),   # Day 60: "it's in the keychain"
+    ],
+    load_bearing=set(_C2_LOAD), decoys={_C2_OBSOLETE},
+)
+
+# ── Case 3: Saturated Context Budget — a 4-hop chain vs a flood of confident, recent 1-hop decoys ──
+_C3_CHAIN = ["<router --> firmware_v2>", "<firmware_v2 --> buffer_bug>",
+             "<buffer_bug --> mem_overflow>", "<mem_overflow --> packet_loss>"]
+_C3_DECOYS = [f"<router --> d{i:02d}>" for i in range(15)]
+SATURATED_CASE = Case(
+    name="saturated_budget", query="Why is my router losing packets?", question="<router --> packet_loss>?",
+    anchors=["router"], targets={"packet_loss"},
+    beliefs=([_b(n) for n in _C3_CHAIN] + [_b(n, f=1.0, c=0.99, age_days=0.0) for n in _C3_DECOYS]),
+    load_bearing=set(_C3_CHAIN), decoys=set(_C3_DECOYS),
+)
+
+CASES = [SOLANA_CASE, AMBIGUOUS_CASE, REVISION_CASE, SATURATED_CASE]

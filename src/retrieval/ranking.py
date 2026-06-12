@@ -48,5 +48,25 @@ def rank(candidates, *, now: float, top_k: int = TOP_K) -> list[Belief]:
 
 def select(graph: BeliefGraph, anchors, *, now: float, max_hops: int = 2, top_k: int = TOP_K) -> list[Belief]:
     """Stage 2 + Stage 3 end to end: traverse from the anchors, rank, and return the top-k subgraph.
-    Empty when no anchor exists in the graph (honest abstention -> no grounding)."""
+    Empty when no anchor exists in the graph (honest abstention -> no grounding).
+
+    NOTE: this is the chain-BLIND selector — pure score-and-slice. It can evict a distant load-bearing
+    premise when high-score 1-hop decoys saturate the budget. Use `select_grounded` when the query needs a
+    deep derivation chain (Gate 2.3 Saturated-Budget)."""
     return rank(graph.traverse(anchors, max_hops=max_hops), now=now, top_k=top_k)
+
+
+def select_grounded(graph: BeliefGraph, anchors, targets, *, now: float, max_hops: int = 4,
+                    top_k: int = TOP_K) -> list[Belief]:
+    """Chain-AWARE Stage 3 (the Saturated-Budget fallback): PIN the connecting chain from anchors to
+    targets, then fill the remaining budget by score. A flood of high-score 1-hop decoys competes only for
+    the leftover slots and can never evict the load-bearing path. If the chain alone exceeds top_k, abstain
+    (AIKR: the proof is too deep for the local context -> escalate, never emit a truncated half-chain)."""
+    chain = graph.connecting_paths(anchors, targets, max_hops=max_hops)
+    chain_terms = {b.narsese for b in chain}
+    if len(chain_terms) > top_k:
+        return []                                          # honest abstention: chain doesn't fit
+    candidates = graph.traverse(anchors, max_hops=max_hops)
+    rest = [(b, h) for (b, h) in candidates if b.narsese not in chain_terms]
+    filler = rank(rest, now=now, top_k=top_k - len(chain_terms))
+    return list(chain) + filler                            # load-bearing chain first, then best context

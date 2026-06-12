@@ -65,6 +65,44 @@ class BeliefGraph:
         return [(self._beliefs[i], h) for i, h in sorted(belief_hop.items())]
 
 
+    def connecting_paths(self, anchors, targets, *, max_hops: int = 4) -> list[Belief]:
+        """Find the load-bearing CHAIN: the beliefs on a shortest path from any anchor to any target term.
+        BFS records, per newly-reached term, the belief that bridged to it and the predecessor term; on
+        reaching a target we backtrack that belief chain. This is what Stage 3 PINS so a flood of high-score
+        1-hop decoys can't evict a distant-but-essential premise (the Saturated-Budget failure)."""
+        targets = set(targets)
+        live = [a for a in anchors if a in self._index]
+        if not live:
+            return []
+        dist = {a: 0 for a in live}
+        parent_belief: dict[str, int] = {}     # term -> belief idx that first reached it
+        parent_term: dict[str, str] = {}       # term -> predecessor term
+        reached = {t for t in targets if t in dist}
+        frontier = set(live)
+        for _hop in range(1, max_hops + 1):
+            nxt: set[str] = set()
+            for term in frontier:
+                for idx in self._index.get(term, []):
+                    for t in self._terms[idx]:
+                        if t not in dist:
+                            dist[t] = dist[term] + 1
+                            parent_belief[t] = idx
+                            parent_term[t] = term
+                            nxt.add(t)
+                            if t in targets:
+                                reached.add(t)
+            frontier = nxt
+            if not frontier:
+                break
+        path_idx: set[int] = set()
+        for tgt in reached:
+            t = tgt
+            while t in parent_belief:           # backtrack to an anchor (no parent)
+                path_idx.add(parent_belief[t])
+                t = parent_term[t]
+        return [self._beliefs[i] for i in sorted(path_idx)]
+
+
 def beliefs_from_facts(facts) -> list[Belief]:
     """Adapter: L2 `Fact` rows -> traversal `Belief` (the fields Stage 2/3 need)."""
     return [Belief(f.narsese, f.frequency, f.confidence, f.updated_at) for f in facts]
