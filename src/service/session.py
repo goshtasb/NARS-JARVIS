@@ -8,6 +8,7 @@ clients of this same surface, so reasoning logic can never be polluted by — or
 from __future__ import annotations
 
 import json
+import sys
 import time
 import uuid
 from datetime import datetime
@@ -129,6 +130,7 @@ class Session:
         self._pending_learn: dict[str, dict] = {}
         self._voice_jobs: dict[int, WhisperJob] = {}   # fd -> in-flight transcription
         self._cloud_jobs: dict[int, dict] = {}         # ADR-056: fd -> in-flight off-loop cloud call
+        self._cloud_loop_gap_max = 0.0                 # Gate 1: worst select()-loop gap during a cloud call
         self._token = 0
         self._shutdown = False                          # set by the `shutdown` command (kill switch)
         # ADR-048: AUTO-START the Flow Sentinel at boot if the user hasn't turned it off — so app-focus
@@ -768,8 +770,20 @@ class Session:
         # pipeline ends. Still ephemeral and never persisted; this is the "life of one request" window.
         self._cloud_jobs[job.fileno()] = {"job": job, "token": token, "provider": provider,
                                           "key": key, "model": model, "kind": "ask"}
+        self._cloud_loop_gap_max = 0.0                     # start the Gate-1 loop-liveness meter for this call
         self._persona_loop.observe(text, "user")          # the question is the user's, regardless of brain
         return True, {"status": "thinking", "token": token, "provider": provider}
+
+    # ── Gate 1 instrument: prove the select() loop never stalls while a cloud call is in flight ──
+    def cloud_in_flight(self) -> bool:
+        return bool(self._cloud_jobs)
+
+    def note_loop_gap(self, gap: float) -> None:
+        """Fed by the daemon every loop iteration while a cloud call runs. The MAX gap is the real
+        telemetry-drop signal: a healthy loop iterates on its poll cadence (and faster under sensor
+        activity); a loop blocked on a synchronous cloud call would show a gap ≈ the call duration."""
+        if gap > self._cloud_loop_gap_max:
+            self._cloud_loop_gap_max = gap
 
     def _read_cloud(self, fd: int) -> None:
         entry = self._cloud_jobs.get(fd)
@@ -785,16 +799,18 @@ class Session:
             self._ingest_cloud_claims(res, entry)
             return
         # phase 1: the cloud's answer
+        gap_ms = round(self._cloud_loop_gap_max * 1000, 1)    # Gate-1 telemetry-liveness reading for this call
+        sys.stderr.write(f"[gate1] cloud call done; worst select()-loop gap while in flight: {gap_ms} ms\n")
         if res is not None and res.ok:
             self._persona_loop.observe(res.text, "assistant")
-            self._emit("cloud_answer", {"token": entry["token"], "ok": True,
-                                        "provider": entry["provider"], "text": res.text})
+            self._emit("cloud_answer", {"token": entry["token"], "ok": True, "provider": entry["provider"],
+                                        "text": res.text, "loop_max_gap_ms": gap_ms})
             self._spawn_cloud_extraction(res.text, entry)   # ADR-056: the cloud feeds the symbolic vault
         else:
             kind = res.kind if res is not None else "network"
             err = res.error if res is not None else "The cloud call failed."
-            self._emit("cloud_answer", {"token": entry["token"], "ok": False,
-                                        "provider": entry["provider"], "kind": kind, "error": err})
+            self._emit("cloud_answer", {"token": entry["token"], "ok": False, "provider": entry["provider"],
+                                        "kind": kind, "error": err, "loop_max_gap_ms": gap_ms})
 
     def _spawn_cloud_extraction(self, answer_text: str, entry: dict) -> None:
         """Phase 2 of the pipeline: route the cloud's OWN answer back through the egress seam (firewall +

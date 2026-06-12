@@ -119,6 +119,10 @@ def test_live_daemon_offloop_cloud_does_not_block_the_select_loop(tmp_path, monk
               f"max={max(latencies)*1000:.1f}ms median={sorted(latencies)[len(latencies)//2]*1000:.1f}ms")
         assert max(latencies) < 0.25, f"select loop stalled during cloud call: max status RTT {max(latencies):.3f}s"
         assert len(latencies) >= 5, f"too few probes ({len(latencies)}) to trust the result"
+        # Gate-1 instrument: the daemon's own loop-stall meter must agree the loop stayed live (<< the
+        # 1.5s call). This is the number the LIVE smoke test reports for real-network/real-sensor.
+        gap = answer.get("loop_max_gap_ms")
+        assert gap is not None and gap < 300, f"Gate-1 meter shows a loop stall: {gap} ms"
     finally:
         _send(a, 999, "shutdown")
         time.sleep(0.3)

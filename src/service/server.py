@@ -24,6 +24,7 @@ class Daemon:
         self._path = sock_path or socket_path()
         self._poll = poll_interval
         self._last_tick = 0.0                # drives the steady-cadence tick (not only on idle timeout)
+        self._last_iter = 0.0                # Gate 1: timestamp of the previous loop pass (cloud-stall meter)
         self._clients: dict[socket.socket, protocol.LineBuffer] = {}
         self._session = Session(db_path, on_event=self._broadcast)
         self._srv: socket.socket | None = None
@@ -60,6 +61,12 @@ class Daemon:
                 # or a busy sensor) starved tick(), so the overnight runner / habit / consent loops never
                 # advanced under load — "Run Now" couldn't run while you watched it.
                 now = time.monotonic()
+                # Gate 1 instrument: while a cloud call is in flight, record the worst gap between loop
+                # passes. A loop blocked on a synchronous cloud call would show a gap ≈ the call duration;
+                # a healthy off-loop call keeps this near the poll cadence (smaller under sensor activity).
+                if self._last_iter and self._session.cloud_in_flight():
+                    self._session.note_loop_gap(now - self._last_iter)
+                self._last_iter = now
                 if now - self._last_tick >= self._poll:
                     self._session.tick()
                     self._last_tick = now
