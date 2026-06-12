@@ -142,6 +142,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func setConnected(_ up: Bool) {            // main thread — reflect IPC state in the menu bar + toolbar
         statusItem?.button?.title = up ? "🔵 JARVIS" : "⚪ JARVIS"
         workspace?.setConnected(up)
+        chat.setConnected(up)
     }
 
     // ── push-to-talk: click-to-toggle from the Chat tab (no global hotkey -> no conflicts) ──

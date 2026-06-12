@@ -1,243 +1,417 @@
-// The popover's content: a scrollable transcript + a one-line input. Strictly a view — it sends the
-// typed command to the daemon via JarvisClient and renders the reply. Zero reasoning, zero state
-// beyond the transcript text. Chat scope (per Phase 2): learn / ask / tell (+ status/health); a
-// bare line is treated as a question. Actions/interventions arrive as native notifications.
+// Chat — the Universal Composer (design handoff). A conversation that doubles as a natural-language +
+// `/`-command composer. Full-window layout: a scrollable transcript of styled bubbles fills the top; a
+// pinned composer bar (attach · `/` · field · mic · send) sits at the bottom. Typing `/` opens the
+// ActionPicker overlay (searchable verb list, keyboard-driven). Strictly a view over JarvisClient.
 import AppKit
 
 final class ChatViewController: NSViewController, NSTextFieldDelegate {
     weak var client: JarvisClient?
-    var onQuit: (() -> Void)?            // set by AppDelegate
-    var onStop: (() -> Void)?            // emergency stop (kill the daemon too)
-    var onToggleVoice: (() -> Void)?    // click-to-toggle push-to-talk
-    var onOpenCanvas: (() -> Void)?     // ADR-054: a parsed job projects into the Unified Canvas
-    private var verbs: [String] = []    // ADR-054: catalog actions for the / completion popover
-    private let transcript = NSTextView()
+    var onQuit: (() -> Void)?
+    var onStop: (() -> Void)?
+    var onToggleVoice: (() -> Void)?
+    var onOpenCanvas: (() -> Void)?
+    var onConsent: ((Int, Bool) -> Void)?
+
+    private let transcript = NSStackView()
+    private var transcriptScroll: NSScrollView!
+    private let emptyState = NSView()
     private let input = NSTextField()
-    private let voiceButton = NSButton()
-    // ADR-021: inline consent (Approve/Deny) so approval never depends on a notification banner.
-    private let consentBar = NSView()
-    private let consentLabel = NSTextField(labelWithString: "")
+    private var composer: NSView!
+    private var micBtn: DSButton!
+    private var sendBtn: DSButton!
+    private let pickerHost = NSStackView()       // holds the pinned-verb chip, if any
+    private let picker = ActionPicker()
+    private var pinnedVerb: ActionPicker.Verb?
     private var consentId: Int?
-    var onConsent: ((Int, Bool) -> Void)?    // (consent id, approved) -> AppDelegate sends consent_resolve
-    // Command words routed to the daemon as-is; anything else is treated as a question (`ask`).
-    // Must track the daemon's dispatch + the console (`sentinel`/`forget`/`restore` were missing,
-    // so "sentinel on" was being sent to the LLM as chat). `act` is intentionally NOT here — its
-    // needs_confirm round-trip has no GUI yet; use the terminal console for actions.
-    private static let known = ["learn", "ask", "tell", "status", "health",
-                                "sentinel", "forget", "restore",
-                                "overnight_enqueue", "overnight_start", "overnight_status"]  // ADR-031
+    private let consentBar = NSView()
+    private let consentLabel = DS.text("", 12, .medium)
+    private var verbs: [ActionPicker.Verb] = []
+    private var hasMessages = false
 
+    // friendly name · description · SF Symbol per catalog verb (design catalog table)
+    private static let meta: [String: (String, String, String)] = [
+        "summarize_file": ("Summarize a document", "Condense a local file into key points", "doc.text.magnifyingglass"),
+        "read_article": ("Read a web article", "Fetch and read an online page", "globe"),
+        "read_file": ("Read a file", "Open and read a local file", "doc.text"),
+        "web_lookup": ("Web search", "Search the web for a query", "magnifyingglass"),
+        "report_system": ("System report", "A snapshot of this Mac's health", "gauge.medium"),
+        "audio_status": ("Audio status", "Current output device and volume", "speaker.wave.2"),
+        "network_status": ("Network status", "Connection, signal, and throughput", "wifi"),
+        "largest_apps": ("Largest apps", "Apps using the most disk space", "chart.bar"),
+        "find_file": ("Find a file", "Locate a file by name", "doc.text.magnifyingglass"),
+        "open_app": ("Open an app", "Launch an application", "app.dashed"),
+        "open_url": ("Open a URL", "Open a link in your browser", "link"),
+        "set_volume": ("Set volume", "Change the system output volume", "speaker.wave.2"),
+        "mute": ("Mute", "Silence system audio", "speaker.slash"),
+        "empty_trash": ("Empty trash", "Permanently delete trashed items", "trash"),
+    ]
+    private static let known = ["learn", "ask", "tell", "status", "health", "sentinel", "forget", "restore"]
+
+    // ── layout ──
     override func loadView() {
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 420, height: 320))
+        let root = NSView()
+        root.wantsLayer = true
+        root.layer?.backgroundColor = DS.contentBG.cgColor
 
-        // Control row (always visible): an unmissable off-switch.
-        let stop = NSButton(title: "⛔ Stop All", target: self, action: #selector(stopAll))
-        stop.frame = NSRect(x: 8, y: 288, width: 110, height: 26)
-        stop.bezelColor = NSColor.systemRed
-        let quit = NSButton(title: "Quit", target: self, action: #selector(quit))
-        quit.frame = NSRect(x: 344, y: 288, width: 68, height: 26)
-        let title = NSTextField(labelWithString: "NARS-JARVIS")
-        title.frame = NSRect(x: 126, y: 292, width: 210, height: 18)
-        title.alignment = .center
-        title.textColor = .secondaryLabelColor
+        // transcript (scroll fills, content centered max-width 720)
+        transcriptScroll = NSScrollView()
+        transcriptScroll.drawsBackground = false; transcriptScroll.hasVerticalScroller = true
+        transcriptScroll.translatesAutoresizingMaskIntoConstraints = false
+        transcript.orientation = .vertical; transcript.alignment = .centerX; transcript.spacing = 14
+        transcript.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
+        transcript.translatesAutoresizingMaskIntoConstraints = false
+        let flip = FlippedClip(); flip.translatesAutoresizingMaskIntoConstraints = false
+        flip.addSubview(transcript)
+        transcriptScroll.documentView = flip
 
-        let scroll = NSScrollView(frame: NSRect(x: 8, y: 72, width: 404, height: 208))
-        scroll.hasVerticalScroller = true
-        scroll.borderType = .bezelBorder
-        transcript.isEditable = false
-        transcript.isVerticallyResizable = true
-        transcript.autoresizingMask = [.width]
-        transcript.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-        scroll.documentView = transcript
-
-        // Inline consent bar (hidden until a consent_request arrives): "<prompt>  [Approve] [Deny]".
-        consentBar.frame = NSRect(x: 8, y: 38, width: 404, height: 30)
-        consentBar.wantsLayer = true
-        consentBar.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.15).cgColor
-        consentBar.layer?.cornerRadius = 5
+        buildEmptyState()
+        buildComposer()
         consentBar.isHidden = true
-        consentLabel.frame = NSRect(x: 8, y: 6, width: 250, height: 18)
-        consentLabel.font = NSFont.systemFont(ofSize: 11)
-        consentLabel.lineBreakMode = .byTruncatingTail
-        let approve = NSButton(title: "Approve", target: self, action: #selector(approveConsent))
-        approve.frame = NSRect(x: 262, y: 2, width: 72, height: 26)
-        approve.bezelColor = NSColor.systemGreen
-        approve.keyEquivalent = "\r"                      // Enter approves
-        let deny = NSButton(title: "Deny", target: self, action: #selector(denyConsent))
-        deny.frame = NSRect(x: 336, y: 2, width: 64, height: 26)
-        consentBar.addSubview(consentLabel)
-        consentBar.addSubview(approve)
-        consentBar.addSubview(deny)
+        buildConsentBar()
 
-        input.frame = NSRect(x: 8, y: 8, width: 312, height: 24)
-        input.placeholderString = "ask, or type / to run a job…"
-        input.target = self
-        input.action = #selector(submit)
-        input.delegate = self                            // ADR-054: drive the / completion popover
-        voiceButton.frame = NSRect(x: 326, y: 6, width: 86, height: 28)
-        voiceButton.title = "🎙 Listen"
-        voiceButton.bezelStyle = .rounded
-        voiceButton.target = self
-        voiceButton.action = #selector(toggleVoice)
-        container.addSubview(stop)
-        container.addSubview(quit)
-        container.addSubview(title)
-        container.addSubview(scroll)
-        container.addSubview(consentBar)
-        container.addSubview(input)
-        container.addSubview(voiceButton)
-        self.view = container
+        for v in [transcriptScroll!, emptyState, consentBar, composer!] { root.addSubview(v) }
+        emptyState.translatesAutoresizingMaskIntoConstraints = false
+        composer.translatesAutoresizingMaskIntoConstraints = false
+        consentBar.translatesAutoresizingMaskIntoConstraints = false
+
+        NSLayoutConstraint.activate([
+            transcriptScroll.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            transcriptScroll.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            transcriptScroll.topAnchor.constraint(equalTo: root.topAnchor),
+            transcriptScroll.bottomAnchor.constraint(equalTo: consentBar.topAnchor),
+            flip.leadingAnchor.constraint(equalTo: transcriptScroll.contentView.leadingAnchor),
+            flip.trailingAnchor.constraint(equalTo: transcriptScroll.contentView.trailingAnchor),
+            flip.topAnchor.constraint(equalTo: transcriptScroll.contentView.topAnchor),
+            transcript.leadingAnchor.constraint(equalTo: flip.leadingAnchor),
+            transcript.trailingAnchor.constraint(equalTo: flip.trailingAnchor),
+            transcript.topAnchor.constraint(equalTo: flip.topAnchor),
+            transcript.bottomAnchor.constraint(equalTo: flip.bottomAnchor),
+            transcript.widthAnchor.constraint(equalTo: transcriptScroll.widthAnchor),
+
+            emptyState.centerXAnchor.constraint(equalTo: root.centerXAnchor),
+            emptyState.centerYAnchor.constraint(equalTo: transcriptScroll.centerYAnchor),
+            emptyState.widthAnchor.constraint(lessThanOrEqualToConstant: 460),
+
+            consentBar.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 20),
+            consentBar.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -20),
+            consentBar.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -8),
+
+            composer.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 20),
+            composer.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -20),
+            composer.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -16),
+        ])
+        self.view = root
     }
 
-    @objc private func quit() { onQuit?() }
-    @objc private func stopAll() { onStop?() }
-    @objc private func toggleVoice() { onToggleVoice?() }
-
-    // ── ADR-021 inline consent ──
-    /// Show the Approve/Deny bar for a pending consent request.
-    func showConsent(_ id: Int, _ prompt: String) {
-        consentId = id
-        consentLabel.stringValue = prompt
-        consentBar.isHidden = false
-    }
-    /// Hide the bar if it's showing this id (resolved elsewhere / expired).
-    func clearConsent(_ id: Int) {
-        if consentId == id { consentId = nil; consentBar.isHidden = true }
-    }
-    @objc private func approveConsent() { resolveConsent(true) }
-    @objc private func denyConsent() { resolveConsent(false) }
-    private func resolveConsent(_ approved: Bool) {
-        guard let id = consentId else { return }
-        consentId = nil; consentBar.isHidden = true
-        onConsent?(id, approved)
+    private func buildEmptyState() {
+        let tile = DS.iconTile("sparkles", tint: DS.accent, side: 56, pt: 26)
+        let h = DS.text("What can I do?", 21, .semibold, DS.label)
+        let sub = DS.text("Ask me something, or type / to run a job.", 13.5, .regular, DS.label2)
+        let chips = NSStackView(views: ["Summarize a document", "System report", "What's slowing my internet?"].map { suggestionChip($0) })
+        chips.orientation = .horizontal; chips.spacing = 8
+        let col = NSStackView(views: [tile, h, sub, chips])
+        col.orientation = .vertical; col.alignment = .centerX; col.spacing = 10
+        col.translatesAutoresizingMaskIntoConstraints = false
+        emptyState.addSubview(col)
+        NSLayoutConstraint.activate([
+            col.leadingAnchor.constraint(equalTo: emptyState.leadingAnchor),
+            col.trailingAnchor.constraint(equalTo: emptyState.trailingAnchor),
+            col.topAnchor.constraint(equalTo: emptyState.topAnchor),
+            col.bottomAnchor.constraint(equalTo: emptyState.bottomAnchor),
+        ])
     }
 
-    /// AppDelegate flips this when recording starts/stops so the button reflects state.
-    func setRecording(_ on: Bool) {
-        voiceButton.title = on ? "■ Stop & send" : "🎙 Listen"
-        voiceButton.contentTintColor = on ? .systemRed : nil
+    private func suggestionChip(_ s: String) -> NSView {
+        DSButton(s, variant: .secondary, size: 12) { [weak self] in
+            self?.input.stringValue = s; self?.view.window?.makeFirstResponder(self?.input)
+        }
     }
 
-    func focusInput() { view.window?.makeFirstResponder(input) }
+    private func buildComposer() {
+        composer = DS.rounded(bg: DS.fieldBG, radius: 13, border: DS.separator)
+        let plus = DSButton(nil, symbol: "plus", variant: .icon) { [weak self] in self?.attach() }
+        let slash = DSButton(nil, symbol: "slash.circle", variant: .icon) { [weak self] in self?.togglePicker() }
+        pickerHost.orientation = .horizontal; pickerHost.spacing = 6
+        input.isBordered = false; input.drawsBackground = false; input.focusRingType = .none
+        input.font = DS.font(13.5); input.textColor = DS.label
+        input.placeholderString = "Ask, or type / to run a job…"
+        input.delegate = self; input.target = self; input.action = #selector(submit)
+        input.translatesAutoresizingMaskIntoConstraints = false
+        input.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        micBtn = DSButton("Listen", symbol: "mic", variant: .secondary, size: 12) { [weak self] in self?.onToggleVoice?() }
+        sendBtn = DSButton(nil, symbol: "arrow.up", variant: .primary) { [weak self] in self?.submit() }
+
+        let stack = NSStackView(views: [plus, slash, pickerHost, input, micBtn, sendBtn])
+        stack.orientation = .horizontal; stack.spacing = 7; stack.alignment = .centerY
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        composer.addSubview(stack)
+        NSLayoutConstraint.activate([
+            composer.heightAnchor.constraint(greaterThanOrEqualToConstant: 46),
+            stack.leadingAnchor.constraint(equalTo: composer.leadingAnchor, constant: 8),
+            stack.trailingAnchor.constraint(equalTo: composer.trailingAnchor, constant: -7),
+            stack.centerYAnchor.constraint(equalTo: composer.centerYAnchor),
+        ])
+        picker.onChoose = { [weak self] v in self?.pinVerb(v) }
+    }
+
+    private func buildConsentBar() {
+        let bar = DS.rounded(bg: DS.amber.withAlphaComponent(0.16), radius: 10, border: DS.amber.withAlphaComponent(0.4))
+        bar.translatesAutoresizingMaskIntoConstraints = false
+        let glyph = DS.symbol("pause.circle.fill", 13, .medium, DS.amber)
+        consentLabel.textColor = DS.amber; consentLabel.maximumNumberOfLines = 2
+        let deny = DSButton("Deny", variant: .secondary, size: 12) { [weak self] in self?.resolveConsent(false) }
+        let approve = DSButton("Approve", variant: .pillAccent, size: 12) { [weak self] in self?.resolveConsent(true) }
+        approve.layer?.backgroundColor = DS.green.cgColor
+        let stack = NSStackView(views: [glyph, consentLabel, NSView(), deny, approve])
+        stack.orientation = .horizontal; stack.spacing = 8; stack.alignment = .centerY
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        bar.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 10),
+            stack.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -8),
+            stack.topAnchor.constraint(equalTo: bar.topAnchor, constant: 7),
+            stack.bottomAnchor.constraint(equalTo: bar.bottomAnchor, constant: -7),
+        ])
+        // mount the styled bar inside the consentBar wrapper
+        consentBar.addSubview(bar)
+        NSLayoutConstraint.activate([
+            bar.leadingAnchor.constraint(equalTo: consentBar.leadingAnchor),
+            bar.trailingAnchor.constraint(equalTo: consentBar.trailingAnchor),
+            bar.topAnchor.constraint(equalTo: consentBar.topAnchor),
+            bar.bottomAnchor.constraint(equalTo: consentBar.bottomAnchor),
+        ])
+    }
 
     override func viewDidAppear() {
         super.viewDidAppear()
-        if verbs.isEmpty {                               // ADR-054: pull the catalog once for / completion
-            client?.call("catalog_schema") { [weak self] _, body in
-                let actions = (body["actions"] as? [[String: Any]]) ?? []
-                DispatchQueue.main.async { self?.verbs = actions.compactMap { $0["name"] as? String } }
+        if verbs.isEmpty { fetchVerbs() }
+        view.window?.makeFirstResponder(input)
+    }
+
+    private func fetchVerbs() {
+        client?.call("catalog_schema") { [weak self] _, body in
+            let acts = (body["actions"] as? [[String: Any]]) ?? []
+            let vs: [ActionPicker.Verb] = acts.compactMap { a in
+                guard let name = a["name"] as? String else { return nil }
+                let m = ChatViewController.meta[name]
+                return ActionPicker.Verb(name: name,
+                                         label: m?.0 ?? (a["label"] as? String ?? name),
+                                         desc: m?.1 ?? (a["label"] as? String ?? ""),
+                                         symbol: m?.2 ?? "circle",
+                                         auto: (a["autonomous"] as? Bool) ?? true)
             }
+            DispatchQueue.main.async { self?.verbs = vs; self?.picker.setVerbs(vs) }
         }
     }
 
-    // ── ADR-054: the / verb popover, via the native field-editor completion (handles ↑↓⏎⎢ + placement) ──
+    // ── the `/` picker ──
+    private func togglePicker() {
+        if picker.isVisible { picker.hide() }
+        else { input.stringValue = "/"; view.window?.makeFirstResponder(input); picker.update(anchor: composer, query: "") }
+    }
     func controlTextDidChange(_ note: Notification) {
-        guard let editor = note.userInfo?["NSFieldEditor"] as? NSTextView else { return }
-        if input.stringValue.hasPrefix("/") && !input.stringValue.contains(" ") {
-            editor.complete(nil)                          // only while typing the verb token itself
+        let s = input.stringValue
+        sendBtn.alphaValue = (s.isEmpty && pinnedVerb == nil) ? 0.4 : 1
+        if s.hasPrefix("/") && !s.contains(" ") {
+            picker.update(anchor: composer, query: String(s.dropFirst()))
+        } else if picker.isVisible { picker.hide() }
+    }
+    func control(_ c: NSControl, textView: NSTextView, doCommandBy sel: Selector) -> Bool {
+        guard picker.isVisible else { return false }
+        switch sel {
+        case #selector(NSResponder.moveUp(_:)): picker.move(-1); return true
+        case #selector(NSResponder.moveDown(_:)): picker.move(1); return true
+        case #selector(NSResponder.insertNewline(_:)): picker.chooseSelected(); return true
+        case #selector(NSResponder.cancelOperation(_:)): picker.hide(); return true
+        default: return false
+        }
+    }
+    private func pinVerb(_ v: ActionPicker.Verb) {
+        pinnedVerb = v
+        input.stringValue = ""
+        input.placeholderString = "Add the target and timing… e.g. the PRD on my desktop tonight"
+        pickerHost.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        let chip = DS.rounded(bg: DS.accent.withAlphaComponent(0.12), radius: 7)
+        let name = DS.text(v.label, 12, .semibold, DS.accent)
+        let x = DSButton(nil, symbol: "xmark", variant: .icon) { [weak self] in self?.unpinVerb() }
+        let st = NSStackView(views: [name, x]); st.spacing = 2; st.alignment = .centerY
+        st.translatesAutoresizingMaskIntoConstraints = false
+        chip.addSubview(st)
+        NSLayoutConstraint.activate([
+            chip.heightAnchor.constraint(equalToConstant: 24),
+            st.leadingAnchor.constraint(equalTo: chip.leadingAnchor, constant: 8),
+            st.trailingAnchor.constraint(equalTo: chip.trailingAnchor, constant: -2),
+            st.centerYAnchor.constraint(equalTo: chip.centerYAnchor),
+        ])
+        pickerHost.addArrangedSubview(chip)
+        view.window?.makeFirstResponder(input)
+    }
+    private func unpinVerb() {
+        pinnedVerb = nil
+        input.placeholderString = "Ask, or type / to run a job…"
+        pickerHost.arrangedSubviews.forEach { $0.removeFromSuperview() }
+    }
+
+    private func attach() {
+        let p = NSOpenPanel(); p.canChooseFiles = true; p.canChooseDirectories = false; p.allowsMultipleSelection = false
+        if p.runModal() == .OK, let url = p.url {
+            let cur = input.stringValue
+            input.stringValue = cur.isEmpty ? url.path : cur + " " + url.path
+            view.window?.makeFirstResponder(input)
         }
     }
 
-    func control(_ control: NSControl, textView: NSTextView, completions words: [String],
-                 forPartialWordRange charRange: NSRange, indexOfSelectedItem index: UnsafeMutablePointer<Int>
-    ) -> [String] {
-        let partial = (textView.string as NSString).substring(with: charRange)
-        guard partial.hasPrefix("/") else { return [] }   // only complete the / command, not normal text
-        let needle = partial.dropFirst().lowercased()
-        return verbs.filter { needle.isEmpty || $0.lowercased().contains(needle) }.map { "/" + $0 }
-    }
-
-    func append(_ text: String) {
-        guard !text.isEmpty else { return }
-        transcript.string += (transcript.string.isEmpty ? "" : "\n") + text
-        transcript.scrollToEndOfDocument(nil)
-    }
-
+    // ── submit ──
     @objc private func submit() {
         let line = input.stringValue.trimmingCharacters(in: .whitespaces)
-        guard !line.isEmpty, let client = client else { return }
-        input.stringValue = ""
-        append("» " + line)
-        // ADR-054: a / line is a JOB — pin the verb, parse the rest as NL, project to the Canvas.
-        if line.hasPrefix("/") {
-            let body = String(line.dropFirst())
-            let parts = body.split(separator: " ", maxSplits: 1).map(String.init)
-            let verb = parts.first ?? ""
-            let rest = parts.count > 1 ? parts[1] : ""
-            if rest.isEmpty {
-                append("ℹ add a target, e.g. /\(verb.isEmpty ? "summarize_file" : verb) ~/Desktop/report.pdf tonight")
-                return
+        guard let client = client else { return }
+        picker.hide()
+        if let v = pinnedVerb {                                  // a pinned-verb job
+            guard !line.isEmpty else { return }
+            addUser("/\(v.label)  \(line)")
+            input.stringValue = ""; unpinVerb()
+            client.call("intent_parse", ["text": line, "action": v.name]) { [weak self] _, b in
+                DispatchQueue.main.async { self?.handleIntent(b) }
             }
+            return
+        }
+        guard !line.isEmpty else { return }
+        input.stringValue = ""
+        addUser(line)
+        if line.hasPrefix("/") {                                 // typed /verb without picking
+            let parts = String(line.dropFirst()).split(separator: " ", maxSplits: 1).map(String.init)
+            let verb = parts.first ?? "", rest = parts.count > 1 ? parts[1] : ""
+            if rest.isEmpty { addAssistant("Add a target, e.g. /\(verb) ~/Desktop/report.pdf tonight", error: false); return }
             client.call("intent_parse", ["text": rest, "action": verb]) { [weak self] _, b in
                 DispatchQueue.main.async { self?.handleIntent(b) }
             }
             return
         }
         let parts = line.split(separator: " ", maxSplits: 1).map(String.init)
-        let head = parts[0].lowercased()                         // commands are case-insensitive
-        let known = Self.known.contains(head)
-        let cmd = known ? head : "ask"                           // bare text -> a question
-        let arg = known ? (parts.count > 1 ? parts[1] : "") : line
-        client.call(cmd, arg) { [weak self] ok, body in
-            DispatchQueue.main.async { self?.render(cmd, ok, body) }
+        let head = parts[0].lowercased(), known = Self.known.contains(head)
+        let cmd = known ? head : "ask", arg = known ? (parts.count > 1 ? parts[1] : "") : line
+        client.call(cmd, arg) { [weak self] _, body in
+            DispatchQueue.main.async {
+                if let t = body["text"] as? String { self?.addAssistant(t, error: false) }
+                if let committed = body["committed"] as? [String], !committed.isEmpty {
+                    self?.addAssistant("✓ saved: " + committed.joined(separator: " · "), error: false)
+                }
+            }
         }
     }
 
-    /// ADR-054: project a parsed intent into the Canvas. Resolve the relative timing to an absolute
-    /// epoch HERE (the client owns timezone math; the daemon stays timezone-free), then enqueue/schedule.
     private func handleIntent(_ body: [String: Any]) {
         if (body["ok"] as? Bool) != true {
-            append("🤔 " + ((body["clarify"] as? String) ?? (body["text"] as? String) ?? "I couldn't parse that."))
-            return
+            addAssistant((body["clarify"] as? String) ?? (body["text"] as? String) ?? "I couldn't parse that.", error: true); return
         }
-        guard let intent = body["intent"] as? [String: Any],
-              let action = intent["action"] as? String else { append("⚠ couldn't read that job."); return }
+        guard let intent = body["intent"] as? [String: Any], let action = intent["action"] as? String else { return }
         let arg = intent["arg"] as? String ?? ""
         let item: [String: String] = ["action": action, "arg": arg]
         let target = arg.isEmpty ? "" : " — \((arg as NSString).lastPathComponent)"
         if let epoch = resolveEpoch(intent["timing"] as? [String: Any]) {
             client?.call("overnight_schedule_batch", ["items": [item], "run_at": epoch]) { _, _ in }
-            append("🗓 scheduled: \(action)\(target)")
+            addChip(state: "scheduled", title: "\(action)\(target)")
         } else {
-            client?.call("overnight_enqueue_batch", [item]) { [weak self] _, _ in
-                self?.client?.call("overnight_start") { _, _ in }
-            }
-            append("▶ running now: \(action)\(target)")
+            client?.call("overnight_enqueue_batch", [item]) { [weak self] _, _ in self?.client?.call("overnight_start") { _, _ in } }
+            addChip(state: "running", title: "\(action)\(target)")
         }
-        onOpenCanvas?()                                   // bring the Canvas forward so the row is seen
     }
 
-    /// Relative timing {kind,value} -> absolute epoch, against LOCAL time. nil = run now.
     private func resolveEpoch(_ timing: [String: Any]?) -> Double? {
         guard let t = timing, let kind = t["kind"] as? String else { return nil }
         let value = (t["value"] as? Int) ?? Int((t["value"] as? Double) ?? 0)
         switch kind {
-        case "in_minutes":
-            return Date().addingTimeInterval(Double(value) * 60).timeIntervalSince1970
+        case "in_minutes": return Date().addingTimeInterval(Double(value) * 60).timeIntervalSince1970
         case "at_clock_hour":
             let cal = Calendar.current; let now = Date()
-            var comps = cal.dateComponents([.year, .month, .day], from: now)
-            comps.hour = value; comps.minute = 0; comps.second = 0
-            var target = cal.date(from: comps) ?? now
+            var c = cal.dateComponents([.year, .month, .day], from: now); c.hour = value; c.minute = 0; c.second = 0
+            var target = cal.date(from: c) ?? now
             if target <= now { target = cal.date(byAdding: .day, value: 1, to: target) ?? target }
             return target.timeIntervalSince1970
-        default:
-            return nil
+        default: return nil
         }
     }
 
-    private func render(_ cmd: String, _ ok: Bool, _ body: [String: Any]) {
-        if let text = body["text"] as? String { append(text) }
-        if let lines = body["lines"] as? [String] { lines.forEach { append($0) } }
-        guard cmd == "learn" else { return }
-        if let committed = body["committed"] as? [String], !committed.isEmpty {
-            append("✓ saved: " + committed.joined(separator: " · "))
-        }
-        for r in body["rejects"] as? [[String: Any]] ?? [] {
-            append("✗ " + (r["mirror"] as? String ?? "") + " — " + (r["reason"] as? String ?? ""))
-        }
-        if let esc = body["escalations"] as? [[String: Any]], !esc.isEmpty {
-            append("? unsure about \(esc.count) (not auto-saved; confirm in the terminal for now)")
-        }
+    // ── transcript rows ──
+    private func markSeen() { if !hasMessages { hasMessages = true; emptyState.isHidden = true } }
+    private func addRow(_ v: NSView, align: NSLayoutConstraint.Attribute) {
+        markSeen()
+        let wrap = NSView(); wrap.translatesAutoresizingMaskIntoConstraints = false
+        wrap.addSubview(v); v.translatesAutoresizingMaskIntoConstraints = false
+        v.topAnchor.constraint(equalTo: wrap.topAnchor).isActive = true
+        v.bottomAnchor.constraint(equalTo: wrap.bottomAnchor).isActive = true
+        v.widthAnchor.constraint(lessThanOrEqualTo: wrap.widthAnchor, multiplier: 0.82).isActive = true
+        if align == .leading { v.leadingAnchor.constraint(equalTo: wrap.leadingAnchor).isActive = true }
+        else { v.trailingAnchor.constraint(equalTo: wrap.trailingAnchor).isActive = true }
+        wrap.widthAnchor.constraint(lessThanOrEqualToConstant: 720).isActive = true
+        transcript.addArrangedSubview(wrap)
+        wrap.widthAnchor.constraint(equalTo: transcript.widthAnchor, constant: -40).isActive = true
+        DispatchQueue.main.async { [weak self] in self?.scrollToBottom() }
+    }
+    private func scrollToBottom() {
+        guard let doc = transcriptScroll.documentView else { return }
+        transcriptScroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, doc.bounds.height - transcriptScroll.contentView.bounds.height)))
+    }
+    private func bubble(_ s: String, bg: NSColor, fg: NSColor) -> NSView {
+        let v = DS.rounded(bg: bg, radius: 14)
+        let t = DS.text(s, 13.5, .regular, fg, wrap: true, selectable: true)
+        v.addSubview(t)
+        NSLayoutConstraint.activate([
+            t.leadingAnchor.constraint(equalTo: v.leadingAnchor, constant: 11),
+            t.trailingAnchor.constraint(equalTo: v.trailingAnchor, constant: -11),
+            t.topAnchor.constraint(equalTo: v.topAnchor, constant: 7),
+            t.bottomAnchor.constraint(equalTo: v.bottomAnchor, constant: -7),
+        ])
+        return v
+    }
+    private func addUser(_ s: String) { addRow(bubble(s, bg: DS.accent, fg: DS.onAccent), align: .trailing) }
+    private func addAssistant(_ s: String, error: Bool) {
+        let bg = error ? DS.red.withAlphaComponent(0.12) : DS.fill(0.07)
+        let fg = error ? DS.red : DS.label
+        addRow(bubble(s, bg: bg, fg: fg), align: .leading)
+    }
+
+    private func addChip(state: String, title: String) {
+        let chip = DS.rounded(bg: DS.card, radius: 12, border: DS.separator)
+        let glyph = DS.symbol(DS.stateGlyph(state), 14, .medium, DS.stateColor(state))
+        let t = DS.text(title, 13, .semibold, DS.label)
+        let body = DS.text(state == "scheduled" ? "scheduled" : "running…", 12, .regular, DS.stateColor(state))
+        let view = DSButton("View on Canvas ›", variant: .quiet, size: 12) { [weak self] in self?.onOpenCanvas?() }
+        let st = NSStackView(views: [glyph, t, body, NSView(), view])
+        st.orientation = .horizontal; st.spacing = 9; st.alignment = .centerY
+        st.translatesAutoresizingMaskIntoConstraints = false
+        chip.addSubview(st)
+        NSLayoutConstraint.activate([
+            chip.heightAnchor.constraint(equalToConstant: 42),
+            st.leadingAnchor.constraint(equalTo: chip.leadingAnchor, constant: 11),
+            st.trailingAnchor.constraint(equalTo: chip.trailingAnchor, constant: -9),
+            st.centerYAnchor.constraint(equalTo: chip.centerYAnchor),
+        ])
+        addRow(chip, align: .leading)
+    }
+
+    // ── public API (AppDelegate) ──
+    func append(_ text: String) {
+        guard !text.isEmpty else { return }
+        addAssistant(text, error: text.hasPrefix("⚠") || text.hasPrefix("✗"))
+    }
+    func focusInput() { view.window?.makeFirstResponder(input) }
+    func setRecording(_ on: Bool) {
+        micBtn.titleField?.stringValue = on ? "Stop & send" : "Listen"
+        micBtn.layer?.backgroundColor = (on ? DS.red : NSColor.clear).cgColor
+    }
+    func setConnected(_ up: Bool) {
+        input.isEnabled = up
+        input.placeholderString = up ? (pinnedVerb == nil ? "Ask, or type / to run a job…" : input.placeholderString)
+                                     : "Reconnecting to the engine…"
+    }
+    func showConsent(_ id: Int, _ prompt: String) { consentId = id; consentLabel.stringValue = prompt; consentBar.isHidden = false }
+    func clearConsent(_ id: Int) { if consentId == id { consentId = nil; consentBar.isHidden = true } }
+    private func resolveConsent(_ ok: Bool) {
+        guard let id = consentId else { return }
+        consentId = nil; consentBar.isHidden = true; onConsent?(id, ok)
     }
 }
+
+/// A flipped clip so the transcript stack grows top-down inside the scroll view.
+final class FlippedClip: NSView { override var isFlipped: Bool { true } }
