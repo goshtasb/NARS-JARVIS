@@ -87,6 +87,28 @@ _COLS = (
     "priority_tier, use_count, created_at, updated_at, last_used"
 )
 
+# ADR-056/Gate 2: an FTS5 term index over facts.narsese for term-scoped candidate retrieval (deletes the
+# recency-capped whole-table scan and its silent forgetting cliff). EXTERNAL-CONTENT (content='facts') so
+# it duplicates no text — a purely derived index; the `facts` table stays the single source of truth and
+# the index can be dropped/rebuilt with zero data loss. `tokenchars '_'` keeps compound atoms whole
+# (`transaction_timeout` is one token, not `transaction`+`timeout`) — without it, FTS would re-introduce
+# the exact word-overlap-≠-adjacency bug Stage 2 eliminates. Three triggers keep it in sync across ALL
+# fact mutation paths (insert/update/delete) at the DB level — no per-call-site Python sync to drift.
+_FTS_SCHEMA = """
+CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(
+  narsese, content='facts', content_rowid='id', tokenize="unicode61 tokenchars '_'");
+CREATE TRIGGER IF NOT EXISTS facts_fts_ai AFTER INSERT ON facts BEGIN
+  INSERT INTO facts_fts(rowid, narsese) VALUES (new.id, new.narsese);
+END;
+CREATE TRIGGER IF NOT EXISTS facts_fts_ad AFTER DELETE ON facts BEGIN
+  INSERT INTO facts_fts(facts_fts, rowid, narsese) VALUES('delete', old.id, old.narsese);
+END;
+CREATE TRIGGER IF NOT EXISTS facts_fts_au AFTER UPDATE ON facts BEGIN
+  INSERT INTO facts_fts(facts_fts, rowid, narsese) VALUES('delete', old.id, old.narsese);
+  INSERT INTO facts_fts(rowid, narsese) VALUES (new.id, new.narsese);
+END;
+"""
+
 
 def _row_to_fact(r: tuple) -> Fact:
     return Fact(r[0], r[1], r[2], r[3], unpack_embedding(r[4]), bool(r[5]),
@@ -109,6 +131,13 @@ class MemoryStore:
             if name not in have:
                 self._db.execute(f"ALTER TABLE memories ADD COLUMN {name} {decl}")
         self._db.execute("CREATE INDEX IF NOT EXISTS idx_memories_active ON memories(active)")
+        # ADR-056/Gate 2: the FTS5 term index + sync triggers (idempotent). One-time backfill if the index
+        # is empty but facts already exist (a fresh index over a pre-existing DB); thereafter the triggers
+        # keep it current, so no rebuild on subsequent opens.
+        self._db.executescript(_FTS_SCHEMA)
+        if (self._db.execute("SELECT count(*) FROM facts_fts").fetchone()[0] == 0
+                and self._db.execute("SELECT count(*) FROM facts").fetchone()[0] > 0):
+            self._db.execute("INSERT INTO facts_fts(facts_fts) VALUES('rebuild')")
 
     def upsert(self, narsese: str, frequency: float, confidence: float,
                english: str | None = None, embedding: list[float] | None = None,
@@ -297,6 +326,20 @@ class MemoryStore:
         rows = self._db.execute(
             f"SELECT {_COLS} FROM facts ORDER BY pinned DESC, priority_tier DESC, last_used DESC LIMIT ?",
             (limit,)).fetchall()
+        return [_row_to_fact(r) for r in rows]
+
+    def facts_matching(self, atoms: list[str]) -> list[Fact]:
+        """ADR-056/Gate 2: term-scoped candidate fetch — every fact whose Narsese contains ANY of `atoms`,
+        via the FTS5 index (C-speed, complete at any store size; no recency cap, no full-table sort). Atoms
+        are quoted and OR-joined so one that happens to be `or`/`and`/`near` can't collide with FTS5 query
+        syntax (embedded quotes stripped — atoms are `[a-z0-9_]`, but defended anyway)."""
+        terms = [a.replace('"', "") for a in atoms if a and a.replace('"', "").strip()]
+        if not terms:
+            return []
+        match = " OR ".join(f'"{t}"' for t in terms)
+        rows = self._db.execute(
+            f"SELECT {_COLS} FROM facts WHERE id IN (SELECT rowid FROM facts_fts WHERE facts_fts MATCH ?)",
+            (match,)).fetchall()
         return [_row_to_fact(r) for r in rows]
 
     def prune(self, max_rows: int) -> int:

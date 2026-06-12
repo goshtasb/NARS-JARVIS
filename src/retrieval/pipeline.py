@@ -16,11 +16,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from memory.fact import to_statement
+from retrieval.lexicon_ingest import terms_in_narsese
 from retrieval.query_parse import extract_mentions
 from retrieval.ranking import select_grounded
 from retrieval.traversal import BeliefGraph, beliefs_from_facts
-
-_MAX_FACTS = 4000          # Phase-5 TODO: replace whole-store load with a SQL term-scoped candidate query
 
 
 @dataclass
@@ -55,7 +54,7 @@ def recall(query: str, *, store, lexicon, brain_factory, now: float,
     anchors = [lexicon.resolve(a) or a for a in qm.anchors]
     targets = {(lexicon.resolve(m) or m) for m in qm.mentions if m not in qm.anchors}
 
-    facts = store.facts_for_reload(limit=_MAX_FACTS)
+    facts = _fetch_neighborhood(store, anchors + list(targets), max_hops=max_hops)
     graph = BeliefGraph(beliefs_from_facts(facts))
     top = select_grounded(graph, anchors, targets, now=now, max_hops=max_hops, top_k=top_k)
     if not top:
@@ -84,6 +83,29 @@ def recall(query: str, *, store, lexicon, brain_factory, now: float,
     provenance = [p for p in (_enrich(store, t) for t in prov_terms) if p is not None]
     truth = {"frequency": answer.truth.frequency, "confidence": answer.truth.confidence} if answer.truth else None
     return RecallResult(grounded=True, answer=answer.term, truth=truth, provenance=provenance)
+
+
+def _fetch_neighborhood(store, seeds, *, max_hops):
+    """Pull the term-scoped candidate subgraph from L2 via FTS: BFS-expand from the seed atoms up to
+    `max_hops`, collecting every fact reachable by a shared atom. Replaces the whole-store recency scan —
+    only the relevant neighborhood loads, at any store size (no 4k cliff, no full-table sort). The precise
+    hop-distance / adjacency / ranking is still computed downstream by the BeliefGraph over this set."""
+    seen_facts: dict = {}
+    seen_atoms = set(seeds)
+    frontier = set(seeds)
+    for _ in range(max_hops):
+        if not frontier:
+            break
+        new_atoms: set = set()
+        for f in store.facts_matching(list(frontier)):
+            if f.narsese not in seen_facts:
+                seen_facts[f.narsese] = f
+                for a in terms_in_narsese(f.narsese):
+                    if a not in seen_atoms:
+                        seen_atoms.add(a)
+                        new_atoms.add(a)
+        frontier = new_atoms
+    return list(seen_facts.values())
 
 
 def _question(anchors, targets, present) -> str | None:
