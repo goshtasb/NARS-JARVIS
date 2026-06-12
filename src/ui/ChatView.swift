@@ -71,10 +71,11 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
         consentBar.isHidden = true
         buildConsentBar()
 
-        for v in [transcriptScroll!, emptyState, consentBar, composer!] { root.addSubview(v) }
+        for v in [transcriptScroll!, emptyState, consentBar, composer!, picker] { root.addSubview(v) }
         emptyState.translatesAutoresizingMaskIntoConstraints = false
         composer.translatesAutoresizingMaskIntoConstraints = false
         consentBar.translatesAutoresizingMaskIntoConstraints = false
+        picker.isHidden = true
 
         NSLayoutConstraint.activate([
             transcriptScroll.leadingAnchor.constraint(equalTo: root.leadingAnchor),
@@ -106,6 +107,11 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
         ])
         consentHeight = consentBar.heightAnchor.constraint(equalToConstant: 0)   // collapses when no consent
         consentHeight.isActive = true
+        NSLayoutConstraint.activate([                                            // the / picker, above the composer
+            picker.leadingAnchor.constraint(equalTo: composer.leadingAnchor),
+            picker.trailingAnchor.constraint(equalTo: composer.trailingAnchor),
+            picker.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -6),
+        ])
         self.view = root
     }
 
@@ -196,6 +202,19 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
         view.window?.makeFirstResponder(input)
     }
 
+    /// Headless preview of the / picker (offline).
+    func previewPicker() {
+        loadViewIfNeeded()
+        verbs = [
+            .init(name: "summarize_file", label: "Summarize a document", desc: "Condense a local file into key points", symbol: "doc.text.magnifyingglass", auto: true),
+            .init(name: "read_article", label: "Read a web article", desc: "Fetch and read an online page", symbol: "globe", auto: true),
+            .init(name: "report_system", label: "System report", desc: "A snapshot of this Mac's health", symbol: "gauge.medium", auto: true),
+            .init(name: "open_app", label: "Open an app", desc: "Launch an application", symbol: "app.dashed", auto: false),
+            .init(name: "empty_trash", label: "Empty trash", desc: "Permanently delete trashed items", symbol: "trash", auto: false),
+        ]
+        picker.setVerbs(verbs); input.stringValue = "/"; showPicker("")
+    }
+
     private func fetchVerbs() {
         client?.call("catalog_schema") { [weak self] _, body in
             let acts = (body["actions"] as? [[String: Any]]) ?? []
@@ -214,28 +233,30 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
 
     // ── the `/` picker ──
     private func togglePicker() {
-        if picker.isVisible { picker.hide() }
-        else { input.stringValue = "/"; view.window?.makeFirstResponder(input); picker.update(anchor: composer, query: "") }
+        if !picker.isHidden { hidePicker() }
+        else { if input.stringValue.isEmpty { input.stringValue = "/" }; view.window?.makeFirstResponder(input); showPicker("") }
     }
+    private func showPicker(_ query: String) { if picker.isHidden { picker.reset() }; picker.filter(query); picker.isHidden = false }
+    private func hidePicker() { picker.isHidden = true }
     func controlTextDidChange(_ note: Notification) {
         let s = input.stringValue
         sendBtn.alphaValue = (s.isEmpty && pinnedVerb == nil) ? 0.4 : 1
-        if s.hasPrefix("/") && !s.contains(" ") {
-            picker.update(anchor: composer, query: String(s.dropFirst()))
-        } else if picker.isVisible { picker.hide() }
+        if s.hasPrefix("/") && !s.contains(" ") { showPicker(String(s.dropFirst())) }
+        else if !picker.isHidden { hidePicker() }
     }
     func control(_ c: NSControl, textView: NSTextView, doCommandBy sel: Selector) -> Bool {
-        guard picker.isVisible else { return false }
+        guard !picker.isHidden else { return false }
         switch sel {
         case #selector(NSResponder.moveUp(_:)): picker.move(-1); return true
         case #selector(NSResponder.moveDown(_:)): picker.move(1); return true
         case #selector(NSResponder.insertNewline(_:)): picker.chooseSelected(); return true
-        case #selector(NSResponder.cancelOperation(_:)): picker.hide(); return true
+        case #selector(NSResponder.cancelOperation(_:)): hidePicker(); return true
         default: return false
         }
     }
     private func pinVerb(_ v: ActionPicker.Verb) {
         pinnedVerb = v
+        hidePicker()
         input.stringValue = ""
         input.placeholderString = "Add the target and timing… e.g. the PRD on my desktop tonight"
         pickerHost.arrangedSubviews.forEach { $0.removeFromSuperview() }
@@ -273,7 +294,7 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
     @objc private func submit() {
         let line = input.stringValue.trimmingCharacters(in: .whitespaces)
         guard let client = client else { return }
-        picker.hide()
+        hidePicker()
         if let v = pinnedVerb {                                  // a pinned-verb job
             guard !line.isEmpty else { return }
             addUser("/\(v.label)  \(line)")

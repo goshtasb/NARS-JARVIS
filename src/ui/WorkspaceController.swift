@@ -127,6 +127,8 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         NSApp.setActivationPolicy(.regular)
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        var f = window.frame; f.size = NSSize(width: 960, height: 680)   // force the rectangle
+        window.setFrame(f, display: true, animate: false)
     }
     private func hide() {
         window.orderOut(nil)
