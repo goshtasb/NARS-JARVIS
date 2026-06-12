@@ -96,7 +96,8 @@ class Session:
         self._persona_loop = PersonaLoop(self._persona_brain, self._persona_store, _persona_gen, self._emit)
         self._last_request_at = 0.0
         voice = Voice(formatter=llm if hasattr(llm, "generate_text") else None)
-        self._jarvis = Jarvis(Translator(llm, embedder=embedder, cache=grounding),
+        self._jarvis = Jarvis(Translator(llm, embedder=embedder, cache=grounding,
+                                         alias_sink=self._record_local_alias),  # Gate 2: local alias harvest
                               self._store, self._brain, executor=self._executor, gate=gate,
                               metrics=self._metrics, voice=voice, assistant=llm,  # LLM-first (ADR-007)
                               embedder=embedder,  # auto-memory semantic echo-guard (ADR-008)
@@ -751,6 +752,12 @@ class Session:
         lexicon only ever sees canonical atoms here (raw telemetry frames never reach it)."""
         from retrieval.lexicon_ingest import record_narsese_terms
         record_narsese_terms(self._lexicon, term, now=time.time())
+
+    def _record_local_alias(self, surface: str, canonical: str) -> None:
+        """The Translator fires this whenever LOCAL grounding resolves a surface form to a canonical atom
+        (on-device embedder, no network) -> mirror it into the lexicon alias table. This is how the
+        Private Vault learns the user's vocabulary without ever connecting Cloud."""
+        self._lexicon.record_alias(surface, canonical, now=time.time())
 
     def _cloud_ask(self, arg: object) -> tuple[bool, object]:
         """General Mode: answer via the user's cloud brain, OFF the select loop. The API key is passed

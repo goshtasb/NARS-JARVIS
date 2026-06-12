@@ -82,6 +82,7 @@ class Translator:
         on_reject: Callable[[str, str], None] | None = None,
         threshold: float = DEFAULT_THRESHOLD,
         cache: GroundingCache | None = None,
+        alias_sink: Callable[[str, str], None] | None = None,
     ) -> None:
         self._llm = llm
         self._embedder = embedder
@@ -91,6 +92,10 @@ class Translator:
         # Persistent grounding requires BOTH an embedder and a cache; otherwise atoms pass through
         # un-grounded (the compiler still sanitizes them at to_narsese).
         self._cache = cache
+        # ADR-056/Gate 2: every surface->canonical mapping grounding resolves LOCALLY (via the on-device
+        # embedder, no network) is also a lexicon alias. This harvests the user's vocabulary into the L2
+        # lexicon on every local learn — so the Private Vault learns aliases without ever touching Cloud.
+        self._alias_sink = alias_sink
 
     def claims(self, sentence: str, system_prompt: str = DEFAULT_SYSTEM_PROMPT) -> list[Claim]:
         """English -> GROUNDED typed claims (generate + parse + ground). No compile, no brain write.
@@ -128,17 +133,27 @@ class Translator:
         if stemmed != surface:
             hit = self._cache.resolve_surface(stemmed)
             if hit is not None:
-                self._cache.add_alias(surface, hit)           # memoize -> free next time
+                self._memo_alias(surface, hit)                # memoize -> free next time
                 return hit
         vec = self._embedder.embed(surface)                   # 5. the ONLY paid step
         vec = vec[0] if vec and isinstance(vec[0], list) else vec
         canonical = self._cache.nearest(vec, self._threshold)
         if canonical is not None:
             if canonical != surface:
-                self._cache.add_alias(surface, canonical)     # persist surface -> canonical
+                self._memo_alias(surface, canonical)          # persist surface -> canonical
             return canonical
         self._cache.add_atom(surface, vec)                    # a brand-new canonical concept
         return surface
+
+    def _memo_alias(self, surface: str, canonical: str) -> None:
+        """Persist a surface->canonical mapping in the grounding cache AND mirror it into the L2 lexicon
+        (Gate 2). Best-effort on the lexicon side: a lexicon error must never break grounding."""
+        self._cache.add_alias(surface, canonical)
+        if self._alias_sink is not None and surface != canonical:
+            try:
+                self._alias_sink(surface, canonical)
+            except Exception:  # noqa: BLE001
+                pass
 
     def _ground(self, claim: Claim) -> Claim:
         if isinstance(claim, RelationClaim):
