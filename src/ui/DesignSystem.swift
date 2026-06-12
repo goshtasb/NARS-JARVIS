@@ -167,7 +167,7 @@ final class LayerView: NSView {
 
 /// A closure-driven, layer-backed button with the design's variants (pill/rounded, custom fills).
 final class DSButton: NSView {
-    enum Variant { case primary, secondary, destructive, quiet, icon, pillAccent }
+    enum Variant { case primary, secondary, destructive, quiet, icon, pillAccent, stopPill }
     private let handler: () -> Void
     private let variant: Variant
     private let bgLayer = CALayer()
@@ -218,7 +218,7 @@ final class DSButton: NSView {
     private func foreground() -> NSColor {
         switch variant {
         case .primary, .pillAccent: return DS.onAccent
-        case .destructive: return DS.red
+        case .destructive, .stopPill: return DS.red
         case .quiet: return DS.accent
         default: return DS.label
         }
@@ -227,6 +227,7 @@ final class DSButton: NSView {
         switch variant {
         case .primary, .pillAccent: return DS.accent
         case .quiet, .icon: return .clear
+        case .stopPill: return DS.red.withAlphaComponent(0.12)
         case .destructive: return DS.red.withAlphaComponent(0.0)
         default: return DS.contentBG
         }
@@ -237,15 +238,15 @@ final class DSButton: NSView {
         layer?.backgroundColor = bg.cgColor
         if variant == .secondary {
             layer?.borderWidth = 0.5; layer?.borderColor = DS.separator.withAlphaComponent(0.6).cgColor
-        } else if variant == .destructive {
-            layer?.borderWidth = 0.5; layer?.borderColor = DS.red.withAlphaComponent(0.3).cgColor
+        } else if variant == .destructive || variant == .stopPill {
+            layer?.borderWidth = 0.5; layer?.borderColor = DS.red.withAlphaComponent(0.32).cgColor
         }
     }
     private func hoverBG(_ base: NSColor) -> NSColor {
         switch variant {
         case .primary, .pillAccent: return DS.accent.blended(withFraction: 0.08, of: .white) ?? base
         case .quiet, .icon: return DS.fill(0.08)
-        case .destructive: return DS.red.withAlphaComponent(0.12)
+        case .destructive, .stopPill: return DS.red.withAlphaComponent(0.18)
         default: return DS.fill(0.06)
         }
     }

@@ -181,25 +181,8 @@ final class WorkspaceController: NSObject, NSToolbarDelegate, NSWindowDelegate {
             return item
         case Self.stopID:
             let item = NSToolbarItem(itemIdentifier: id)
-            let stop = DS.rounded(bg: DS.red.withAlphaComponent(0.12), radius: 13, border: DS.red.withAlphaComponent(0.32))
-            let glyph = DS.symbol("stop.fill", 11, .bold, DS.red)
-            let lbl = DS.text("Stop", 11.5, .semibold, DS.red)
-            let stack = NSStackView(views: [glyph, lbl]); stack.spacing = 5; stack.alignment = .centerY
-            stack.translatesAutoresizingMaskIntoConstraints = false
-            stop.addSubview(stack)
-            let click = DSButton(nil, variant: .icon) { [weak self] in self?.stopPressed() }   // transparent hit layer
-            stop.addSubview(click); click.translatesAutoresizingMaskIntoConstraints = false
-            NSLayoutConstraint.activate([
-                stop.heightAnchor.constraint(equalToConstant: 26),
-                stack.leadingAnchor.constraint(equalTo: stop.leadingAnchor, constant: 9),
-                stack.trailingAnchor.constraint(equalTo: stop.trailingAnchor, constant: -11),
-                stack.centerYAnchor.constraint(equalTo: stop.centerYAnchor),
-                click.leadingAnchor.constraint(equalTo: stop.leadingAnchor),
-                click.trailingAnchor.constraint(equalTo: stop.trailingAnchor),
-                click.topAnchor.constraint(equalTo: stop.topAnchor),
-                click.bottomAnchor.constraint(equalTo: stop.bottomAnchor),
-            ])
-            item.view = stop
+            item.view = DSButton("Stop", symbol: "stop.fill", variant: .stopPill, size: 11.5, radius: 13) { [weak self] in self?.stopPressed() }
+            item.label = "Stop"
             return item
         default:
             return nil
