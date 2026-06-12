@@ -37,10 +37,10 @@ final class WorkspaceController: NSObject, NSToolbarDelegate, NSWindowDelegate {
         guard !built else { return }
         built = true
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 960, height: 680),
-                         styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+                         styleMask: [.titled, .closable, .miniaturizable, .resizable],   // NO fullSizeContentView
                          backing: .buffered, defer: false)
         w.title = "JARVIS"
-        w.titlebarAppearsTransparent = true
+        w.titleVisibility = .hidden        // the centered tab group is the focus; avoids title/content overlap
         w.isReleasedWhenClosed = false
         w.minSize = NSSize(width: 720, height: 520)
         w.delegate = self
@@ -59,7 +59,7 @@ final class WorkspaceController: NSObject, NSToolbarDelegate, NSWindowDelegate {
 
         let tb = NSToolbar(identifier: "jarvis.workspace")
         tb.delegate = self
-        tb.displayMode = .iconAndLabel
+        tb.displayMode = .iconOnly        // custom view items carry their own labels; no redundant toolbar labels
         tb.allowsUserCustomization = false
         if #available(macOS 13.0, *) { tb.centeredItemIdentifiers = [Self.tabsID] }
         w.toolbar = tb
