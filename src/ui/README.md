@@ -39,15 +39,21 @@ In the popover, type `learn …`, `ask …`, `tell …` (a bare line is treated 
   constraint + `[Active]`/`[Learning]` + a red Forget via `persona_forget`). Each Forget routes through
   the daemon so the SQLite row AND the live ONA belief are severed together. Fetch-on-open; no NARS math
   in the UI.
-- **`MorningBriefingView.swift`** (ADR-031/033) — the overnight report: a third popover (right-click → "🌅 Morning
-  Briefing…") showing what ran overnight (`done`) and the actions **held** for approval, each with
-  Approve/Deny (→ `briefing_resolve`, which executes an approved action — the click is the consent gate).
-  A **Clear Completed** button (→ `briefing_dismiss_done`) flushes the Done list.
-- **`BatchCanvasView.swift`** (ADR-033) — the Batch Canvas: a standalone resizable **window** (not a popover;
-  right-click → "🗂 Batch Canvas…") for composing an overnight batch. A left palette from `catalog_schema`
-  (each chipped Autonomous/Held by the daemon), a center plan built by **click-to-add** (argument field +
-  native "Choose…" file picker + remove), and Commit → `overnight_enqueue_batch`. Renders only what the
-  daemon describes — no business logic in Swift.
+- **`UnifiedCanvasView.swift`** (ADR-053) — the **Unified Canvas**: a standalone resizable **window**
+  (right-click → "🗂 Canvas…") with three tabs that replaced the old Batch Canvas + Morning Briefing.
+  A shared left palette from `catalog_schema` (each chipped Autonomous/Held) feeds a center composer
+  built by **click-to-add** (argument field + native file picker + remove). The tabs are state lenses
+  over the same `overnight_status` rows:
+  - **Now** — Run Now (→ `overnight_enqueue_batch` + `overnight_start`); watch each task project
+    QUEUED → RUNNING → (determinate `chunk i/N` bar, only when the worker reports it) → DONE/FAILED.
+  - **Scheduled** — preset times (Tonight 2 AM / In 1 h / In 4 h) compute an **absolute epoch** in
+    Swift and send `overnight_schedule_batch {items, run_at}`; lists upcoming tasks with a countdown.
+    Carries the visible "runs if the Mac is awake, else on wake" disclaimer (local-first honesty).
+  - **Activity** — finished `done`/`failed` results (selectable) + actions **held** for approval
+    (Approve/Deny → `briefing_resolve`). A **FAILED** row offers **↻ Retry** and **Change tool ▾**
+    (populated by `action_alternatives`) that re-queues the same arg under a sibling tool. **Clear
+    completed** → `briefing_dismiss_done`. Strict projection — no business logic in Swift; the daemon
+    pushes `overnight_progress` events and the view also polls `overnight_status` every 1 s.
 - **`AudioRecorder.swift`** — push-to-talk mic capture (`AVAudioRecorder`) → 16 kHz WAV in `$TMPDIR`.
 - **`HotKey.swift`** — Carbon `RegisterEventHotKey` hold-to-talk (no TCC dialog). Available but not
   registered — voice is triggered by the menu-bar 🎙 toggle instead (⌥Space conflicted).

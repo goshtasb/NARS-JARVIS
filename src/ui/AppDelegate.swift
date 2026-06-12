@@ -12,10 +12,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private let chat = ChatViewController()
     private let habitsPopover = NSPopover()              // ADR-030: the Habit Brain dashboard
     private let habits = HabitsViewController()
-    private let briefingPopover = NSPopover()            // ADR-031: the Morning Briefing
-    private let briefing = MorningBriefingViewController()
-    private let batchCanvas = BatchCanvasViewController() // ADR-033: the Batch Canvas workspace
-    private var batchWindow: NSWindow?                    // a real window (not a popover); retained here
+    private let unifiedCanvas = UnifiedCanvasViewController()  // ADR-053: Now / Scheduled / Activity
+    private var canvasWindow: NSWindow?                   // a real window (not a popover); retained here
     private var client: JarvisClient?
     private var sockPath = ""                     // ADR-017: remembered for auto-reconnect
     private let recorder = AudioRecorder()
@@ -47,9 +45,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         habitsPopover.behavior = .transient                 // ADR-030: separate dashboard popover
         habitsPopover.contentViewController = habits
         habitsPopover.contentSize = NSSize(width: 440, height: 420)   // ADR-037: + Persona Constraints
-        briefingPopover.behavior = .transient               // ADR-031: morning briefing popover
-        briefingPopover.contentViewController = briefing
-        briefingPopover.contentSize = NSSize(width: 440, height: 380)
         chat.onQuit = { NSApp.terminate(nil) }
         chat.onStop = { [weak self] in self?.emergencyStop() }
         chat.onConsent = { [weak self] id, approved in    // ADR-021: inline Approve/Deny -> daemon
@@ -137,8 +132,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         client = c
         chat.client = c
         habits.client = c                                   // ADR-030: dashboard talks over the same socket
-        briefing.client = c                                 // ADR-031: briefing shares the same socket
-        batchCanvas.client = c                              // ADR-033: canvas shares the same socket
+        unifiedCanvas.client = c                            // ADR-053: canvas shares the same socket
         setConnected(true)
         chat.append(reconnect ? "↻ reconnected to JARVIS." : "✓ connected to JARVIS.")
         _log("UI: \(reconnect ? "reconnected" : "connected") to daemon at \(sockPath)")
@@ -194,8 +188,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             let menu = NSMenu()
             menu.addItem(NSMenuItem(title: "Open JARVIS", action: #selector(openPopover), keyEquivalent: ""))
             menu.addItem(NSMenuItem(title: "🧠 Cognitive Identity…", action: #selector(openHabits), keyEquivalent: ""))
-            menu.addItem(NSMenuItem(title: "🌅 Morning Briefing…", action: #selector(openBriefing), keyEquivalent: ""))
-            menu.addItem(NSMenuItem(title: "🗂 Batch Canvas…", action: #selector(openBatchCanvas), keyEquivalent: ""))
+            menu.addItem(NSMenuItem(title: "🗂 Canvas…", action: #selector(openCanvas), keyEquivalent: ""))
             menu.addItem(.separator())
             let stop = NSMenuItem(title: "⛔ Emergency Stop (quit everything)",
                                   action: #selector(emergencyStop), keyEquivalent: "")
@@ -230,31 +223,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         habits.refresh()
     }
 
-    /// ADR-031: open the Morning Briefing and pull the latest done + held lists.
-    @objc private func openBriefing() {
-        guard let button = statusItem.button else { return }
-        if briefingPopover.isShown { briefingPopover.performClose(nil); return }
-        if popover.isShown { popover.performClose(nil) }
-        if habitsPopover.isShown { habitsPopover.performClose(nil) }
-        briefingPopover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-        briefing.refresh()
-    }
-
-    /// ADR-033: open the Batch Canvas — a real resizable window (not a popover), retained so it survives
-    /// close (hidden, reopened via the menu). `.accessory` apps must activate to bring a window forward.
-    @objc private func openBatchCanvas() {
-        if batchWindow == nil {
-            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 560),
+    /// ADR-053: open the Unified Canvas — a real resizable window (not a popover), retained so it
+    /// survives close (hidden, reopened via the menu). `.accessory` apps must activate to bring a
+    /// window forward. Replaces both the old Batch Canvas and the Morning Briefing.
+    @objc private func openCanvas() {
+        if canvasWindow == nil {
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 860, height: 620),
                              styleMask: [.titled, .closable, .miniaturizable, .resizable],
                              backing: .buffered, defer: false)
-            w.title = "JARVIS — Batch Canvas"
-            w.contentViewController = batchCanvas
+            w.title = "JARVIS — Canvas"
+            w.contentViewController = unifiedCanvas
             w.isReleasedWhenClosed = false       // keep it alive across close; reopen via the menu
             w.center()
-            batchWindow = w
+            canvasWindow = w
         }
-        batchCanvas.refresh()
-        batchWindow?.makeKeyAndOrderFront(nil)
+        unifiedCanvas.refresh()
+        canvasWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -299,6 +283,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             chat.append("🎙 " + (body["text"] as? String ?? ""))
         case "answer":
             chat.append((body["text"] as? String ?? ""))
+        case "overnight_progress", "overnight_started", "overnight_done":  // ADR-053: drive the Canvas, not chat
+            unifiedCanvas.onOvernightEvent()
         default:                                             // "alert" (sentinel / system)
             let text = body["text"] as? String ?? ""
             chat.append(text)
