@@ -93,12 +93,14 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
             emptyState.centerYAnchor.constraint(equalTo: transcriptScroll.centerYAnchor),
             emptyState.widthAnchor.constraint(lessThanOrEqualToConstant: 460),
 
-            consentBar.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 20),
-            consentBar.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -20),
+            consentBar.centerXAnchor.constraint(equalTo: root.centerXAnchor),
+            consentBar.widthAnchor.constraint(lessThanOrEqualToConstant: 720),
+            consentBar.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -44).withPriority(.defaultHigh),
             consentBar.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -8),
 
-            composer.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 20),
-            composer.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -20),
+            composer.centerXAnchor.constraint(equalTo: root.centerXAnchor),
+            composer.widthAnchor.constraint(lessThanOrEqualToConstant: 720),
+            composer.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -44).withPriority(.defaultHigh),
             composer.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -16),
         ])
         consentHeight = consentBar.heightAnchor.constraint(equalToConstant: 0)   // collapses when no consent
@@ -131,10 +133,11 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
     }
 
     private func buildComposer() {
-        let fieldBorder = DS.dynamic(light: NSColor(white: 0, alpha: 0.16), dark: NSColor(white: 1, alpha: 0.15))
+        let fieldBorder = DS.dynamic(light: NSColor(white: 0, alpha: 0.16), dark: NSColor(white: 1, alpha: 0.16))
         composer = DS.rounded(bg: DS.fieldBG, radius: 13, border: fieldBorder, borderWidth: 1)
-        let plus = DSButton(nil, symbol: "plus", variant: .icon) { [weak self] in self?.attach() }
-        let slash = DSButton(nil, symbol: "slash.circle", variant: .icon) { [weak self] in self?.togglePicker() }
+        // all controls are 30×30 (design spec: .input-ctl / .send-btn)
+        let plus = DSButton(nil, symbol: "plus", variant: .icon, square: 30, radius: 8) { [weak self] in self?.attach() }
+        let slash = DSButton(nil, symbol: "line.diagonal", variant: .icon, square: 30, radius: 8) { [weak self] in self?.togglePicker() }
         pickerHost.orientation = .horizontal; pickerHost.spacing = 6
         input.isBordered = false; input.drawsBackground = false; input.focusRingType = .none
         input.font = DS.font(13.5); input.textColor = DS.label
@@ -142,17 +145,17 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
         input.delegate = self; input.target = self; input.action = #selector(submit)
         input.translatesAutoresizingMaskIntoConstraints = false
         input.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        micBtn = DSButton("Listen", symbol: "mic", variant: .secondary, size: 12) { [weak self] in self?.onToggleVoice?() }
-        sendBtn = DSButton(nil, symbol: "arrow.up", variant: .primary) { [weak self] in self?.submit() }
+        micBtn = DSButton(nil, symbol: "mic", variant: .icon, square: 30, radius: 8) { [weak self] in self?.onToggleVoice?() }
+        sendBtn = DSButton(nil, symbol: "arrow.up", variant: .primary, square: 30, radius: 9) { [weak self] in self?.submit() }
 
         let stack = NSStackView(views: [plus, slash, pickerHost, input, micBtn, sendBtn])
-        stack.orientation = .horizontal; stack.spacing = 7; stack.alignment = .centerY
+        stack.orientation = .horizontal; stack.spacing = 4; stack.alignment = .centerY
         stack.translatesAutoresizingMaskIntoConstraints = false
         composer.addSubview(stack)
         NSLayoutConstraint.activate([
-            composer.heightAnchor.constraint(equalToConstant: 50),   // FIXED — must not stretch to fill
-            stack.leadingAnchor.constraint(equalTo: composer.leadingAnchor, constant: 8),
-            stack.trailingAnchor.constraint(equalTo: composer.trailingAnchor, constant: -7),
+            composer.heightAnchor.constraint(equalToConstant: 46),   // FIXED — must not stretch to fill
+            stack.leadingAnchor.constraint(equalTo: composer.leadingAnchor, constant: 6),
+            stack.trailingAnchor.constraint(equalTo: composer.trailingAnchor, constant: -6),
             stack.centerYAnchor.constraint(equalTo: composer.centerYAnchor),
         ])
         picker.onChoose = { [weak self] v in self?.pinVerb(v) }
@@ -349,7 +352,7 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
         else { v.trailingAnchor.constraint(equalTo: wrap.trailingAnchor).isActive = true }
         wrap.widthAnchor.constraint(lessThanOrEqualToConstant: 720).isActive = true
         transcript.addArrangedSubview(wrap)
-        wrap.widthAnchor.constraint(equalTo: transcript.widthAnchor, constant: -40).isActive = true
+        wrap.widthAnchor.constraint(equalTo: transcript.widthAnchor, constant: -40).withPriority(.defaultHigh).isActive = true
         DispatchQueue.main.async { [weak self] in self?.scrollToBottom() }
     }
     private func scrollToBottom() {

@@ -18,7 +18,7 @@ final class WorkspaceController: NSObject, NSToolbarDelegate, NSWindowDelegate {
     // toolbar-right live views
     private var connDot: LayerView?
     private var connLabel: NSTextField?
-    private var tabGroup: NSToolbarItemGroup?
+    private var tabSwitcher: TabSwitcher?
     private var connected = true
     private var badgeCount = 0
 
@@ -102,7 +102,7 @@ final class WorkspaceController: NSObject, NSToolbarDelegate, NSWindowDelegate {
             v.topAnchor.constraint(equalTo: container.topAnchor),
             v.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
-        tabGroup?.selectedIndex = i
+        tabSwitcher?.select(i, notify: false)
         onTabChanged?(i)
     }
 
@@ -115,10 +115,7 @@ final class WorkspaceController: NSObject, NSToolbarDelegate, NSWindowDelegate {
     }
     func setActiveTaskCount(_ n: Int) {
         badgeCount = n
-        // Reflect the active-task count on the Canvas tab label (the floating red badge is a later polish).
-        if let group = tabGroup, panes.count > 1 {
-            group.subitems[1].label = n > 0 ? "Canvas (\(n))" : "Canvas"
-        }
+        tabSwitcher?.setBadge(n, at: 1)         // the red badge on the Canvas tab
     }
 
     // ── Stop everything (confirmation sheet) ──
@@ -140,8 +137,6 @@ final class WorkspaceController: NSObject, NSToolbarDelegate, NSWindowDelegate {
         NSApp.appearance = NSAppearance(named: dark ? .aqua : .darkAqua)
     }
 
-    @objc private func tabGroupChanged(_ sender: NSToolbarItemGroup) { selectTab(sender.selectedIndex) }
-
     // ── NSToolbarDelegate ──
     func toolbarDefaultItemIdentifiers(_ t: NSToolbar) -> [NSToolbarItem.Identifier] {
         [Self.tabsID, .flexibleSpace, Self.connID, Self.apprID, Self.stopID]
@@ -154,21 +149,13 @@ final class WorkspaceController: NSObject, NSToolbarDelegate, NSWindowDelegate {
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         switch id {
         case Self.tabsID:
-            let subs: [NSToolbarItem] = panes.map { p in
-                let it = NSToolbarItem(itemIdentifier: NSToolbarItem.Identifier("tab." + p.label))
-                it.label = p.label
-                it.image = NSImage(systemSymbolName: p.symbol, accessibilityDescription: p.label)
-                return it
-            }
-            let group = NSToolbarItemGroup(itemIdentifier: Self.tabsID)
-            group.subitems = subs
-            group.selectionMode = .selectOne
-            group.controlRepresentation = .expanded
-            group.selectedIndex = max(0, current)
-            group.target = self
-            group.action = #selector(tabGroupChanged(_:))
-            tabGroup = group
-            return group
+            let switcher = TabSwitcher(items: panes.map { .init(symbol: $0.symbol, label: $0.label) })
+            switcher.onSelect = { [weak self] i in self?.selectTab(i) }
+            switcher.select(max(0, current), notify: false)
+            tabSwitcher = switcher
+            let item = NSToolbarItem(itemIdentifier: id)
+            item.view = switcher
+            return item
         case Self.connID:
             let item = NSToolbarItem(itemIdentifier: id)
             let pill = DS.rounded(bg: DS.fill(0.05), radius: 13, border: DS.separator)

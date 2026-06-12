@@ -175,12 +175,13 @@ final class DSButton: NSView {
     var titleField: NSTextField?
 
     init(_ title: String?, symbol: String? = nil, variant: Variant = .secondary,
-         size: CGFloat = 12.5, handler: @escaping () -> Void) {
+         size: CGFloat = 12.5, square: CGFloat? = nil, radius: CGFloat? = nil,
+         handler: @escaping () -> Void) {
         self.handler = handler; self.variant = variant
         super.init(frame: .zero)
         wantsLayer = true
         translatesAutoresizingMaskIntoConstraints = false
-        layer?.cornerRadius = (variant == .icon) ? 6 : 7
+        layer?.cornerRadius = radius ?? ((variant == .icon) ? 6 : 7)
         let stack = NSStackView(); stack.orientation = .horizontal; stack.spacing = 6
         stack.alignment = .centerY; stack.translatesAutoresizingMaskIntoConstraints = false
         let fg = foreground()
@@ -190,14 +191,23 @@ final class DSButton: NSView {
             stack.addArrangedSubview(t)
         }
         addSubview(stack)
-        let padX: CGFloat = (variant == .icon) ? 0 : 13
-        NSLayoutConstraint.activate([
-            heightAnchor.constraint(equalToConstant: variant == .icon ? 26 : 28),
-            stack.centerYAnchor.constraint(equalTo: centerYAnchor),
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: padX),
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -padX),
-        ])
-        if variant == .icon { widthAnchor.constraint(equalToConstant: 30).isActive = true }
+        if let square {                                   // a fixed square control (composer + / mic / send)
+            NSLayoutConstraint.activate([
+                widthAnchor.constraint(equalToConstant: square),
+                heightAnchor.constraint(equalToConstant: square),
+                stack.centerXAnchor.constraint(equalTo: centerXAnchor),
+                stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+            ])
+        } else {
+            let padX: CGFloat = (variant == .icon) ? 0 : 13
+            NSLayoutConstraint.activate([
+                heightAnchor.constraint(equalToConstant: variant == .icon ? 26 : 28),
+                stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+                stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: padX),
+                stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -padX),
+            ])
+            if variant == .icon { widthAnchor.constraint(equalToConstant: 30).isActive = true }
+        }
         applyColors()
         let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
                                   owner: self, userInfo: nil)
