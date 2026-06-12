@@ -11,7 +11,7 @@ final class HabitsViewController: NSViewController {
     private var refreshing = false
 
     override func loadView() {
-        let root = NSView(); root.wantsLayer = true; root.layer?.backgroundColor = DS.contentBG.cgColor
+        let root = LayerView(); root.wantsLayer = true; root.bg = DS.contentBG; root.layer?.backgroundColor = DS.contentBG.cgColor
         let title = DS.text("Cognitive Identity", 19, .bold, DS.label)
         title.translatesAutoresizingMaskIntoConstraints = false
         let refreshBtn = DSButton(nil, symbol: "arrow.clockwise", variant: .icon) { [weak self] in self?.refresh() }

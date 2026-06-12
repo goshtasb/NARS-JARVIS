@@ -50,8 +50,9 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
 
     // ── layout ──
     override func loadView() {
-        let root = NSView()
+        let root = LayerView()
         root.wantsLayer = true
+        root.bg = DS.contentBG                          // LayerView re-applies on appearance flip (the toggle)
         root.layer?.backgroundColor = DS.contentBG.cgColor
 
         // transcript (scroll fills, content centered max-width 720)

@@ -15,7 +15,7 @@ final class UnifiedCanvasViewController: NSViewController {
     private var sub = 0      // 0 Now · 1 Scheduled · 2 Activity
 
     override func loadView() {
-        let root = NSView(); root.wantsLayer = true; root.layer?.backgroundColor = DS.contentBG.cgColor
+        let root = LayerView(); root.wantsLayer = true; root.bg = DS.contentBG; root.layer?.backgroundColor = DS.contentBG.cgColor
         seg.selectedSegment = 0; seg.target = self; seg.action = #selector(subChanged)
         seg.translatesAutoresizingMaskIntoConstraints = false
         seg.segmentStyle = .texturedRounded

@@ -10,7 +10,6 @@ final class WorkspaceController: NSObject, NSToolbarDelegate, NSWindowDelegate {
 
     private let panes: [Pane]
     private(set) var window: NSWindow!
-    private let host = NSViewController()      // parent VC so panes get real viewDidAppear lifecycle
     private let container = NSView()
     private var current = -1
     private var built = false
@@ -54,8 +53,10 @@ final class WorkspaceController: NSObject, NSToolbarDelegate, NSWindowDelegate {
             container.topAnchor.constraint(equalTo: root.topAnchor),
             container.bottomAnchor.constraint(equalTo: root.bottomAnchor),
         ])
-        host.view = root
-        w.contentViewController = host       // host owns the panes as children -> proper lifecycle
+        // contentView (NOT contentViewController) so the window keeps its 960×680 frame — a
+        // contentViewController auto-shrinks the window to its view's fitting size (the "square" bug).
+        // Pane viewDidAppear/Disappear are driven manually in selectTab().
+        w.contentView = root
 
         let tb = NSToolbar(identifier: "jarvis.workspace")
         tb.delegate = self
@@ -64,7 +65,6 @@ final class WorkspaceController: NSObject, NSToolbarDelegate, NSWindowDelegate {
         if #available(macOS 13.0, *) { tb.centeredItemIdentifiers = [Self.tabsID] }
         w.toolbar = tb
         if #available(macOS 11.0, *) { w.toolbarStyle = .unified }
-        w.setContentSize(NSSize(width: 960, height: 680))   // contentViewController shrinks to fit; pin it
         w.center()
         window = w
         selectTab(0)
@@ -89,11 +89,13 @@ final class WorkspaceController: NSObject, NSToolbarDelegate, NSWindowDelegate {
 
     func selectTab(_ i: Int) {
         guard i >= 0, i < panes.count, i != current else { return }
+        if current >= 0 {
+            let old = panes[current].vc
+            old.view.removeFromSuperview(); old.viewDidDisappear()        // manual lifecycle (no parent VC)
+        }
         current = i
-        host.children.forEach { $0.view.removeFromSuperview(); $0.removeFromParent() }   // fires viewDidDisappear
-        let child = panes[i].vc
-        host.addChild(child)                                                             // fires viewDidAppear
-        let v = child.view
+        let vc = panes[i].vc
+        let v = vc.view                                                  // loads the view
         v.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(v)
         NSLayoutConstraint.activate([
@@ -102,6 +104,7 @@ final class WorkspaceController: NSObject, NSToolbarDelegate, NSWindowDelegate {
             v.topAnchor.constraint(equalTo: container.topAnchor),
             v.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
+        vc.viewDidAppear()                                               // fetch verbs / poll / refresh
         tabSwitcher?.select(i, notify: false)
         onTabChanged?(i)
     }
