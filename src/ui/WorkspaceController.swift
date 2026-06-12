@@ -10,6 +10,7 @@ final class WorkspaceController: NSObject, NSToolbarDelegate, NSWindowDelegate {
 
     private let panes: [Pane]
     private(set) var window: NSWindow!
+    private let host = NSViewController()      // parent VC so panes get real viewDidAppear lifecycle
     private let container = NSView()
     private var current = -1
     private var built = false
@@ -53,7 +54,8 @@ final class WorkspaceController: NSObject, NSToolbarDelegate, NSWindowDelegate {
             container.topAnchor.constraint(equalTo: root.topAnchor),
             container.bottomAnchor.constraint(equalTo: root.bottomAnchor),
         ])
-        w.contentView = root
+        host.view = root
+        w.contentViewController = host       // host owns the panes as children -> proper lifecycle
 
         let tb = NSToolbar(identifier: "jarvis.workspace")
         tb.delegate = self
@@ -62,6 +64,7 @@ final class WorkspaceController: NSObject, NSToolbarDelegate, NSWindowDelegate {
         if #available(macOS 13.0, *) { tb.centeredItemIdentifiers = [Self.tabsID] }
         w.toolbar = tb
         if #available(macOS 11.0, *) { w.toolbarStyle = .unified }
+        w.setContentSize(NSSize(width: 960, height: 680))   // contentViewController shrinks to fit; pin it
         w.center()
         window = w
         selectTab(0)
@@ -87,8 +90,10 @@ final class WorkspaceController: NSObject, NSToolbarDelegate, NSWindowDelegate {
     func selectTab(_ i: Int) {
         guard i >= 0, i < panes.count, i != current else { return }
         current = i
-        container.subviews.forEach { $0.removeFromSuperview() }
-        let v = panes[i].vc.view
+        host.children.forEach { $0.view.removeFromSuperview(); $0.removeFromParent() }   // fires viewDidDisappear
+        let child = panes[i].vc
+        host.addChild(child)                                                             // fires viewDidAppear
+        let v = child.view
         v.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(v)
         NSLayoutConstraint.activate([

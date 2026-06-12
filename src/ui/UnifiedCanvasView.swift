@@ -1,484 +1,292 @@
-// The Unified Canvas (ADR-053) — one window, three tabs (Now / Scheduled / Activity), replacing the
-// old Batch Canvas + Morning Briefing. A STRICT projection of the daemon's task state: it renders
-// exactly what overnight_status / overnight_progress report (no guessed or fake progress) and partitions
-// the same rows by state — Now = the manual run you watch live, Scheduled = upcoming run_at tasks with a
-// countdown, Activity = finished results + actions held for approval (with failed-task recovery).
-//
-// Dumb client (ADR-033): all business logic — autonomy tags, alternative tools, the run_at epoch is the
-// ONE thing computed here (timezone math the daemon must not own) — comes from the daemon.
+// Canvas — the task board / monitor (design handoff). NOT a composer: composing happens in Chat, so the
+// old click-to-build palette is gone. A segmented header (Now · Scheduled · Activity) over one Task Row
+// component rendered in all six states from the live overnight_status, with the result panel, the
+// failed-row recovery trio (Retry · Change tool · Edit target), and the scheduled sleep disclaimer.
 import AppKit
-
-/// A button that runs a Swift closure — keeps per-row actions (retry, approve, change-tool) local to
-/// where the row is built instead of fanning out to @objc selectors with packed identifiers.
-final class ClosureButton: NSButton {
-    private var handler: (() -> Void)?
-    convenience init(_ title: String, handler: @escaping () -> Void) {
-        self.init(title: title, target: nil, action: nil)
-        self.handler = handler; self.target = self; self.action = #selector(fire)
-        self.bezelStyle = .rounded; self.controlSize = .small; self.font = .systemFont(ofSize: 11)
-    }
-    @objc private func fire() { handler?() }
-}
 
 final class UnifiedCanvasViewController: NSViewController {
     weak var client: JarvisClient?
-
-    private enum Tab: Int { case now = 0, scheduled = 1, activity = 2 }
-    private var tab: Tab = .now
-
-    private let tabs = NSSegmentedControl(labels: ["● Now", "Scheduled", "Activity"],
-                                          trackingMode: .selectOne, target: nil, action: nil)
-    private let palette = NSStackView()
-    private let plan = NSStackView()          // the composer (Now + Scheduled)
-    private let monitor = NSStackView()       // Now: live tasks · Scheduled: upcoming
-    private let activity = NSStackView()       // Activity: done/failed/held
-    private let status = NSTextField(labelWithString: "")
-
-    private var paletteScroll: NSScrollView!
-    private var planScroll: NSScrollView!
-    private var monitorScroll: NSScrollView!
-    private var activityScroll: NSScrollView!
-    private var planLabel: NSTextField!
-    private var monitorLabel: NSTextField!
-    private var nowBar: NSView!
-    private var schedBar: NSView!
-    private var activityBar: NSView!
-
-    private var rows: [PlanRow] = []
+    private let seg = NSSegmentedControl(labels: ["Now", "Scheduled", "Activity"],
+                                         trackingMode: .selectOne, target: nil, action: nil)
+    private let list = NSStackView()
+    private var listScroll: NSScrollView!
+    private var clearBtn: DSButton!
     private var pollTimer: Timer?
+    private var sub = 0      // 0 Now · 1 Scheduled · 2 Activity
 
-    private final class PlanRow {
-        let name: String; let takesArg: Bool; let autonomous: Bool
-        let field = NSTextField(); let view = NSStackView()
-        init(name: String, takesArg: Bool, autonomous: Bool) {
-            self.name = name; self.takesArg = takesArg; self.autonomous = autonomous
-        }
-    }
-
-    // ── layout ──
     override func loadView() {
-        let c = NSView(frame: NSRect(x: 0, y: 0, width: 860, height: 620))
-
-        let title = NSTextField(labelWithString: "🗂 Canvas")
-        title.frame = NSRect(x: 16, y: 588, width: 300, height: 22); title.font = .boldSystemFont(ofSize: 15)
-
-        tabs.frame = NSRect(x: 16, y: 552, width: 360, height: 26)
-        tabs.selectedSegment = 0; tabs.target = self; tabs.action = #selector(tabChanged)
-
-        status.frame = NSRect(x: 392, y: 556, width: 452, height: 18)
-        status.font = .systemFont(ofSize: 11); status.textColor = .tertiaryLabelColor
-        status.alignment = .right
-
-        let palLabel = section("Actions", x: 16, y: 528, w: 240)
-        paletteScroll = scroll(palette, x: 16, y: 100, w: 240, h: 424)
-
-        planLabel = section("Plan to run (in order)", x: 272, y: 528, w: 572)
-        planScroll = scroll(plan, x: 272, y: 316, w: 572, h: 208)
-        monitorLabel = section("Live", x: 272, y: 292, w: 572)
-        monitorScroll = scroll(monitor, x: 272, y: 100, w: 572, h: 184)
-
-        activityScroll = scroll(activity, x: 16, y: 100, w: 828, h: 424)
-
-        nowBar = buildNowBar()
-        schedBar = buildScheduledBar()
-        activityBar = buildActivityBar()
-
-        for v in [title, tabs, status, palLabel, paletteScroll!, planLabel!, planScroll!,
-                  monitorLabel!, monitorScroll!, activityScroll!, nowBar!, schedBar!, activityBar!] {
-            c.addSubview(v)
-        }
-        self.view = c
-        applyTab()
-    }
-
-    private func section(_ s: String, x: CGFloat, y: CGFloat, w: CGFloat) -> NSTextField {
-        let l = NSTextField(labelWithString: s)
-        l.frame = NSRect(x: x, y: y, width: w, height: 18)
-        l.font = .boldSystemFont(ofSize: 12); l.textColor = .secondaryLabelColor
-        return l
-    }
-
-    private func scroll(_ doc: NSStackView,
-                        x: CGFloat, y: CGFloat, w: CGFloat, h: CGFloat) -> NSScrollView {
-        let s = NSScrollView(frame: NSRect(x: x, y: y, width: w, height: h))
-        s.hasVerticalScroller = true; s.borderType = .bezelBorder; s.drawsBackground = false
-        doc.orientation = .vertical; doc.alignment = .leading; doc.spacing = 6
-        doc.edgeInsets = NSEdgeInsets(top: 8, left: 8, bottom: 8, right: 8)
-        doc.translatesAutoresizingMaskIntoConstraints = false
-        s.documentView = doc
-        NSLayoutConstraint.activate([
-            doc.leadingAnchor.constraint(equalTo: s.contentView.leadingAnchor),
-            doc.trailingAnchor.constraint(equalTo: s.contentView.trailingAnchor),
-            doc.topAnchor.constraint(equalTo: s.contentView.topAnchor),
-        ])
-        return s
-    }
-
-    private func buildNowBar() -> NSView {
-        let bar = NSView(frame: NSRect(x: 272, y: 14, width: 572, height: 76))
-        let run = ClosureButton("▶ Run Now") { [weak self] in self?.runNow() }
-        run.frame = NSRect(x: 0, y: 36, width: 150, height: 30)
-        run.bezelColor = .systemBlue; run.controlSize = .regular; run.font = .boldSystemFont(ofSize: 13)
-        run.toolTip = "Queue and run immediately (heavy work runs off the main thread, ADR-052)."
-        let hint = NSTextField(wrappingLabelWithString: "Runs now; watch each task move QUEUED → RUNNING → DONE in Live below.")
-        hint.frame = NSRect(x: 160, y: 36, width: 412, height: 30)
-        hint.font = .systemFont(ofSize: 11); hint.textColor = .tertiaryLabelColor
-        bar.addSubview(run); bar.addSubview(hint)
-        return bar
-    }
-
-    private func buildScheduledBar() -> NSView {
-        let bar = NSView(frame: NSRect(x: 272, y: 14, width: 572, height: 76))
-        let presets: [(String, () -> Double)] = [
-            ("Tonight 2 AM", { Self.tonight2am() }),
-            ("In 1 hour", { Date().addingTimeInterval(3600).timeIntervalSince1970 }),
-            ("In 4 hours", { Date().addingTimeInterval(4 * 3600).timeIntervalSince1970 }),
-        ]
-        var x: CGFloat = 0
-        for (label, epoch) in presets {
-            let b = ClosureButton(label) { [weak self] in self?.schedule(at: epoch()) }
-            b.frame = NSRect(x: x, y: 40, width: 130, height: 28)
-            b.bezelColor = .systemTeal; b.controlSize = .regular; b.font = .systemFont(ofSize: 12)
-            bar.addSubview(b); x += 138
-        }
-        // The honest, VISIBLE constraint of a local-first daemon — never hidden behind a tooltip.
-        let disclaimer = NSTextField(wrappingLabelWithString:
-            "⏰ Runs at the chosen time if your Mac is awake — otherwise on the next wake. No cloud; nothing runs while powered off.")
-        disclaimer.frame = NSRect(x: 0, y: 2, width: 572, height: 34)
-        disclaimer.font = .systemFont(ofSize: 11); disclaimer.textColor = .systemOrange
-        bar.addSubview(disclaimer)
-        return bar
-    }
-
-    private func buildActivityBar() -> NSView {
-        let bar = NSView(frame: NSRect(x: 16, y: 14, width: 828, height: 40))
-        let clear = ClosureButton("Clear completed") { [weak self] in
+        let root = NSView(); root.wantsLayer = true; root.layer?.backgroundColor = DS.contentBG.cgColor
+        seg.selectedSegment = 0; seg.target = self; seg.action = #selector(subChanged)
+        seg.translatesAutoresizingMaskIntoConstraints = false
+        seg.segmentStyle = .texturedRounded
+        clearBtn = DSButton("Clear completed", variant: .secondary, size: 12) { [weak self] in
             self?.client?.call("briefing_dismiss_done") { _, _ in DispatchQueue.main.async { self?.refresh() } }
         }
-        clear.frame = NSRect(x: 0, y: 6, width: 150, height: 26)
-        let hint = NSTextField(labelWithString: "Finished results and anything held for your approval.")
-        hint.frame = NSRect(x: 160, y: 8, width: 600, height: 20)
-        hint.font = .systemFont(ofSize: 11); hint.textColor = .tertiaryLabelColor
-        bar.addSubview(clear); bar.addSubview(hint)
-        return bar
+        clearBtn.translatesAutoresizingMaskIntoConstraints = false; clearBtn.isHidden = true
+
+        listScroll = NSScrollView(); listScroll.drawsBackground = false; listScroll.hasVerticalScroller = true
+        listScroll.translatesAutoresizingMaskIntoConstraints = false
+        list.orientation = .vertical; list.alignment = .leading; list.spacing = 10
+        list.edgeInsets = NSEdgeInsets(top: 16, left: 24, bottom: 24, right: 24)
+        list.translatesAutoresizingMaskIntoConstraints = false
+        let flip = FlippedClip(); flip.translatesAutoresizingMaskIntoConstraints = false
+        flip.addSubview(list); listScroll.documentView = flip
+
+        root.addSubview(seg); root.addSubview(clearBtn); root.addSubview(listScroll)
+        NSLayoutConstraint.activate([
+            seg.centerXAnchor.constraint(equalTo: root.centerXAnchor),
+            seg.topAnchor.constraint(equalTo: root.topAnchor, constant: 14),
+            clearBtn.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -24),
+            clearBtn.centerYAnchor.constraint(equalTo: seg.centerYAnchor),
+            listScroll.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            listScroll.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            listScroll.topAnchor.constraint(equalTo: seg.bottomAnchor, constant: 12),
+            listScroll.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            flip.leadingAnchor.constraint(equalTo: listScroll.contentView.leadingAnchor),
+            flip.trailingAnchor.constraint(equalTo: listScroll.contentView.trailingAnchor),
+            flip.topAnchor.constraint(equalTo: listScroll.contentView.topAnchor),
+            list.leadingAnchor.constraint(equalTo: flip.leadingAnchor),
+            list.trailingAnchor.constraint(equalTo: flip.trailingAnchor),
+            list.topAnchor.constraint(equalTo: flip.topAnchor),
+            list.bottomAnchor.constraint(equalTo: flip.bottomAnchor),
+            list.widthAnchor.constraint(equalTo: listScroll.widthAnchor),
+        ])
+        self.view = root
     }
 
-    private static func tonight2am() -> Double {
-        let cal = Calendar.current; let now = Date()
-        var comps = cal.dateComponents([.year, .month, .day], from: now)
-        comps.hour = 2; comps.minute = 0; comps.second = 0
-        var target = cal.date(from: comps) ?? now.addingTimeInterval(3600)
-        if target <= now { target = cal.date(byAdding: .day, value: 1, to: target) ?? target }
-        return target.timeIntervalSince1970
-    }
-
-    // ── lifecycle ──
-    override func viewDidAppear() {
-        super.viewDidAppear()
-        refresh()
-        startPolling()
-    }
+    override func viewDidAppear() { super.viewDidAppear(); refresh(); startPolling() }
     override func viewDidDisappear() { super.viewDidDisappear(); pollTimer?.invalidate(); pollTimer = nil }
-
-    /// AppDelegate forwards overnight_* socket events here for instant reaction (in addition to the
-    /// 1 s poll). We just re-read authoritative state — the UI never fabricates a transition.
-    func onOvernightEvent() { DispatchQueue.main.async { [weak self] in self?.refreshStatus() } }
-
+    func onOvernightEvent() { DispatchQueue.main.async { [weak self] in self?.refresh() } }
     private func startPolling() {
         pollTimer?.invalidate()
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            self?.refreshStatus()
-        }
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in self?.refresh() }
     }
+    @objc private func subChanged() { sub = seg.selectedSegment; clearBtn.isHidden = (sub != 2); refresh() }
 
-    @objc private func tabChanged() { tab = Tab(rawValue: tabs.selectedSegment) ?? .now; applyTab(); refreshStatus() }
-
-    private func applyTab() {
-        let composing = (tab != .activity)
-        paletteScroll.isHidden = !composing
-        planScroll.isHidden = !composing; planLabel.isHidden = !composing
-        monitorScroll.isHidden = !composing; monitorLabel.isHidden = !composing
-        activityScroll.isHidden = (tab != .activity); activityBar.isHidden = (tab != .activity)
-        nowBar.isHidden = (tab != .now)
-        schedBar.isHidden = (tab != .scheduled)
-        monitorLabel.stringValue = (tab == .scheduled) ? "Upcoming (scheduled)" : "Live"
-    }
-
-    // ── palette + composer ──
     func refresh() {
-        client?.call("catalog_schema") { [weak self] _, body in
-            let actions = (body["actions"] as? [[String: Any]]) ?? []
-            DispatchQueue.main.async { self?.renderPalette(actions); self?.refreshStatus() }
-        }
-    }
-
-    private func renderPalette(_ actions: [[String: Any]]) {
-        palette.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        for a in actions {
-            let name = a["name"] as? String ?? "?"
-            let auto = a["autonomous"] as? Bool ?? false
-            let takesArg = a["takes_arg"] as? Bool ?? false
-            let b = ClosureButton("\(auto ? "🟢" : "🟠") \(name)") { [weak self] in
-                self?.addRow(name: name, takesArg: takesArg, autonomous: auto)
-            }
-            b.alignment = .left
-            b.toolTip = (a["label"] as? String ?? "") + (auto ? "  ·  Autonomous" : "  ·  Held for approval")
-            b.widthAnchor.constraint(equalToConstant: 216).isActive = true
-            palette.addArrangedSubview(b)
-        }
-    }
-
-    private func addRow(name: String, takesArg: Bool, autonomous: Bool) {
-        let row = PlanRow(name: name, takesArg: takesArg, autonomous: autonomous)
-        let badge = NSTextField(labelWithString: autonomous ? "Auto" : "Held")
-        badge.font = .boldSystemFont(ofSize: 10); badge.textColor = autonomous ? .systemGreen : .systemOrange
-        let label = NSTextField(labelWithString: name); label.font = .systemFont(ofSize: 12)
-        var views: [NSView] = [badge, label]
-        if takesArg {
-            row.field.placeholderString = "argument / file path"
-            row.field.frame = NSRect(x: 0, y: 0, width: 240, height: 22)
-            row.field.widthAnchor.constraint(equalToConstant: 240).isActive = true
-            let pick = ClosureButton("📁") { [weak self] in self?.pickFile(into: row.field) }
-            views.append(row.field); views.append(pick)
-        }
-        let remove = ClosureButton("✕") { [weak self] in
-            row.view.removeFromSuperview(); self?.rows.removeAll { $0 === row }; self?.updateRunState()
-        }
-        views.append(remove)
-        row.view.orientation = .horizontal; row.view.spacing = 6; row.view.alignment = .centerY
-        views.forEach { row.view.addArrangedSubview($0) }
-        rows.append(row); plan.addArrangedSubview(row.view); updateRunState()
-    }
-
-    private func pickFile(into field: NSTextField) {
-        let panel = NSOpenPanel(); panel.canChooseFiles = true; panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK, let url = panel.url { field.stringValue = url.path }
-    }
-
-    private func updateRunState() { status.stringValue = rows.isEmpty ? "" : "\(rows.count) task(s) composed" }
-
-    private func composedItems() -> [[String: String]] {
-        rows.map { ["action": $0.name, "arg": $0.takesArg ? $0.field.stringValue.trimmingCharacters(in: .whitespaces) : ""] }
-    }
-
-    // ── execute: Run Now / Schedule ──
-    private func runNow() {
-        let items = composedItems()
-        guard !items.isEmpty else { status.stringValue = "compose a task first"; return }
-        client?.call("overnight_enqueue_batch", items) { [weak self] _, _ in
-            self?.client?.call("overnight_start") { _, _ in
-                DispatchQueue.main.async { self?.clearComposer(); self?.refreshStatus() }
-            }
-        }
-    }
-
-    private func schedule(at epoch: Double) {
-        let items = composedItems()
-        guard !items.isEmpty else { status.stringValue = "compose a task first"; return }
-        client?.call("overnight_schedule_batch", ["items": items, "run_at": epoch]) { [weak self] _, body in
-            DispatchQueue.main.async {
-                self?.clearComposer()
-                self?.status.stringValue = (body["text"] as? String) ?? "scheduled"
-                self?.refreshStatus()
-            }
-        }
-    }
-
-    private func clearComposer() {
-        rows.forEach { $0.view.removeFromSuperview() }; rows.removeAll(); updateRunState()
-    }
-
-    // ── strict state projection ──
-    private func refreshStatus() {
         client?.call("overnight_status") { [weak self] _, body in
             let rows = (body["rows"] as? [[String: Any]]) ?? []
-            DispatchQueue.main.async { self?.renderState(rows) }
+            DispatchQueue.main.async { self?.render(rows) }
         }
     }
 
-    private func renderState(_ all: [[String: Any]]) {
+    private func render(_ all: [[String: Any]]) {
         let now = Date().timeIntervalSince1970
         func runAt(_ r: [String: Any]) -> Double? { r["run_at"] as? Double }
-        switch tab {
-        case .now:
-            let live = all.filter { runAt($0) == nil && (($0["status"] as? String) == "pending" || ($0["status"] as? String) == "running") }
-            fill(monitor, live, empty: "Nothing running. Compose a plan and press Run Now.")
-        case .scheduled:
-            let upcoming = all.filter { (runAt($0) ?? 0) > 0 && ($0["status"] as? String) == "pending" }
-                .sorted { (runAt($0) ?? 0) < (runAt($1) ?? 0) }
-            fill(monitor, upcoming, empty: "Nothing scheduled.", showCountdown: true, now: now)
-        case .activity:
-            let done = all.filter { ["done", "failed", "held"].contains($0["status"] as? String ?? "") }
-            fill(activity, done, empty: "No finished tasks yet.")
+        let items: [[String: Any]]
+        let empty: String
+        switch sub {
+        case 1:
+            items = all.filter { (runAt($0) ?? 0) > 0 && ($0["status"] as? String) == "pending" }
+                       .sorted { (runAt($0) ?? 0) < (runAt($1) ?? 0) }
+            empty = "Nothing scheduled."
+        case 2:
+            items = all.filter { ["done", "failed", "held"].contains($0["status"] as? String ?? "") }
+            empty = "No finished tasks yet."
+        default:
+            items = all.filter { runAt($0) == nil && ["pending", "running"].contains($0["status"] as? String ?? "") }
+            empty = "Nothing running.  Start a job from Chat and watch it here."
         }
+        list.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        if items.isEmpty { list.addArrangedSubview(emptyRow(empty)); return }
+        for r in items { list.addArrangedSubview(taskRow(r, now: now)) }
     }
 
-    private func fill(_ stack: NSStackView, _ items: [[String: Any]], empty: String,
-                      showCountdown: Bool = false, now: Double = 0) {
-        stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        if items.isEmpty { stack.addArrangedSubview(dim(empty)); return }
-        for r in items { stack.addArrangedSubview(taskRow(r, showCountdown: showCountdown, now: now)) }
+    private func emptyRow(_ s: String) -> NSView {
+        let t = DS.text(s, 13, .regular, DS.label3)
+        let wrap = NSView(); wrap.translatesAutoresizingMaskIntoConstraints = false
+        wrap.addSubview(t)
+        NSLayoutConstraint.activate([
+            wrap.widthAnchor.constraint(equalTo: list.widthAnchor, constant: -48),
+            wrap.heightAnchor.constraint(equalToConstant: 120),
+            t.centerXAnchor.constraint(equalTo: wrap.centerXAnchor),
+            t.centerYAnchor.constraint(equalTo: wrap.centerYAnchor),
+        ])
+        return wrap
     }
 
-    /// One row, rendered to the ADR-053 visual contract from EXACTLY the backend status (+ result).
-    private func taskRow(_ r: [String: Any], showCountdown: Bool, now: Double) -> NSView {
+    // ── the Task Row (all six states) ──
+    private func taskRow(_ r: [String: Any], now: Double) -> NSView {
         let action = r["action"] as? String ?? "?"
         let arg = r["arg"] as? String ?? ""
-        let st = r["status"] as? String ?? "pending"
+        var state = r["status"] as? String ?? "pending"
         let result = r["result"] as? String ?? ""
-        let argShort = arg.isEmpty ? "" : "  (\((arg as NSString).lastPathComponent))"
+        let runAt = r["run_at"] as? Double
+        if state == "pending" && (runAt ?? 0) > now { state = "scheduled" }
+        let chunk = parseChunk(result)
+        if state == "running" && chunk != nil { state = "working" }
 
-        let col = NSStackView(); col.orientation = .vertical; col.alignment = .leading; col.spacing = 3
-        let (glyph, color) = badge(for: st)
-        var headText = "\(glyph) \(action)\(argShort)"
-        if showCountdown, let ra = r["run_at"] as? Double { headText += "   ⏳ \(countdown(ra - now))" }
-        let head = NSTextField(labelWithString: headText)
-        head.font = .boldSystemFont(ofSize: 12); head.textColor = color
-        col.addArrangedSubview(head)
+        let card = DS.rounded(bg: DS.card, radius: 11, border: DS.separator)
+        card.translatesAutoresizingMaskIntoConstraints = false
+        let glyph = DS.symbol(DS.stateGlyph(state), 17, .medium, DS.stateColor(state))
+        // title: "action — target" (target monospaced/secondary)
+        let title = NSStackView(); title.orientation = .horizontal; title.spacing = 6; title.alignment = .firstBaseline
+        title.addArrangedSubview(DS.text(action, 13.5, .semibold, DS.label))
+        if !arg.isEmpty {
+            title.addArrangedSubview(DS.text("—", 12.5, .regular, DS.label3))
+            title.addArrangedSubview(DS.text((arg as NSString).lastPathComponent, 12, .regular, DS.label2, mono: true))
+        }
+        let badge = DS.stateBadge(state)
+        let head = NSStackView(views: [glyph, title, NSView(), badge])
+        head.orientation = .horizontal; head.spacing = 10; head.alignment = .centerY
+        head.translatesAutoresizingMaskIntoConstraints = false
 
-        // WORKING: a DETERMINATE bar only when the backend actually reports chunk i/N — else an
-        // indeterminate spinner (RUNNING). Never a fabricated percentage.
-        if st == "running", let (i, n) = parseChunk(result), n > 0 {
-            let bar = NSProgressIndicator()
-            bar.isIndeterminate = false; bar.minValue = 0; bar.maxValue = Double(n); bar.doubleValue = Double(i)
-            bar.frame = NSRect(x: 0, y: 0, width: 360, height: 12)
-            bar.widthAnchor.constraint(equalToConstant: 360).isActive = true
-            col.addArrangedSubview(bar)
-            col.addArrangedSubview(dim("chunk \(i)/\(n)"))
-        } else if st == "running" {
-            let spin = NSProgressIndicator()
-            spin.style = .spinning; spin.controlSize = .small; spin.isIndeterminate = true; spin.startAnimation(nil)
-            col.addArrangedSubview(spin)
+        let col = NSStackView(views: [head]); col.orientation = .vertical; col.alignment = .leading; col.spacing = 8
+        col.translatesAutoresizingMaskIntoConstraints = false
+
+        switch state {
+        case "working":
+            if let (i, n) = chunk { col.addArrangedSubview(progressBar(Double(i) / Double(max(1, n)))) ; col.addArrangedSubview(DS.text("chunk \(i) / \(n)", 12, .regular, DS.label2, mono: true)) }
+        case "running":
+            col.addArrangedSubview(progressBar(nil))
+        case "done":
+            if !result.isEmpty { col.addArrangedSubview(resultPanel(result)) }
+        case "failed":
+            if !result.isEmpty { col.addArrangedSubview(DS.text(result, 12, .regular, DS.red, wrap: true, selectable: true)) }
+            col.addArrangedSubview(recoveryBar(action: action, arg: arg))
+        case "held":
+            col.addArrangedSubview(DS.text("Needs your approval — it can change your system.", 12, .regular, DS.label2))
+            col.addArrangedSubview(heldBar(id: r["id"] as? Int ?? -1))
+        case "scheduled":
+            let when = runAt.map { fmtTime($0) } ?? ""
+            col.addArrangedSubview(DS.text("\(when)   ·   \(countdown((runAt ?? now) - now))", 12, .regular, DS.amber))
+            col.addArrangedSubview(disclaimer())
+        default:
+            col.addArrangedSubview(DS.text("Waiting to start", 12, .regular, DS.label3))
         }
 
-        if (st == "done" || st == "failed"), !result.isEmpty {
-            col.addArrangedSubview(resultBox(result, failed: st == "failed"))
-        }
-        if st == "failed" { col.addArrangedSubview(recoveryBar(action: action, arg: arg)) }
-        if st == "held" {
-            col.addArrangedSubview(dim("needs approval"))
-            col.addArrangedSubview(heldBar(id: r["id"] as? Int ?? -1, action: action, arg: arg))
-        }
-        return col
+        head.widthAnchor.constraint(equalTo: col.widthAnchor).isActive = true
+        card.addSubview(col)
+        NSLayoutConstraint.activate([
+            card.widthAnchor.constraint(equalTo: list.widthAnchor, constant: -48),
+            col.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 13),
+            col.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -13),
+            col.topAnchor.constraint(equalTo: card.topAnchor, constant: 11),
+            col.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -11),
+        ])
+        return card
     }
 
-    private func badge(for st: String) -> (String, NSColor) {
-        switch st {
-        case "done":    return ("✅ done", .systemGreen)
-        case "failed":  return ("❌ failed", .systemRed)
-        case "running": return ("▶️ running", .systemBlue)
-        case "held":    return ("⏸ held", .systemOrange)
-        default:        return ("⏳ queued", .tertiaryLabelColor)
-        }
+    private func progressBar(_ frac: Double?) -> NSView {
+        let track = DS.rounded(bg: DS.fill(0.10), radius: 3)
+        let fill = DS.rounded(bg: DS.blue, radius: 3)
+        track.addSubview(fill)
+        track.heightAnchor.constraint(equalToConstant: 6).isActive = true
+        track.widthAnchor.constraint(equalToConstant: 360).isActive = true
+        fill.topAnchor.constraint(equalTo: track.topAnchor).isActive = true
+        fill.bottomAnchor.constraint(equalTo: track.bottomAnchor).isActive = true
+        fill.leadingAnchor.constraint(equalTo: track.leadingAnchor).isActive = true
+        if let frac { fill.widthAnchor.constraint(equalTo: track.widthAnchor, multiplier: max(0.02, min(1, frac))).isActive = true }
+        else { fill.widthAnchor.constraint(equalTo: track.widthAnchor, multiplier: 0.38).isActive = true }
+        return track
     }
 
-    /// Vector 3: the FAILED affordances — Retry (same tool) + Change tool ▾ (daemon-supplied siblings).
+    private func resultPanel(_ text: String) -> NSView {
+        let panel = DS.rounded(bg: DS.contentBG, radius: 8, border: DS.separator)
+        let header = DS.sectionHeader("Result")
+        let copy = DSButton("Copy", variant: .quiet, size: 11) {
+            NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
+        }
+        let hrow = NSStackView(views: [header, NSView(), copy]); hrow.orientation = .horizontal; hrow.alignment = .centerY
+        let body = DS.text(text, 12, .regular, DS.label, wrap: true, mono: true, selectable: true)
+        let col = NSStackView(views: [hrow, body]); col.orientation = .vertical; col.alignment = .leading; col.spacing = 5
+        col.translatesAutoresizingMaskIntoConstraints = false
+        panel.addSubview(col)
+        NSLayoutConstraint.activate([
+            col.leadingAnchor.constraint(equalTo: panel.leadingAnchor, constant: 10),
+            col.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -10),
+            col.topAnchor.constraint(equalTo: panel.topAnchor, constant: 8),
+            col.bottomAnchor.constraint(equalTo: panel.bottomAnchor, constant: -8),
+            hrow.widthAnchor.constraint(equalTo: col.widthAnchor),
+            body.widthAnchor.constraint(lessThanOrEqualToConstant: 560),
+        ])
+        return panel
+    }
+
     private func recoveryBar(action: String, arg: String) -> NSView {
-        let col = NSStackView(); col.orientation = .vertical; col.alignment = .leading; col.spacing = 4
+        let col = NSStackView(); col.orientation = .vertical; col.alignment = .leading; col.spacing = 5
         let row = NSStackView(); row.orientation = .horizontal; row.spacing = 8
-        row.addArrangedSubview(ClosureButton("↻ Retry") { [weak self] in self?.requeue(action: action, arg: arg) })
-        var changeBtn: ClosureButton!
-        changeBtn = ClosureButton("Change tool ▾") { [weak self, weak changeBtn] in
-            guard let self, let anchor = changeBtn else { return }
-            self.client?.call("action_alternatives", ["action": action, "arg": arg]) { _, body in
-                let alts = (body["alternatives"] as? [[String: Any]]) ?? []
+        row.addArrangedSubview(DSButton("Retry", symbol: "arrow.clockwise", variant: .secondary, size: 12) { [weak self] in self?.requeue(action, arg) })
+        var change: DSButton!
+        change = DSButton("Change tool", symbol: "arrow.left.arrow.right", variant: .secondary, size: 12) { [weak self, weak change] in
+            guard let self, let anchor = change else { return }
+            self.client?.call("action_alternatives", ["action": action, "arg": arg]) { _, b in
+                let alts = (b["alternatives"] as? [[String: Any]]) ?? []
                 DispatchQueue.main.async { self.popAlternatives(alts, arg: arg, anchor: anchor) }
             }
         }
-        row.addArrangedSubview(changeBtn)
+        row.addArrangedSubview(change)
         col.addArrangedSubview(row)
-        // ADR-054 path editor: a typo'd / hallucinated path isn't fixed by Retry (same path) or Change
-        // tool (swaps the verb). Give the user an editable target + Re-run so the request isn't dropped.
         if !arg.isEmpty {
-            let edit = NSStackView(); edit.orientation = .horizontal; edit.spacing = 6
             let field = NSTextField(string: arg)
-            field.font = .systemFont(ofSize: 11); field.widthAnchor.constraint(equalToConstant: 360).isActive = true
-            field.toolTip = "Fix the path or URL, then Re-run with the same action."
-            edit.addArrangedSubview(field)
-            edit.addArrangedSubview(ClosureButton("Re-run ↦") { [weak self, weak field] in
+            field.font = DS.mono(12); field.translatesAutoresizingMaskIntoConstraints = false
+            field.widthAnchor.constraint(equalToConstant: 380).isActive = true
+            let rerun = DSButton("Re-run", variant: .primary, size: 12) { [weak self, weak field] in
                 let fixed = field?.stringValue.trimmingCharacters(in: .whitespaces) ?? ""
-                if !fixed.isEmpty { self?.requeue(action: action, arg: fixed) }
-            })
-            col.addArrangedSubview(edit)
+                if !fixed.isEmpty { self?.requeue(action, fixed) }
+            }
+            let er = NSStackView(views: [field, rerun]); er.orientation = .horizontal; er.spacing = 6
+            col.addArrangedSubview(er)
         }
         return col
     }
-
     private func popAlternatives(_ alts: [[String: Any]], arg: String, anchor: NSView) {
         let menu = NSMenu()
-        if alts.isEmpty {
-            let item = NSMenuItem(title: "No alternative tool for this input", action: nil, keyEquivalent: "")
-            item.isEnabled = false; menu.addItem(item)
-        } else {
-            for a in alts {
-                let name = a["name"] as? String ?? "?"
-                let label = a["label"] as? String ?? name
-                let item = ClosureMenuItem(title: "\(name) — \(label)") { [weak self] in
-                    self?.requeue(action: name, arg: arg)
-                }
-                menu.addItem(item)
-            }
-        }
+        if alts.isEmpty { let i = NSMenuItem(title: "No alternative for this input", action: nil, keyEquivalent: ""); i.isEnabled = false; menu.addItem(i) }
+        else { for a in alts { let n = a["name"] as? String ?? "?"; let l = a["label"] as? String ?? n
+            menu.addItem(ClosureMenuItem(title: "\(n) — \(l)") { [weak self] in self?.requeue(n, arg) }) } }
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: anchor.bounds.height + 4), in: anchor)
     }
-
-    /// Re-enter QUEUED in Now WITHOUT re-selecting the file: enqueue the chosen tool against the same arg
-    /// and start immediately, then jump to the Now tab so the user watches it run.
-    private func requeue(action: String, arg: String) {
+    private func requeue(_ action: String, _ arg: String) {
         client?.call("overnight_enqueue_batch", [["action": action, "arg": arg]]) { [weak self] _, _ in
-            self?.client?.call("overnight_start") { _, _ in
-                DispatchQueue.main.async {
-                    self?.tabs.selectedSegment = 0; self?.tabChanged()
-                }
-            }
+            self?.client?.call("overnight_start") { _, _ in }
+            DispatchQueue.main.async { self?.seg.selectedSegment = 0; self?.subChanged() }
         }
     }
-
-    private func heldBar(id: Int, action: String, arg: String) -> NSView {
-        let bar = NSStackView(); bar.orientation = .horizontal; bar.spacing = 8
-        bar.addArrangedSubview(ClosureButton("Approve") { [weak self] in self?.resolveHeld(id, true) })
-        bar.addArrangedSubview(ClosureButton("Deny") { [weak self] in self?.resolveHeld(id, false) })
-        return bar
+    private func heldBar(id: Int) -> NSView {
+        let row = NSStackView(); row.orientation = .horizontal; row.spacing = 8
+        row.addArrangedSubview(DSButton("Deny", variant: .secondary, size: 12) { [weak self] in self?.resolveHeld(id, false) })
+        let ok = DSButton("Approve & run", variant: .pillAccent, size: 12) { [weak self] in self?.resolveHeld(id, true) }
+        ok.layer?.backgroundColor = DS.green.cgColor
+        row.addArrangedSubview(ok)
+        return row
     }
-
-    private func resolveHeld(_ id: Int, _ accepted: Bool) {
-        client?.call("briefing_resolve", ["id": id, "accepted": accepted]) { [weak self] _, _ in
+    private func resolveHeld(_ id: Int, _ ok: Bool) {
+        client?.call("briefing_resolve", ["id": id, "accepted": ok]) { [weak self] _, _ in
             DispatchQueue.main.async { self?.refresh() }
         }
     }
-
-    // ── small view helpers ──
-    private func resultBox(_ text: String, failed: Bool) -> NSView {
-        let tf = NSTextField(wrappingLabelWithString: text)
-        tf.isSelectable = true; tf.font = .systemFont(ofSize: 11)
-        tf.textColor = failed ? .systemRed : .secondaryLabelColor
-        tf.preferredMaxLayoutWidth = (tab == .activity) ? 780 : 540
-        tf.drawsBackground = true; tf.backgroundColor = NSColor.textBackgroundColor.withAlphaComponent(0.5)
-        tf.isBordered = true; tf.bezelStyle = .roundedBezel
-        return tf
-    }
-
-    private func dim(_ s: String) -> NSView {
-        let l = NSTextField(labelWithString: s); l.font = .systemFont(ofSize: 11); l.textColor = .tertiaryLabelColor
-        return l
+    private func disclaimer() -> NSView {
+        let bar = DS.rounded(bg: DS.amber.withAlphaComponent(0.14), radius: 7)
+        let t = DS.text("Runs at the set time if your Mac is awake — otherwise on the next wake. Nothing runs while it's off.",
+                        11.5, .regular, DS.amber, wrap: true)
+        bar.addSubview(t)
+        NSLayoutConstraint.activate([
+            t.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 9),
+            t.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -9),
+            t.topAnchor.constraint(equalTo: bar.topAnchor, constant: 6),
+            t.bottomAnchor.constraint(equalTo: bar.bottomAnchor, constant: -6),
+            t.widthAnchor.constraint(lessThanOrEqualToConstant: 520),
+        ])
+        return bar
     }
 
     private func parseChunk(_ s: String) -> (Int, Int)? {
-        // matches the worker's live status: "summarizing… chunk 3/12"
         guard let r = s.range(of: #"chunk (\d+)/(\d+)"#, options: .regularExpression) else { return nil }
         let nums = s[r].split(whereSeparator: { !$0.isNumber }).compactMap { Int($0) }
         return nums.count == 2 ? (nums[0], nums[1]) : nil
     }
-
     private func countdown(_ secs: Double) -> String {
-        if secs <= 0 { return "due" }
+        if secs <= 0 { return "due now" }
         let h = Int(secs) / 3600, m = (Int(secs) % 3600) / 60
-        return h > 0 ? "in \(h)h \(m)m" : "in \(m)m"
+        return h > 0 ? "in \(h) h \(m) m" : "in \(m) m"
+    }
+    private func fmtTime(_ epoch: Double) -> String {
+        let f = DateFormatter(); f.dateFormat = "h:mm a"; return f.string(from: Date(timeIntervalSince1970: epoch))
     }
 }
 
-/// A menu item that runs a closure (same idea as ClosureButton, for the Change-tool dropdown).
+/// A menu item that runs a closure (the Change-tool dropdown).
 final class ClosureMenuItem: NSMenuItem {
     private var handler: (() -> Void)?
     convenience init(title: String, handler: @escaping () -> Void) {
