@@ -83,6 +83,7 @@ def test_dispatch_enqueue_batch_queues_valid_and_rejects_unknown() -> None:
     from service.session import Session
     q = OvernightQueue()
     stub = types.SimpleNamespace(_overnight_queue=q)
+    stub._enqueue_items = types.MethodType(Session._enqueue_items, stub)   # ADR-053: shared commit helper
     ok, body = Session._overnight_enqueue_batch(
         stub, [{"action": "find_file", "arg": "x"}, {"action": "bogus"}, {"action": "summarize_file", "arg": "/tmp/a"}])
     assert ok and body["queued"] == 2 and body["rejected"] == ["bogus"]

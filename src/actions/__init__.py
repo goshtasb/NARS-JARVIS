@@ -7,6 +7,7 @@ generative execution path exists — only the enumerated actions can run.
 
 Public interface (ADR-001: a module's surface is its `__init__.py` + `__all__`).
 """
+from .alternatives import alternatives
 from .catalog import AX_VERBS, Action, argv_for, available, render_action_prompt, resolve, schema
 from .diagnostics import (
     anomaly_flags,
@@ -21,6 +22,7 @@ from .run import ActionRunner, ConsentSpec, perform
 __all__ = [
     "Action",
     "AX_VERBS",
+    "alternatives",
     "resolve",
     "available",
     "schema",

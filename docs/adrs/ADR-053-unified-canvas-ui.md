@@ -1,10 +1,20 @@
 # ADR-053: The Unified Canvas UI
 
 ## Status
-**Proposed** — design document for review (no code). Builds directly on the infrastructure shipped in
-ADR-031 (overnight queue + briefing), ADR-051 (steady-cadence tick + result visibility), and ADR-052
-(the document-summary offload engine + WAL). When this passes review it becomes the build spec for the
-Canvas window; nothing here is implemented yet.
+**Accepted** (ratified after review). Builds directly on the infrastructure shipped in ADR-031
+(overnight queue + briefing), ADR-051 (steady-cadence tick + result visibility), and ADR-052 (the
+document-summary offload engine + WAL).
+
+**Review resolutions (binding):**
+1. **Three tabs — approved.** `Now / Scheduled / Activity`. The Morning Briefing folds into `Activity`;
+   all execution states live in one visual hierarchy (no separate results window).
+2. **Scheduling granularity — relative/preset only.** Ship the `Tonight` preset **and** an
+   "In X Hours" dropdown (In 1 Hour / In 4 Hours). **No `NSDatePicker` calendar** yet — a full calendar
+   adds timezone/localization edge cases for a feature whose real use is "do this while I'm at lunch."
+   The Swift side computes an **absolute epoch** (`run_at`) from the preset, so the backend stores a
+   bare timestamp and carries zero timezone logic. Graduate to a calendar only if behavior demands it.
+3. **`alternatives()` scope — file-path family only** (`summarize_file / read_file / read_article`).
+   Patches the exact routing failure the user hit; no universal sibling map until there is proven need.
 
 ## Context
 The Batch Canvas (ADR-033) was built as an *overnight* composer. Three things since then exposed that

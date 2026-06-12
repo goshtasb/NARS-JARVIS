@@ -9,9 +9,9 @@ is the whole migration story for v1.
 from __future__ import annotations
 
 import sqlite3
+import time
 
 import dbconn
-import time
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS overnight_queue (
@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS overnight_queue (
   arg         TEXT NOT NULL DEFAULT '',
   status      TEXT NOT NULL DEFAULT 'pending',   -- pending | running | done | held | failed
   result      TEXT NOT NULL DEFAULT '',
+  run_at      REAL,                              -- ADR-053: NULL = manual (Run Now); set = scheduled epoch
   created_at  REAL NOT NULL,
   updated_at  REAL NOT NULL
 );
@@ -45,20 +46,42 @@ class OvernightQueue:
     def __init__(self, db_path: str = ":memory:") -> None:
         self._db = dbconn.connect(db_path)
         self._db.executescript(_SCHEMA)
+        self._migrate()
         self._db.commit()
 
-    def enqueue(self, action: str, arg: str = "", now: float | None = None) -> int:
+    def _migrate(self) -> None:
+        """ADR-053: add `run_at` to a pre-existing queue (CREATE TABLE IF NOT EXISTS won't alter it).
+        Mirrors the additive PRAGMA-checked migration in memory/store.py — no data loss, idempotent."""
+        have = {row[1] for row in self._db.execute("PRAGMA table_info(overnight_queue)")}
+        if "run_at" not in have:
+            self._db.execute("ALTER TABLE overnight_queue ADD COLUMN run_at REAL")
+
+    def enqueue(self, action: str, arg: str = "", run_at: float | None = None,
+                now: float | None = None) -> int:
+        """Queue a task. `run_at` NULL = manual (drained when the runner is started, i.e. Run Now);
+        a future epoch = scheduled (the runner auto-activates once `run_at <= now`, ADR-053)."""
         t = _now(now)
         cur = self._db.execute(
-            "INSERT INTO overnight_queue(action,arg,status,created_at,updated_at) VALUES(?,?,'pending',?,?)",
-            (action, arg, t, t))
+            "INSERT INTO overnight_queue(action,arg,status,run_at,created_at,updated_at) "
+            "VALUES(?,?,'pending',?,?,?)", (action, arg, run_at, t, t))
         self._db.commit()
         return cur.lastrowid
 
-    def next_pending(self) -> dict | None:
+    def next_pending(self, now: float | None = None) -> dict | None:
+        """The next runnable task: pending AND either manual (run_at NULL) or scheduled-and-due
+        (run_at <= now). A task scheduled for the future is invisible here until its time arrives."""
         row = self._db.execute(
-            "SELECT id,action,arg FROM overnight_queue WHERE status='pending' ORDER BY id LIMIT 1").fetchone()
+            "SELECT id,action,arg FROM overnight_queue "
+            "WHERE status='pending' AND (run_at IS NULL OR run_at <= ?) ORDER BY id LIMIT 1",
+            (_now(now),)).fetchone()
         return {"id": row[0], "action": row[1], "arg": row[2]} if row else None
+
+    def due_scheduled(self, now: float | None = None) -> int:
+        """Count pending tasks whose scheduled time has arrived (run_at set AND <= now). Drives the
+        tick auto-activation: a non-zero count means the runner should start without a manual press."""
+        return self._db.execute(
+            "SELECT COUNT(*) FROM overnight_queue "
+            "WHERE status='pending' AND run_at IS NOT NULL AND run_at <= ?", (_now(now),)).fetchone()[0]
 
     def mark(self, task_id: int, status: str, result: str = "", now: float | None = None) -> None:
         self._db.execute("UPDATE overnight_queue SET status=?, result=?, updated_at=? WHERE id=?",
@@ -79,8 +102,8 @@ class OvernightQueue:
 
     def list_all(self) -> list[dict]:
         rows = self._db.execute(
-            "SELECT id,action,arg,status,result FROM overnight_queue ORDER BY id").fetchall()
-        return [dict(zip(("id", "action", "arg", "status", "result"), r)) for r in rows]
+            "SELECT id,action,arg,status,result,run_at FROM overnight_queue ORDER BY id").fetchall()
+        return [dict(zip(("id", "action", "arg", "status", "result", "run_at"), r)) for r in rows]
 
     def counts(self) -> dict:
         rows = self._db.execute("SELECT status, COUNT(*) FROM overnight_queue GROUP BY status").fetchall()

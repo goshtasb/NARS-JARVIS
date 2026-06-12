@@ -12,7 +12,10 @@ import uuid
 from datetime import datetime
 from typing import Callable
 
-from actions import ActionRunner, recipe_for, resolve as resolve_action, schema as catalog_schema, should_gate
+from actions import (
+    ActionRunner, alternatives, recipe_for, resolve as resolve_action,
+    schema as catalog_schema, should_gate,
+)
 from brain import Brain
 from habits import HabitStore
 from persona import PersonaStore, render_persona
@@ -150,6 +153,8 @@ class Session:
             "overnight_enqueue": self._overnight_enqueue, "overnight_start": self._overnight_start,
             "overnight_status": self._overnight_status,                   # ADR-031: overnight batch queue
             "overnight_enqueue_batch": self._overnight_enqueue_batch,     # ADR-033: batch commit
+            "overnight_schedule_batch": self._overnight_schedule_batch,   # ADR-053: commit with a run_at
+            "action_alternatives": self._action_alternatives,             # ADR-053: failed-task recovery routing
             "catalog_schema": self._catalog_schema,                       # ADR-033: palette for the canvas
             "briefing": self._briefing, "briefing_resolve": self._briefing_resolve,  # ADR-031: morning
             "briefing_dismiss_done": self._briefing_dismiss_done,         # ADR-033: clear completed
@@ -462,21 +467,52 @@ class Session:
                    for a in catalog_schema() if a["kind"] in _CANVAS_KINDS]
         return True, {"actions": actions}
 
-    def _overnight_enqueue_batch(self, arg: object) -> tuple[bool, object]:
-        """Commit a composed batch: arg = [{action, arg}, …]. Unknown actions are rejected, never queued."""
-        items = arg if isinstance(arg, list) else []
+    def _enqueue_items(self, items: object, run_at: float | None) -> tuple[list[int], list[str]]:
+        """Shared commit: validate each {action, arg} against the catalog and enqueue with `run_at`
+        (None = manual/Run Now; an epoch = scheduled). Unknown actions are rejected, never queued."""
         queued, rejected = [], []
-        for it in items:
+        for it in (items if isinstance(items, list) else []):
             if not isinstance(it, dict):
                 continue
             name, a = str(it.get("action", "")).strip(), str(it.get("arg", "")).strip()
             if not name or resolve_action(name) is None:
                 rejected.append(name or "(empty)")
                 continue
-            queued.append(self._overnight_queue.enqueue(name, a))
+            queued.append(self._overnight_queue.enqueue(name, a, run_at=run_at))
+        return queued, rejected
+
+    def _overnight_enqueue_batch(self, arg: object) -> tuple[bool, object]:
+        """Commit a composed batch to run now (manual): arg = [{action, arg}, …]."""
+        queued, rejected = self._enqueue_items(arg, run_at=None)
         return True, {"queued": len(queued), "rejected": rejected,
                       "text": f"committed {len(queued)} task(s)"
                               + (f"; rejected {len(rejected)}" if rejected else "")}
+
+    def _overnight_schedule_batch(self, arg: object) -> tuple[bool, object]:
+        """ADR-053: commit a batch to run at a scheduled time. arg = {items: [{action, arg}, …],
+        run_at: <absolute epoch>}. The client computes the epoch (Tonight / In N hours), so the daemon
+        carries no timezone logic. The runner auto-activates once `run_at <= now` (no manual start)."""
+        if not isinstance(arg, dict) or not isinstance(arg.get("run_at"), (int, float)):
+            return False, {"text": "usage: {items: [{action, arg}…], run_at: <epoch>}"}
+        run_at = float(arg["run_at"])
+        queued, rejected = self._enqueue_items(arg.get("items"), run_at=run_at)
+        return True, {"queued": len(queued), "rejected": rejected, "run_at": run_at,
+                      "text": f"scheduled {len(queued)} task(s)"
+                              + (f"; rejected {len(rejected)}" if rejected else "")}
+
+    def _action_alternatives(self, arg: object) -> tuple[bool, object]:
+        """ADR-053: sibling tools to offer for a FAILED task. arg = {action, arg}. Returns each
+        alternative enriched with its catalog label + autonomous tag, so the Canvas renders the
+        'Change tool ▾' menu without business logic (the dumb-client rule, ADR-033)."""
+        if not isinstance(arg, dict):
+            return False, {"text": "usage: {action, arg}"}
+        names = alternatives(str(arg.get("action", "")), str(arg.get("arg", "")))
+        out = []
+        for n in names:
+            act = resolve_action(n)
+            if act is not None:
+                out.append({"name": n, "label": act.label, "autonomous": safe_autonomous(act)})
+        return True, {"alternatives": out}
 
     def _briefing_dismiss_done(self, _arg: object) -> tuple[bool, object]:
         """Clear finished (done/failed) rows so the briefing doesn't grow forever. Held/pending untouched."""

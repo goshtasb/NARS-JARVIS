@@ -14,6 +14,7 @@ exactly like a voice transcription. Light tasks (reports, file reads, web egress
 """
 from __future__ import annotations
 
+import time
 from typing import Callable
 
 from actions import resolve
@@ -53,9 +54,12 @@ class OvernightRunner:
         While an offloaded job is in flight, this is a no-op — the job finalizes via `handle_fd`."""
         if self._job is not None:                           # an offloaded summary is still running
             return
+        now = time.time()
+        if not self._active and self._queue.due_scheduled(now) > 0:
+            self.start()                                    # ADR-053: a scheduled task came due -> auto-start
         if not self._active:
             return
-        task = self._queue.next_pending()
+        task = self._queue.next_pending(now)
         if task is None:                                    # queue drained -> done
             self._active = False
             self._emit("overnight_done", self._tally())
