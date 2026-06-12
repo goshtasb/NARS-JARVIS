@@ -126,7 +126,7 @@ Safety isn't a feature here; it's the architecture. The guarantees:
 ## What it can do today
 
 Each capability links to the Architecture Decision Record (ADR) that documents how and why it was built.
-Released in tagged increments **v1.0.0 → v1.16.2**; **519 automated tests** currently pass.
+Released in tagged increments **v1.0.0 → v1.16.3**; **519 automated tests** currently pass.
 
 ### Conversation & memory
 - **Chat in plain English** — ask questions, give it facts to remember. ([ADR-007], [ADR-008])
@@ -411,7 +411,7 @@ editing working code. Common extension points:
   intentionally skipped; a cloud/Drive integration was proposed and dropped to preserve the local-first
   air-gap. ADR-038 is drafted on branch `adr-038-omniglass-draft`, merge gated on field-test review).
   Each module also has its own `README.md`.
-- **Releases:** annotated tags `v1.0.0` → `v1.16.2`, each tied to its ADR(s).
+- **Releases:** annotated tags `v1.0.0` → `v1.16.3`, each tied to its ADR(s).
 
 ---
 
