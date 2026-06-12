@@ -349,8 +349,8 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
         DispatchQueue.main.async { [weak self] in self?.scrollToBottom() }
     }
     private func scrollToBottom() {
-        guard let doc = transcriptScroll.documentView else { return }
-        transcriptScroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, doc.bounds.height - transcriptScroll.contentView.bounds.height)))
+        guard let scroll = transcriptScroll, let doc = scroll.documentView else { return }
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, doc.bounds.height - scroll.contentView.bounds.height)))
     }
     private func bubble(_ s: String, bg: NSColor, fg: NSColor) -> NSView {
         let v = DS.rounded(bg: bg, radius: 14)
@@ -390,17 +390,20 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
         addRow(chip, align: .leading)
     }
 
-    // ── public API (AppDelegate) ──
+    // ── public API (AppDelegate) — may be called before the view is shown, so ensure it's loaded ──
     func append(_ text: String) {
         guard !text.isEmpty else { return }
+        loadViewIfNeeded()
         addAssistant(text, error: text.hasPrefix("⚠") || text.hasPrefix("✗"))
     }
-    func focusInput() { view.window?.makeFirstResponder(input) }
+    func focusInput() { loadViewIfNeeded(); view.window?.makeFirstResponder(input) }
     func setRecording(_ on: Bool) {
+        loadViewIfNeeded()
         micBtn.titleField?.stringValue = on ? "Stop & send" : "Listen"
         micBtn.layer?.backgroundColor = (on ? DS.red : NSColor.clear).cgColor
     }
     func setConnected(_ up: Bool) {
+        loadViewIfNeeded()
         input.isEnabled = up
         input.placeholderString = up ? (pinnedVerb == nil ? "Ask, or type / to run a job…" : input.placeholderString)
                                      : "Reconnecting to the engine…"
