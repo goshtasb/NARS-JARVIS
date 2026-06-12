@@ -62,6 +62,25 @@ class LocalLLM:
         """Convenience: generate + parse into typed claims."""
         return parse_claims(self.generate(system_prompt, sentence))
 
+    def generate_json(self, system_prompt: str, user: str, grammar_text: str,
+                      max_tokens: int = 256) -> str:
+        """GBNF-constrained free generation (ADR-054 intent router). `grammar_text` is compiled per call
+        from the live catalog, so the model PHYSICALLY cannot emit an off-catalog action or malformed
+        JSON. Temp 0. Output is still validated by the Interception Gate (grammar guarantees structure,
+        not semantics)."""
+        from llama_cpp import LlamaGrammar
+        grammar = LlamaGrammar.from_string(grammar_text)
+        out = self._llm.create_chat_completion(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user},
+            ],
+            grammar=grammar,
+            temperature=0.0,
+            max_tokens=max_tokens,
+        )
+        return out["choices"][0]["message"]["content"]
+
     def generate_text(self, system_prompt: str, user: str, max_tokens: int = 64) -> str:
         """Free-text generation (NO grammar) for the outbound voice formatter. Temp 0, bounded.
         Output is treated as untrusted prose and validated by language.voice.sanitize_voice."""
