@@ -115,10 +115,12 @@ def chunk_text(text: str, max_chars: int = _CHUNK_CHARS) -> list[str]:
 Generate = Callable[[str, str, int], str]   # (system, user, max_tokens) -> text
 
 
-def summarize(text: str, generate: Generate, *, max_chunks: int = _MAX_CHUNKS) -> str:
+def summarize(text: str, generate: Generate, *, max_chunks: int = _MAX_CHUNKS,
+              on_step: Callable[[int, int], None] | None = None) -> str:
     """Recursively Map-Reduce-summarize `text` using the injected `generate`. Processes the WHOLE
     document; if it exceeds `max_chunks` sections, summarizes the first `max_chunks` and STATES that
-    coverage honestly (never a silent truncation). Returns the summary, or '⚠ …' on failure."""
+    coverage honestly (never a silent truncation). `on_step(i, n)` (optional) is called before each map
+    step so an offloaded worker can stream `[progress] i/N`. Returns the summary, or '⚠ …' on failure."""
     text = (text or "").strip()
     if not text:
         return "⚠ Nothing to summarize (no text extracted)."
@@ -130,8 +132,11 @@ def summarize(text: str, generate: Generate, *, max_chunks: int = _MAX_CHUNKS) -
         chunks = chunks[:max_chunks]
 
     try:
-        summaries = [generate(_SUMMARY_SYSTEM, f"Summarize this text:\n\n{c}", _MAP_TOKENS).strip()
-                     for c in chunks]
+        summaries = []
+        for i, c in enumerate(chunks):
+            if on_step is not None:
+                on_step(i + 1, len(chunks))         # 1-based "chunk i/N" for the progress stream
+            summaries.append(generate(_SUMMARY_SYSTEM, f"Summarize this text:\n\n{c}", _MAP_TOKENS).strip())
     except Exception as exc:  # noqa: BLE001 — a model hiccup reports, never crashes the turn
         return f"⚠ Summarization failed: {exc}"
     summaries = [s for s in summaries if s]

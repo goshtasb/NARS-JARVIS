@@ -8,6 +8,8 @@ phone-home; a single local SQLite table.
 from __future__ import annotations
 
 import sqlite3
+
+import dbconn
 import time
 from collections import Counter
 
@@ -37,7 +39,7 @@ class MetricsStore:
     """Append-only ingestion telemetry + the rejection-rate-decay readout. Fire-and-forget writes."""
 
     def __init__(self, db_path: str = ":memory:", session_id: str = "session") -> None:
-        self._db = sqlite3.connect(db_path)
+        self._db = dbconn.connect(db_path)
         self._db.executescript(_SCHEMA)
         self._db.commit()
         self._session = session_id

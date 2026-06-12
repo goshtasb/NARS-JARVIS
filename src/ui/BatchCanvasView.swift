@@ -243,9 +243,10 @@ final class BatchCanvasViewController: NSViewController {
             head.preferredMaxLayoutWidth = 500
             plan.addArrangedSubview(head)
             // Show the ACTUAL output where it was produced — not just a "done" badge. The result text
-            // (a summary, a web answer, an error) is the whole point; render it selectable so it can be
-            // copied, and never buried in the DB or a separate Morning-Briefing window.
-            if (st == "done" || st == "failed"), !result.isEmpty {
+            // (a summary, a web answer, an error, or live "summarizing… chunk i/N" progress from the
+            // offloaded worker) is the whole point; render it selectable so it can be copied, and never
+            // buried in the DB or a separate Morning-Briefing window.
+            if (st == "done" || st == "failed" || st == "running"), !result.isEmpty {
                 plan.addArrangedSubview(resultBox(result, failed: st == "failed"))
             }
         }

@@ -12,6 +12,8 @@ whole migration story).
 from __future__ import annotations
 
 import sqlite3
+
+import dbconn
 import time
 
 _SCHEMA = """
@@ -36,7 +38,7 @@ def _now(now: float | None) -> float:
 
 class PersonaStore:
     def __init__(self, db_path: str = ":memory:") -> None:
-        self._db = sqlite3.connect(db_path)
+        self._db = dbconn.connect(db_path)
         self._db.executescript(_SCHEMA)
         self._db.commit()
 

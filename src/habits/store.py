@@ -9,6 +9,8 @@ so the proposal tick can enumerate candidates for the current context.
 from __future__ import annotations
 
 import sqlite3
+
+import dbconn
 import time
 
 _SCHEMA = """
@@ -32,7 +34,7 @@ _PHASE2_COLUMNS = (("day_type", "''"), ("app", "''"), ("scope", "'base'"))
 
 class HabitStore:
     def __init__(self, db_path: str = ":memory:") -> None:
-        self._db = sqlite3.connect(db_path)
+        self._db = dbconn.connect(db_path)
         self._db.executescript(_SCHEMA)
         self._migrate()
         self._db.commit()

@@ -7,6 +7,8 @@ the same memoization discipline as grounding. Stores categories only; never wind
 from __future__ import annotations
 
 import sqlite3
+
+import dbconn
 import time
 
 from .focusblock import Block, lift
@@ -66,7 +68,7 @@ class SentinelStore:
     """Cache of bundle -> bucket. resolve() memoizes classify(); set_override() pins a manual bucket."""
 
     def __init__(self, db_path: str = ":memory:") -> None:
-        self._db = sqlite3.connect(db_path)
+        self._db = dbconn.connect(db_path)
         self._db.executescript(_SCHEMA)
         self._db.commit()
         self._cache: dict[str, str] = dict(

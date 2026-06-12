@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import math
 import sqlite3
+
+import dbconn
 import time
 
 from .fact import Fact, pack_embedding, unpack_embedding
@@ -93,7 +95,7 @@ def _row_to_fact(r: tuple) -> Fact:
 
 class MemoryStore:
     def __init__(self, db_path: str = ":memory:") -> None:
-        self._db = sqlite3.connect(db_path)
+        self._db = dbconn.connect(db_path)
         self._db.executescript(_SCHEMA)
         self._migrate()
         self._db.commit()

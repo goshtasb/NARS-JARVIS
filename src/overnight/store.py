@@ -9,6 +9,8 @@ is the whole migration story for v1.
 from __future__ import annotations
 
 import sqlite3
+
+import dbconn
 import time
 
 _SCHEMA = """
@@ -41,7 +43,7 @@ class OvernightQueue:
     """The committed batch of tasks (each a concrete catalog action + arg) to work through unattended."""
 
     def __init__(self, db_path: str = ":memory:") -> None:
-        self._db = sqlite3.connect(db_path)
+        self._db = dbconn.connect(db_path)
         self._db.executescript(_SCHEMA)
         self._db.commit()
 
@@ -92,7 +94,7 @@ class HeldLedger:
     """The durable list of actions the runner refused to run unattended — they wait for your morning OK."""
 
     def __init__(self, db_path: str = ":memory:") -> None:
-        self._db = sqlite3.connect(db_path)
+        self._db = dbconn.connect(db_path)
         self._db.executescript(_SCHEMA)
         self._db.commit()
 

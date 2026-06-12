@@ -15,6 +15,8 @@ numpy is imported lazily (it ships with llama-cpp-python, i.e. it is present whe
 from __future__ import annotations
 
 import sqlite3
+
+import dbconn
 import time
 
 _SCHEMA = """
@@ -41,7 +43,7 @@ class SqliteGroundingStore:
     """
 
     def __init__(self, db_path: str = ":memory:") -> None:
-        self._db = sqlite3.connect(db_path)
+        self._db = dbconn.connect(db_path)
         self._db.executescript(_SCHEMA)
         self._db.commit()
         self._loaded = False

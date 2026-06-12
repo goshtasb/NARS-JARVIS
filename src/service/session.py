@@ -672,11 +672,14 @@ class Session:
         if sfd is not None:
             fds.append(sfd)
         fds += list(self._voice_jobs)
+        fds += self._overnight.extra_fds()      # ADR-052: the offloaded summary worker's stdout
         return fds
 
     def handle_fd(self, fd: int) -> None:
         if fd in self._voice_jobs:
             self._read_voice(fd)
+        elif fd in self._overnight.extra_fds():  # ADR-052: drain the detached summary worker
+            self._overnight.handle_fd(fd)
         elif fd == self._flow.fileno():
             self._flow.read()
 
