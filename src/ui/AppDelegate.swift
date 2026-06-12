@@ -33,6 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var lastAxDom = ""                // dedup: only push when the control set actually changes
 
     func applicationDidFinishLaunching(_ note: Notification) {
+        installEditMenu()       // enable ⌘X/C/V/A in every text field (a menu-bar app has no menu by default)
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.title = "🔵 JARVIS"
         statusItem.button?.target = self
@@ -59,6 +60,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         setupVoice()
         setupAX()                   // ADR-021: watch focus changes, serialize the focused window
         connect(reconnect: false)   // ADR-017: retry until up, and auto-reconnect on a daemon restart
+    }
+
+    /// A menu-bar (LSUIElement) app has no main menu, so the standard editing shortcuts are never routed
+    /// to the focused field — which is why copy/paste was dead app-wide (incl. pasting an API key into
+    /// the BYOK sheet). A minimal main menu with an Edit menu fixes it: nil-target items send
+    /// cut:/copy:/paste:/selectAll: down the responder chain to the field editor that implements them.
+    private func installEditMenu() {
+        let mainMenu = NSMenu()
+        let appItem = NSMenuItem(); mainMenu.addItem(appItem)
+        let appMenu = NSMenu(); appItem.submenu = appMenu
+        appMenu.addItem(withTitle: "Quit JARVIS", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        let editItem = NSMenuItem(); mainMenu.addItem(editItem)
+        let editMenu = NSMenu(title: "Edit"); editItem.submenu = editMenu
+        editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(.separator())
+        editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        NSApp.mainMenu = mainMenu
     }
 
     // ── ADR-021: GUI actuation — eyes (serialize focused window) + hands (actuate on approval) ──
