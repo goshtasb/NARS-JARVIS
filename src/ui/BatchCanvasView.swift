@@ -12,6 +12,7 @@ final class BatchCanvasViewController: NSViewController {
     private let plan = NSStackView()
     private let status = NSTextField(labelWithString: "")
     private var rows: [PlanRow] = []
+    private var pollTimer: Timer?               // live run-status polling (the "Run Now" visibility)
 
     // One composed task: the action + its (file picker / text) argument field + the daemon's tag.
     private final class PlanRow {
@@ -68,8 +69,10 @@ final class BatchCanvasViewController: NSViewController {
         let commit = NSButton(title: "Commit Queue", target: self, action: #selector(commit))
         commit.frame = NSRect(x: 272, y: 14, width: 130, height: 30); commit.bezelColor = .systemGreen
         commit.keyEquivalent = "\r"
-        let startBtn = NSButton(title: "Commit + Start", target: self, action: #selector(commitAndStart))
-        startBtn.frame = NSRect(x: 408, y: 14, width: 140, height: 30)
+        let startBtn = NSButton(title: "▶ Run Now", target: self, action: #selector(commitAndStart))
+        startBtn.frame = NSRect(x: 408, y: 14, width: 140, height: 30); startBtn.bezelColor = .systemBlue
+        startBtn.toolTip = "Queue and run immediately (asynchronously) — watch the status below. " +
+                           "Use 'Commit Queue' alone to run later/overnight."
         status.frame = NSRect(x: 560, y: 20, width: 244, height: 18)
         status.font = .systemFont(ofSize: 11); status.textColor = .tertiaryLabelColor
 
@@ -187,11 +190,83 @@ final class BatchCanvasViewController: NSViewController {
         client?.call("overnight_enqueue_batch", payload) { [weak self] _, body in
             let queued = body["queued"] as? Int ?? 0
             DispatchQueue.main.async {
-                self?.status.stringValue = (body["text"] as? String) ?? "committed \(queued)"
-                if start { self?.client?.call("overnight_start") { _, _ in } }
                 self?.rows.removeAll()
                 self?.plan.arrangedSubviews.forEach { $0.removeFromSuperview() }
+                if start {
+                    self?.status.stringValue = "running \(queued) task(s)…"
+                    self?.client?.call("overnight_start") { _, _ in }
+                    self?.startStatusPolling()           // ← the visibility: live PENDING/RUNNING/DONE/FAILED
+                } else {
+                    self?.status.stringValue = (body["text"] as? String) ?? "committed \(queued)"
+                }
             }
         }
+    }
+
+    // ── live run status (the "Run Now" visibility baseline) ──
+    private func startStatusPolling() {
+        pollTimer?.invalidate()
+        var idleTicks = 0
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] t in
+            self?.client?.call("overnight_status") { _, body in
+                let active = body["active"] as? Bool ?? false
+                let rows = (body["rows"] as? [[String: Any]]) ?? []
+                DispatchQueue.main.async {
+                    self?.renderRunStatus(rows)
+                    if !active { idleTicks += 1 } else { idleTicks = 0 }
+                    if idleTicks >= 2 { t.invalidate(); self?.status.stringValue = "run finished" }
+                }
+            }
+        }
+    }
+
+    private func renderRunStatus(_ rows: [[String: Any]]) {
+        plan.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        if rows.isEmpty { plan.addArrangedSubview(dim("(nothing queued)")); return }
+        for r in rows {
+            let action = r["action"] as? String ?? "?"
+            let arg = r["arg"] as? String ?? ""
+            let st = r["status"] as? String ?? "pending"
+            let result = r["result"] as? String ?? ""
+            let badge: String
+            switch st {
+            case "done":    badge = "✅ done"
+            case "running": badge = "▶️ running"
+            case "failed":  badge = "❌ failed"
+            case "held":    badge = "⏸ held — approve in the Morning Briefing"
+            default:        badge = "⏳ pending"
+            }
+            let argShort = arg.isEmpty ? "" : "  (\((arg as NSString).lastPathComponent))"
+            let head = NSTextField(wrappingLabelWithString: "\(action)\(argShort)   \(badge)")
+            head.font = .boldSystemFont(ofSize: 11)
+            head.textColor = (st == "failed") ? .systemRed : (st == "done" ? .systemGreen : .labelColor)
+            head.preferredMaxLayoutWidth = 500
+            plan.addArrangedSubview(head)
+            // Show the ACTUAL output where it was produced — not just a "done" badge. The result text
+            // (a summary, a web answer, an error) is the whole point; render it selectable so it can be
+            // copied, and never buried in the DB or a separate Morning-Briefing window.
+            if (st == "done" || st == "failed"), !result.isEmpty {
+                plan.addArrangedSubview(resultBox(result, failed: st == "failed"))
+            }
+        }
+    }
+
+    /// A selectable, bordered panel holding a task's full result text — readable and copyable in place.
+    private func resultBox(_ text: String, failed: Bool) -> NSView {
+        let tf = NSTextField(wrappingLabelWithString: text)
+        tf.isSelectable = true                                   // copyable: the output is the deliverable
+        tf.font = .systemFont(ofSize: 11)
+        tf.textColor = failed ? .systemRed : .secondaryLabelColor
+        tf.preferredMaxLayoutWidth = 496
+        tf.drawsBackground = true
+        tf.backgroundColor = NSColor.textBackgroundColor.withAlphaComponent(0.5)
+        tf.isBordered = true
+        tf.bezelStyle = .roundedBezel
+        return tf
+    }
+
+    private func dim(_ s: String) -> NSView {
+        let l = NSTextField(labelWithString: s); l.font = .systemFont(ofSize: 11)
+        l.textColor = .tertiaryLabelColor; return l
     }
 }

@@ -106,13 +106,26 @@ final class MorningBriefingViewController: NSViewController {
     private func doneRow(_ d: [String: Any]) -> NSView {
         let action = d["action"] as? String ?? "(task)"
         let arg = d["arg"] as? String ?? ""
+        let result = d["result"] as? String ?? ""
         let failed = (d["status"] as? String) == "failed"
         let mark = failed ? "✗" : "•"
-        let l = NSTextField(labelWithString: "\(mark) \(action) \(arg)".trimmingCharacters(in: .whitespaces))
-        l.font = .systemFont(ofSize: 11)
-        l.textColor = failed ? .systemRed : .labelColor
-        l.lineBreakMode = .byTruncatingTail
-        return l
+        let head = NSTextField(labelWithString: "\(mark) \(action) \(arg)".trimmingCharacters(in: .whitespaces))
+        head.font = .boldSystemFont(ofSize: 11)
+        head.textColor = failed ? .systemRed : .labelColor
+        head.lineBreakMode = .byTruncatingTail
+        guard !result.isEmpty else { return head }
+        // The output is the deliverable — render it selectable beneath the task line, not dropped on the
+        // floor (the summary used to live only in the overnight_queue.result DB column, invisible to the user).
+        let body = NSTextField(wrappingLabelWithString: result)
+        body.isSelectable = true
+        body.font = .systemFont(ofSize: 11)
+        body.textColor = failed ? .systemRed : .secondaryLabelColor
+        body.preferredMaxLayoutWidth = 360
+        let col = NSStackView(views: [head, body])
+        col.orientation = .vertical
+        col.alignment = .leading
+        col.spacing = 2
+        return col
     }
 
     private func heldRow(_ h: [String: Any]) -> NSView {

@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import select
 import socket
+import time
 
 from . import protocol
 from .paths import socket_path
@@ -22,6 +23,7 @@ class Daemon:
                  poll_interval: float = 2.0) -> None:
         self._path = sock_path or socket_path()
         self._poll = poll_interval
+        self._last_tick = 0.0                # drives the steady-cadence tick (not only on idle timeout)
         self._clients: dict[socket.socket, protocol.LineBuffer] = {}
         self._session = Session(db_path, on_event=self._broadcast)
         self._srv: socket.socket | None = None
@@ -46,9 +48,6 @@ class Daemon:
                 # jobs); we multiplex them alongside clients so ML never blocks the loop.
                 watch: list = [self._srv, *self._clients, *self._session.extra_fds()]
                 ready, _, _ = select.select(watch, [], [], self._poll)
-                if not ready:
-                    self._session.tick()
-                    continue
                 for obj in ready:
                     if obj is self._srv:
                         self._accept()
@@ -56,6 +55,14 @@ class Daemon:
                         self._session.handle_fd(obj)
                     else:
                         self._handle(obj)
+                # Tick on a STEADY cadence regardless of activity — not only when select times out fully
+                # idle. Before this, continuous client activity (e.g. the Canvas polling overnight_status,
+                # or a busy sensor) starved tick(), so the overnight runner / habit / consent loops never
+                # advanced under load — "Run Now" couldn't run while you watched it.
+                now = time.monotonic()
+                if now - self._last_tick >= self._poll:
+                    self._session.tick()
+                    self._last_tick = now
                 if self._session.wants_shutdown():      # `shutdown` command -> clean exit (kill switch)
                     break
         finally:
