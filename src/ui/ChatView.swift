@@ -449,26 +449,49 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
         addRow(note, align: .leading)
     }
 
-    // ── Hybrid retrieval (recall): grounded answer + the "Why" panel, or the Ask-Cloud escape hatch ──
+    // ── Hybrid retrieval (recall) ──
+    // Explicit per-message states so the local path never sits in an ambiguous wait. (Cloud states live
+    // in the existing cloud flow — thinking row -> cloud_answer -> egress footer — intentionally not
+    // merged here: it already works, and unifying would refactor working code for no user benefit.)
+    private enum RecallState {
+        case reasoning
+        case grounded(answer: String, conf: String, sources: [[String: Any]])
+        case abstained(query: String)
+    }
+
     private func sendToRecall(_ text: String) {
         guard let client = client else { return }
+        let reasoning = reasoningRow()                                   // .reasoning (muted, transient)
         client.call("recall", text) { [weak self] _, body in
             DispatchQueue.main.async {
                 guard let self else { return }
+                reasoning.removeFromSuperview()
                 if (body["grounded"] as? Bool) == true {
-                    self.renderGrounded(body)
+                    let conf = ((body["truth"] as? [String: Any])?["confidence"] as? Double)
+                        .map { String(format: "%.0f%%", $0 * 100) } ?? ""
+                    self.renderRecall(.grounded(answer: body["answer"] as? String ?? "", conf: conf,
+                                                sources: body["provenance"] as? [[String: Any]] ?? []))
                 } else {
-                    self.renderAskCloud(text)                 // honest abstention -> the flywheel
+                    self.renderRecall(.abstained(query: text))          // honest abstention -> the flywheel
                 }
             }
         }
     }
 
-    private func renderGrounded(_ body: [String: Any]) {
-        let answer = body["answer"] as? String ?? ""
-        let conf = ((body["truth"] as? [String: Any])?["confidence"] as? Double).map { String(format: "%.0f%% confident", $0 * 100) } ?? ""
-        let provenance = body["provenance"] as? [[String: Any]] ?? []
-        addRow(groundedView(answer: answer, conf: conf, provenance: provenance), align: .leading)
+    private func renderRecall(_ state: RecallState) {
+        switch state {
+        case .reasoning: break                                          // shown by reasoningRow() at call time
+        case let .grounded(answer, conf, sources):
+            addRow(groundedView(answer: answer, conf: conf, provenance: sources), align: .leading)
+        case let .abstained(query):
+            renderAskCloud(query)
+        }
+    }
+
+    private func reasoningRow() -> NSView {
+        let v = bubble("🔒 Reasoning over your Vault…", bg: DS.fill(0.05), fg: DS.label3)
+        addRow(v, align: .leading)
+        return v.superview ?? v
     }
 
     /// The grounded answer with an expandable "Why" panel listing the EXACT historical facts that derived
@@ -476,21 +499,23 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
     private func groundedView(answer: String, conf: String, provenance: [[String: Any]], expanded: Bool = false) -> NSView {
         let col = NSStackView(); col.orientation = .vertical; col.alignment = .leading; col.spacing = 6
         col.translatesAutoresizingMaskIntoConstraints = false
-        let head = conf.isEmpty ? "From your memory:  \(answer)" : "From your memory:  \(answer)   ·  \(conf)"
-        col.addArrangedSubview(bubble(head, bg: DS.fill(0.07), fg: DS.label))
+        let n = provenance.count
+        // Resting state: a MUTED, collapsed trust footer — no raw logic on screen by default.
+        let footer = "🔒 Answered by your Vault · \(n) source\(n == 1 ? "" : "s") used"
+        let toggle = DSButton((expanded ? "▾ " : "▸ ") + footer, variant: .quiet, size: 12) { }
 
         let details = NSStackView(); details.orientation = .vertical; details.alignment = .leading; details.spacing = 4
         details.translatesAutoresizingMaskIntoConstraints = false
         details.isHidden = !expanded
         for p in provenance { details.addArrangedSubview(provenanceRow(p)) }
+        // The mathematical conclusion sits quietly UNDER the English proof — demoted, monospaced.
+        let proof = conf.isEmpty ? "⊢  \(answer)" : "⊢  \(answer)   ·   \(conf)"
+        details.addArrangedSubview(DS.text(proof, 10, .regular, DS.label3, mono: true))
 
-        let n = provenance.count
-        let label = "Why?  (\(n) fact\(n == 1 ? "" : "s") from your vault)"
-        let toggle = DSButton((expanded ? "▾ " : "▸ ") + label, variant: .quiet, size: 12) { }
         toggle.onPress = { [weak details, weak toggle] in
             guard let details, let toggle else { return }
             details.isHidden.toggle()
-            toggle.titleField?.stringValue = (details.isHidden ? "▸ " : "▾ ") + label
+            toggle.titleField?.stringValue = (details.isHidden ? "▸ " : "▾ ") + footer
         }
         col.addArrangedSubview(toggle)
         col.addArrangedSubview(details)
@@ -500,15 +525,18 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
     private func provenanceRow(_ p: [String: Any]) -> NSView {
         let english = (p["english"] as? String) ?? ""
         let narsese = (p["narsese"] as? String) ?? ""
-        let primary = english.isEmpty ? narsese : english
-        let conf = (p["confidence"] as? Double).map { String(format: "%.0f%%", $0 * 100) } ?? ""
+        let primary = english.isEmpty ? narsese : english           // English mirror first…
         let when = (p["learned_at"] as? Double).map(learnedString) ?? ""
-        let sub = [when, conf].filter { !$0.isEmpty }.joined(separator: "  ·  ")
+        let conf = (p["confidence"] as? Double).map { String(format: "%.2f", $0) } ?? ""
         let card = DS.rounded(bg: DS.card, radius: 8, border: DS.separator)
         let glyph = DS.symbol("checkmark.seal.fill", 12, .medium, DS.green)
-        let textCol = NSStackView(views: [DS.text(primary, 12, .medium, DS.label, wrap: true),
-                                          DS.text(sub, 10.5, .regular, DS.label3)])
-        textCol.orientation = .vertical; textCol.alignment = .leading; textCol.spacing = 1
+        var rows: [NSView] = [DS.text(primary, 12.5, .medium, DS.label, wrap: true)]
+        if !when.isEmpty { rows.append(DS.text(when, 11, .regular, DS.label3)) }
+        // …the raw Narsese + numeric confidence demoted to quiet monospaced subtext (the proof underneath).
+        let proof = [english.isEmpty ? "" : narsese, conf.isEmpty ? "" : "conf \(conf)"]
+            .filter { !$0.isEmpty }.joined(separator: "   ·   ")
+        if !proof.isEmpty { rows.append(DS.text(proof, 10, .regular, DS.label3, mono: true)) }
+        let textCol = NSStackView(views: rows); textCol.orientation = .vertical; textCol.alignment = .leading; textCol.spacing = 1
         let st = NSStackView(views: [glyph, textCol]); st.orientation = .horizontal; st.spacing = 8; st.alignment = .top
         st.translatesAutoresizingMaskIntoConstraints = false
         card.addSubview(st)
@@ -530,7 +558,7 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
     /// the way back, the cloud extractor harvests the alias, so next time it resolves locally (the flywheel).
     private func renderAskCloud(_ text: String) {
         let card = DS.rounded(bg: DS.fill(0.05), radius: 12, border: DS.separator)
-        let msg = DS.text("I don't have that in your local memory yet.", 13, .regular, DS.label2, wrap: true)
+        let msg = DS.text("I don't have enough local context to answer this.", 13, .regular, DS.label2, wrap: true)
         let btn = DSButton("Use Cloud for this", symbol: "cloud.fill", variant: .pillAccent, size: 12) { [weak self] in
             self?.escalateToCloud(text)
         }
