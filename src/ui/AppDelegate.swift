@@ -1,19 +1,19 @@
-// The menu-bar app delegate: owns the NSStatusItem + popover, the JarvisClient, and native
-// notifications. Strictly a thin client — it forwards keystrokes to the daemon and renders events.
-// Sentinel alerts and intervention prompts arrive as daemon events and are surfaced via
-// UNUserNotificationCenter (replacing the old osascript hack); a notification action button replies
-// to the daemon's intervention without the user opening the popover.
+// The menu-bar app delegate: owns the NSStatusItem + the single workspace window (ADR-055), the
+// JarvisClient, and native notifications. Strictly a thin client — it forwards keystrokes to the daemon
+// and renders events. Sentinel alerts and intervention prompts arrive as daemon events and are surfaced
+// via UNUserNotificationCenter (replacing the old osascript hack); a notification action button replies
+// to the daemon's intervention without the user opening the window.
 import AppKit
 import UserNotifications
 
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     private var statusItem: NSStatusItem!
-    private let popover = NSPopover()
     private let chat = ChatViewController()
-    private let habitsPopover = NSPopover()              // ADR-030: the Habit Brain dashboard
     private let habits = HabitsViewController()
     private let unifiedCanvas = UnifiedCanvasViewController()  // ADR-053: Now / Scheduled / Activity
-    private var canvasWindow: NSWindow?                   // a real window (not a popover); retained here
+    // ADR-055: the three panes now live as tabs in ONE workspace window (no more transient popovers).
+    private var mainTabs: MainTabViewController?
+    private var mainWindow: NSWindow?                     // retained; close hides, menu-bar reopens
     private var client: JarvisClient?
     private var sockPath = ""                     // ADR-017: remembered for auto-reconnect
     private let recorder = AudioRecorder()
@@ -39,12 +39,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         statusItem.button?.target = self
         statusItem.button?.action = #selector(statusClick)
         statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])  // right-click -> quit menu
-        popover.behavior = .transient
-        popover.contentViewController = chat
-        popover.contentSize = NSSize(width: 420, height: 320)
-        habitsPopover.behavior = .transient                 // ADR-030: separate dashboard popover
-        habitsPopover.contentViewController = habits
-        habitsPopover.contentSize = NSSize(width: 440, height: 420)   // ADR-037: + Persona Constraints
         chat.onQuit = { NSApp.terminate(nil) }
         chat.onStop = { [weak self] in self?.emergencyStop() }
         chat.onConsent = { [weak self] id, approved in    // ADR-021: inline Approve/Deny -> daemon
@@ -133,7 +127,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         chat.client = c
         habits.client = c                                   // ADR-030: dashboard talks over the same socket
         unifiedCanvas.client = c                            // ADR-053: canvas shares the same socket
-        chat.onOpenCanvas = { [weak self] in self?.openCanvas() }  // ADR-054: a / job opens the Canvas
+        // ADR-055/UX bridge: a fired job must NOT force-switch tabs (no hijack); the in-chat live chip
+        // is Phase 2. So chat.onOpenCanvas is intentionally left unwired here.
         setConnected(true)
         chat.append(reconnect ? "↻ reconnected to JARVIS." : "✓ connected to JARVIS.")
         _log("UI: \(reconnect ? "reconnected" : "connected") to daemon at \(sockPath)")
@@ -143,7 +138,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         statusItem?.button?.title = up ? "🔵 JARVIS" : "⚪ JARVIS"
     }
 
-    // ── push-to-talk: click-to-toggle from the menu-bar popover (no global hotkey -> no conflicts) ──
+    // ── push-to-talk: click-to-toggle from the Chat tab (no global hotkey -> no conflicts) ──
     private func setupVoice() {
         AudioRecorder.requestPermission()
         chat.onToggleVoice = { [weak self] in self?.toggleVoice() }
@@ -184,63 +179,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     @objc private func statusClick() {
-        // Right-click -> a quit menu (so you can stop JARVIS without opening the chat). Left -> popover.
+        // Right-click -> a small control menu. Left-click -> toggle/focus the one workspace window.
         if NSApp.currentEvent?.type == .rightMouseUp {
             let menu = NSMenu()
-            menu.addItem(NSMenuItem(title: "Open JARVIS", action: #selector(openPopover), keyEquivalent: ""))
-            menu.addItem(NSMenuItem(title: "🧠 Cognitive Identity…", action: #selector(openHabits), keyEquivalent: ""))
-            menu.addItem(NSMenuItem(title: "🗂 Canvas…", action: #selector(openCanvas), keyEquivalent: ""))
+            menu.addItem(NSMenuItem(title: "Open JARVIS", action: #selector(openMain), keyEquivalent: ""))
             menu.addItem(.separator())
-            let stop = NSMenuItem(title: "⛔ Emergency Stop (quit everything)",
-                                  action: #selector(emergencyStop), keyEquivalent: "")
-            menu.addItem(stop)
+            menu.addItem(NSMenuItem(title: "⛔ Emergency Stop (quit everything)",
+                                    action: #selector(emergencyStop), keyEquivalent: ""))
             menu.addItem(NSMenuItem(title: "Quit JARVIS (UI only)",
                                     action: #selector(quitApp), keyEquivalent: "q"))
             for item in menu.items { item.target = self }
             statusItem.menu = menu
             statusItem.button?.performClick(nil)   // present the menu
-            statusItem.menu = nil                  // detach so left-click still opens the popover
+            statusItem.menu = nil                  // detach so left-click still toggles the window
         } else {
-            openPopover()
+            openMain()
         }
     }
 
-    @objc private func openPopover() {
-        guard let button = statusItem.button else { return }
-        if popover.isShown {
-            popover.performClose(nil)
-        } else {
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            chat.focusInput()
+    /// ADR-055: build the single workspace window — one NSWindow hosting the three panes as tabs.
+    /// Standard window level (not floating), does NOT hide on deactivate (a workspace, not a sticky
+    /// note), retained across close so the menu bar reopens it. The panes are dropped in UNCHANGED.
+    private func buildMainWindow() {
+        let tabs = MainTabViewController()
+        chat.preferredContentSize = NSSize(width: 460, height: 360)
+        unifiedCanvas.preferredContentSize = NSSize(width: 860, height: 620)
+        habits.preferredContentSize = NSSize(width: 460, height: 440)
+        let panes: [(NSViewController, String, String)] = [
+            (chat, "Chat", "bubble.left"),
+            (unifiedCanvas, "Canvas", "square.grid.2x2"),
+            (habits, "Cognitive Identity", "brain.head.profile"),
+        ]
+        for (vc, label, symbol) in panes {
+            let item = NSTabViewItem(viewController: vc)
+            item.label = label
+            item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
+            tabs.addTabViewItem(item)
         }
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 860, height: 620),
+                         styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                         backing: .buffered, defer: false)
+        w.title = "JARVIS"
+        w.contentViewController = tabs
+        w.isReleasedWhenClosed = false           // close hides; reopen via the menu bar
+        w.center()
+        mainTabs = tabs
+        mainWindow = w
     }
 
-    /// ADR-030: open the Habit Brain dashboard and pull a fresh snapshot. The field-test instrument.
-    @objc private func openHabits() {
-        guard let button = statusItem.button else { return }
-        if habitsPopover.isShown { habitsPopover.performClose(nil); return }
-        if popover.isShown { popover.performClose(nil) }
-        habitsPopover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-        habits.refresh()
-    }
-
-    /// ADR-053: open the Unified Canvas — a real resizable window (not a popover), retained so it
-    /// survives close (hidden, reopened via the menu). `.accessory` apps must activate to bring a
-    /// window forward. Replaces both the old Batch Canvas and the Morning Briefing.
-    @objc private func openCanvas() {
-        if canvasWindow == nil {
-            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 860, height: 620),
-                             styleMask: [.titled, .closable, .miniaturizable, .resizable],
-                             backing: .buffered, defer: false)
-            w.title = "JARVIS — Canvas"
-            w.contentViewController = unifiedCanvas
-            w.isReleasedWhenClosed = false       // keep it alive across close; reopen via the menu
-            w.center()
-            canvasWindow = w
+    /// Left-click / "Open JARVIS": toggle-or-focus the workspace window. `.accessory` apps must
+    /// activate to bring a window forward.
+    @objc private func openMain() {
+        if mainWindow == nil { buildMainWindow() }
+        guard let w = mainWindow else { return }
+        if w.isVisible && w.isKeyWindow {        // already focused -> a second click hides it
+            w.orderOut(nil)
+            return
         }
-        unifiedCanvas.refresh()
-        canvasWindow?.makeKeyAndOrderFront(nil)
+        w.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        if mainTabs?.selectedTabViewItemIndex == 0 { chat.focusInput() }   // land in the chat input
     }
 
     @objc private func quitApp() { NSApp.terminate(nil) }

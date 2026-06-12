@@ -61,6 +61,9 @@ final class HabitsViewController: NSViewController {
         self.view = container
     }
 
+    // ADR-055: self-refresh when shown as a tab (the old open-method that called refresh() is gone).
+    override func viewDidAppear() { super.viewDidAppear(); refresh() }
+
     @objc func refresh() {
         status.stringValue = "loading…"
         client?.call("usage", "7") { [weak self] _, body in           // ADR-050: the passive-usage mirror
