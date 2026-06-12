@@ -36,6 +36,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         w.titleVisibility = .hidden
         w.isMovableByWindowBackground = false
         w.isReleasedWhenClosed = false
+        w.isRestorable = false          // don't let macOS restore a previously-resized (square) frame
         w.minSize = NSSize(width: 720, height: 520)
         w.delegate = self
 
@@ -94,7 +95,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
             pillStack.centerYAnchor.constraint(equalTo: pill.centerYAnchor),
         ])
 
-        let appr = DSButton(nil, symbol: appearanceSymbol(), variant: .icon) { [weak self] in self?.appearancePressed() }
+        let appr = DSButton(nil, symbol: appearanceSymbol(), variant: .icon, square: 26, radius: 13) { [weak self] in self?.appearancePressed() }
         appearanceBtn = appr
         let stop = DSButton("Stop", symbol: "stop.fill", variant: .stopPill, size: 11.5, radius: 13) { [weak self] in self?.stopPressed() }
 
@@ -127,7 +128,11 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         NSApp.setActivationPolicy(.regular)
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        var f = window.frame; f.size = NSSize(width: 960, height: 680)   // force the rectangle
+        forceRectangle()
+        DispatchQueue.main.async { [weak self] in self?.forceRectangle() }   // re-assert after any late relayout/restoration
+    }
+    private func forceRectangle() {
+        var f = window.frame; f.size = NSSize(width: 960, height: 680)
         window.setFrame(f, display: true, animate: false)
     }
     private func hide() {
