@@ -98,3 +98,41 @@ def test_intercepts_network_timeout() -> None:
 def test_bad_response_body_is_handled() -> None:
     def garbage(*a): return 200, b"not json"
     assert openai_complete(CloudRequest(system="s", user="u"), api_key="k", transport=garbage).kind == "bad_response"
+
+
+# ── Anthropic driver (provider #2): same contract, unified output shape ──
+from cloud_egress import anthropic_complete
+
+
+def test_anthropic_plain_text() -> None:
+    transport, sent = _fake(200, {"content": [{"type": "text", "text": "hello from claude"}]})
+    res = anthropic_complete(CloudRequest(system="s", user="hi"), api_key="k", now=1.0, transport=transport)
+    assert res.ok and res.text == "hello from claude"
+    assert sent["payload"]["system"] == "s"                       # system is top-level (Anthropic shape)
+    assert sent["headers"]["x-api-key"] == "k" and sent["headers"]["anthropic-version"]
+
+
+def test_anthropic_structured_unwraps_tool_use_to_json_string() -> None:
+    # Anthropic returns structured output as tool_use.input (a dict). The driver serializes it to a JSON
+    # STRING so the Multiplexer sees the IDENTICAL shape as OpenAI's content string.
+    schema = {"type": "object", "properties": {"a": {"type": "string"}}, "required": ["a"], "additionalProperties": False}
+    transport, sent = _fake(200, {"content": [{"type": "tool_use", "name": "out", "input": {"a": "b"}}]})
+    res = anthropic_complete(CloudRequest(system="s", user="u", json_schema=schema), api_key="k", now=1.0, transport=transport)
+    assert res.ok and json.loads(res.text) == {"a": "b"}
+    assert sent["payload"]["tool_choice"] == {"type": "tool", "name": "out"}
+    assert sent["payload"]["tools"][0]["input_schema"] == schema
+
+
+def test_anthropic_intercepts_errors_and_logs() -> None:
+    t429, _ = _fake(429, {"error": {"type": "rate_limit_error", "message": "slow"}})
+    assert anthropic_complete(CloudRequest(system="s", user="u"), api_key="k", transport=t429).kind == "rate_limit"
+    t401, _ = _fake(401, {"error": {"type": "authentication_error", "message": "bad"}})
+    assert anthropic_complete(CloudRequest(system="s", user="u"), api_key="k", transport=t401).kind == "auth"
+    assert cloud_egress.egress_log()[0]["provider"] == "anthropic"   # the seam logs Anthropic calls too
+
+
+def test_anthropic_missing_key_never_calls_network() -> None:
+    called = {"n": 0}
+    def transport(*a): called["n"] += 1; return 200, b"{}"
+    assert anthropic_complete(CloudRequest(system="s", user="u"), api_key="", transport=transport).kind == "auth"
+    assert called["n"] == 0

@@ -4,10 +4,25 @@
 > unified workspace window. (Truth over tidiness.)
 
 ## Status
-**Accepted** (ratified). Build in progress: **Phase 1 — `cloud_egress.py` (the seam + contextual
-firewall + custom OpenAI HTTP wrapper) — landed and headless-tested** (8 tests; full suite 550→558),
-fully isolated (injected transport, no real network, not yet socket-wired). Remaining: the Multiplexer
-+ Brain protocol, Keychain/per-request key delivery, off-loop execution, and the UI toggle/ledger.
+**Accepted** (ratified). Build in progress (backend-only; the client stays unaware of two brains until
+the backend proves it juggles them invisibly):
+- **Phase 1 — `cloud_egress.py`** (seam + contextual firewall + custom OpenAI HTTP wrapper) — landed,
+  headless-tested, fully isolated (injected transport, no real network).
+- **Phase 2 — Multiplexer + off-loop execution + Anthropic** — landed and headless-tested:
+  - `language/multiplexer.py` — the `Brain` (same 3-method surface as `LocalLLM`); routes private→local,
+    general→`cloud_egress`. **Output unification proven**: cloud strict-JSON `{"claims":[…]}` is unwrapped
+    to the bare array so `parse_claims`/`validate_intent` run identically on either brain. Per-request
+    `CloudContext` (mode/key/provider/model); `clear_cloud()` drops the key (daemon credential-stateless).
+  - `service/cloud_job.py` — off-loop executor: runs the cloud call in a background thread, signals via a
+    self-pipe fd the daemon `select()`s. **Concurrency verified** (`test_offloop_cloud_call_does_not_stall
+    _the_select_loop`): a ~1.2 s in-flight cloud call lets the loop drain ~every 50 ms telemetry frame —
+    no dropped Sentinel frames, no loop stall.
+  - `cloud_egress.anthropic_complete` — provider #2; tool-use `input` serialized to a JSON string so its
+    structured output is byte-shape-identical to OpenAI's.
+  - `make_claim_source()` now returns the Multiplexer (default private → behavior unchanged).
+  - Suite 558 → 571.
+- **Remaining:** socket wiring (per-request key from the signed client) + the UI toggle / settings pane /
+  egress ledger. **Not started** (deliberately deferred per the UI-handoff constraint).
 
 **Ratified rulings (binding):**
 - **Key delivery:** the signed Swift client passes the API key **per-request over the local socket**;

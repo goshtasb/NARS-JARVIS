@@ -25,10 +25,14 @@ class NoNarrationLLM:
 
 
 def make_claim_source():
+    """Returns the Multiplexer-wrapped brain (ADR-056). Default mode is **private** → it delegates
+    verbatim to the local LLM, so today's behavior is unchanged until the session sets General mode
+    (with a per-request key) on it. The Multiplexer is the single injection point for both brains."""
     if os.environ.get("NARS_JARVIS_LLM_GGUF"):
         try:
             from language import LocalLLM
-            return LocalLLM()
+            from language.multiplexer import Multiplexer
+            return Multiplexer(LocalLLM())
         except Exception as exc:  # noqa: BLE001 — degrade gracefully to offline demo source
             sys.stderr.write(f"[warn] LocalLLM unavailable ({exc}); NL learning limited\n")
     return DemoClaims()

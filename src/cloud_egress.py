@@ -136,11 +136,60 @@ def _parse_openai(status: int, raw: bytes) -> CloudResult:
             return CloudResult(ok=True, text=text)
         except Exception:  # noqa: BLE001
             return CloudResult(ok=False, kind="bad_response", error="The cloud response was missing content.")
-    err = body.get("error") or {}
+    return _error_result(status, body.get("error") or {})
+
+
+# ── Anthropic driver (provider #2, ADR-056 ruling) ──
+def anthropic_complete(req: CloudRequest, *, api_key: str, model: str = "claude-3-5-sonnet-latest",
+                       now: Optional[float] = None, transport: HTTPTransport = _urllib_post) -> CloudResult:
+    """Same contract as openai_complete, mapped to Anthropic's Messages API. Structured output is forced
+    via a single tool (`tool_choice`), and its `input` is serialized to a JSON string so the Multiplexer
+    sees the IDENTICAL output shape as OpenAI (a JSON string the caller parses). Never raises."""
+    t = time.time() if now is None else now
+    if not api_key:
+        return CloudResult(ok=False, kind="auth",
+                           error="No API key set — add one in Settings to use Cloud mode (or switch to Private).")
+    payload: dict = {
+        "model": model, "max_tokens": req.max_tokens, "system": req.system,
+        "messages": [{"role": "user", "content": req.user}],
+    }
+    if req.json_schema is not None:                       # strict structured output via a forced tool
+        payload["tools"] = [{"name": "out", "description": "Return the structured result.",
+                             "input_schema": req.json_schema}]
+        payload["tool_choice"] = {"type": "tool", "name": "out"}
+    elif req.tools:
+        payload["tools"] = [{"name": x.name, "description": x.description, "input_schema": x.parameters}
+                            for x in req.tools]
+    _record("anthropic", "/v1/messages", payload, req, t)
+    headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"}
+    try:
+        status, raw = transport("https://api.anthropic.com/v1/messages", headers, payload, EGRESS_TIMEOUT)
+    except Exception:  # noqa: BLE001
+        return CloudResult(ok=False, kind="timeout",
+                           error="The cloud request timed out or the network dropped. Retry, or switch to Private mode.")
+    return _parse_anthropic(status, raw, structured=req.json_schema is not None)
+
+
+def _parse_anthropic(status: int, raw: bytes, structured: bool) -> CloudResult:
+    try:
+        body = json.loads(raw or b"{}")
+    except Exception:  # noqa: BLE001
+        return CloudResult(ok=False, kind="bad_response", error="The cloud returned an unreadable response.")
+    if status == 200:
+        for block in body.get("content", []):
+            if structured and block.get("type") == "tool_use":
+                return CloudResult(ok=True, text=json.dumps(block.get("input", {})))   # -> JSON string (unified)
+            if not structured and block.get("type") == "text":
+                return CloudResult(ok=True, text=block.get("text", ""))
+        return CloudResult(ok=False, kind="bad_response", error="The cloud response had no usable content.")
+    return _error_result(status, body.get("error") or {})
+
+
+def _error_result(status: int, err: dict) -> CloudResult:
     etype = str(err.get("type") or err.get("code") or "")
     msg = str(err.get("message") or f"HTTP {status}")
     if status in (401, 403) or "invalid_api_key" in etype or "authentication" in etype:
         return CloudResult(ok=False, kind="auth", error="Your API key was rejected — check it in Settings.")
-    if status == 429 or "rate_limit" in etype:
+    if status == 429 or "rate_limit" in etype or "overloaded" in etype:
         return CloudResult(ok=False, kind="rate_limit", error="Rate-limited by the provider — wait a moment and retry.")
     return CloudResult(ok=False, kind="bad_response", error=f"Cloud error: {msg[:120]}")
