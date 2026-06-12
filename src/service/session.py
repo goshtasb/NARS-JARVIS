@@ -134,7 +134,7 @@ class Session:
         self._cloud_jobs: dict[int, dict] = {}         # ADR-056: fd -> in-flight off-loop cloud call
         from retrieval.lexicon import LexiconStore     # ADR-056/Gate 2: the L2 namespace index
         self._lexicon = LexiconStore(db_path)          # populated at ingest (terms + aliases)
-        self._cloud_loop_gap_max = 0.0                 # Gate 1: worst select()-loop gap during a cloud call
+        self._loop_gap_max = 0.0                 # Gate 1: worst select()-loop gap during a cloud call
         self._recall_jobs: dict[int, object] = {}      # ADR-056/Gate 2: fd -> in-flight off-loop Stage-4 worker
         self._token = 0
         self._shutdown = False                          # set by the `shutdown` command (kill switch)
@@ -792,20 +792,25 @@ class Session:
         # pipeline ends. Still ephemeral and never persisted; this is the "life of one request" window.
         self._cloud_jobs[job.fileno()] = {"job": job, "token": token, "provider": provider,
                                           "key": key, "model": model, "kind": "ask"}
-        self._cloud_loop_gap_max = 0.0                     # start the Gate-1 loop-liveness meter for this call
+        self._loop_gap_max = 0.0                     # start the Gate-1 loop-liveness meter for this call
         self._persona_loop.observe(text, "user")          # the question is the user's, regardless of brain
         return True, {"status": "thinking", "token": token, "provider": provider}
 
-    # ── Gate 1 instrument: prove the select() loop never stalls while a cloud call is in flight ──
+    # ── Gate 1/3 instrument: prove the select() loop never stalls while OFF-LOOP work is in flight ──
     def cloud_in_flight(self) -> bool:
         return bool(self._cloud_jobs)
 
+    def offloop_in_flight(self) -> bool:
+        """Any off-loop job running (a cloud call OR a Stage-4 recall worker) — the window during which
+        the daemon measures the loop gap (Gate 1 = cloud, Gate 3 = the recall worker's pipe IPC)."""
+        return bool(self._cloud_jobs) or bool(self._recall_jobs)
+
     def note_loop_gap(self, gap: float) -> None:
-        """Fed by the daemon every loop iteration while a cloud call runs. The MAX gap is the real
-        telemetry-drop signal: a healthy loop iterates on its poll cadence (and faster under sensor
-        activity); a loop blocked on a synchronous cloud call would show a gap ≈ the call duration."""
-        if gap > self._cloud_loop_gap_max:
-            self._cloud_loop_gap_max = gap
+        """Fed by the daemon every loop iteration while off-loop work runs. The MAX gap is the real
+        telemetry-drop signal: a healthy loop iterates on its poll cadence (faster under sensor activity);
+        a loop blocked on a synchronous derivation/call would show a gap ≈ that work's duration."""
+        if gap > self._loop_gap_max:
+            self._loop_gap_max = gap
 
     def _read_cloud(self, fd: int) -> None:
         entry = self._cloud_jobs.get(fd)
@@ -821,7 +826,7 @@ class Session:
             self._ingest_cloud_claims(res, entry)
             return
         # phase 1: the cloud's answer
-        gap_ms = round(self._cloud_loop_gap_max * 1000, 1)    # Gate-1 telemetry-liveness reading for this call
+        gap_ms = round(self._loop_gap_max * 1000, 1)    # Gate-1 telemetry-liveness reading for this call
         sys.stderr.write(f"[gate1] cloud call done; worst select()-loop gap while in flight: {gap_ms} ms\n")
         if res is not None and res.ok:
             self._persona_loop.observe(res.text, "assistant")
@@ -918,6 +923,7 @@ class Session:
         from service.recall_job import RecallJob
         job = RecallJob(beliefs, question, token)
         self._recall_jobs[job.fileno()] = job
+        self._loop_gap_max = 0.0                          # start the Gate-3 loop-liveness meter for this worker
         return True, {"status": "reasoning", "token": token}
 
     def _read_recall(self, fd: int) -> None:
@@ -934,14 +940,18 @@ class Session:
     def _emit_recall(self, token: int, res: dict) -> None:
         """Enrich the worker's STAMP from L2 (main thread owns the store) and emit. No answer / no
         provenance / a timeout-kill all collapse to the same honest abstention -> the Ask-Cloud bridge."""
+        gap_ms = round(self._loop_gap_max * 1000, 1)     # Gate-3 reading: worst loop gap during the worker
+        sys.stderr.write(f"[gate3] recall worker done; worst select()-loop gap while in flight: {gap_ms} ms\n")
         if res.get("grounded") and res.get("answer"):
             from retrieval.pipeline import enrich_provenance
             prov = enrich_provenance(self._store, res["answer"], res.get("stamp", []))
             if prov:
                 self._emit("recall_result", {"token": token, "grounded": True, "answer": res["answer"],
-                                             "truth": res.get("truth"), "provenance": prov})
+                                             "truth": res.get("truth"), "provenance": prov,
+                                             "loop_max_gap_ms": gap_ms})
                 return
         self._emit("recall_result", {"token": token, "grounded": False, "escalate": "cloud",
+                                     "loop_max_gap_ms": gap_ms,
                                      "text": "I don't have enough local context to answer this — Ask Cloud?"})
 
     # ── the time-bomb (hard 5s ceiling on the Stage-4 worker) ──

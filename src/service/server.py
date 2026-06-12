@@ -70,7 +70,7 @@ class Daemon:
                 # Gate 1 instrument: while a cloud call is in flight, record the worst gap between loop
                 # passes. A loop blocked on a synchronous cloud call would show a gap ≈ the call duration;
                 # a healthy off-loop call keeps this near the poll cadence (smaller under sensor activity).
-                if self._last_iter and self._session.cloud_in_flight():
+                if self._last_iter and self._session.offloop_in_flight():
                     self._session.note_loop_gap(now - self._last_iter)
                 self._last_iter = now
                 self._session.reap_expired_recalls(now)   # ADR-056/Gate 2: SIGKILL workers past the 5s ceiling

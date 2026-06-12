@@ -212,6 +212,39 @@ def test_recall_offloop_grounds_via_event_without_blocking_the_loop(tmp_path):
         _send(a, 999, "shutdown"); time.sleep(0.3); a.close(); b.close(); server.join(timeout=3.0)
 
 
+def test_gate3_recall_worker_loop_gap_stays_pegged_under_flood(tmp_path):
+    """Gate 3 (headless): the daemon's OWN loop-gap meter (now recall-aware) must stay near the poll
+    cadence while a Stage-4 worker derives AND a continuous request flood keeps the select loop busy —
+    including the pass where the worker flushes its STAMP through the pipe and exits. This is the number
+    you'll watch as `loop_max_gap_ms` / `[gate3]` in the live smoke test; here it's driven by socket
+    traffic instead of the NSWorkspace sensor."""
+    sock_path = os.path.join(tempfile.mkdtemp(prefix="jx", dir="/tmp"), "j.sock")
+    server = _start_daemon(sock_path, str(tmp_path / "j.db"))
+    a = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); a.connect(sock_path)
+    b = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); b.connect(sock_path)
+    abuf = protocol.LineBuffer()
+    try:
+        assert _req(a, abuf, 1, "tell", "<solana --> timeout>.")["ok"]
+        assert _req(a, abuf, 2, "tell", "<timeout --> dropped_tx>.")["ok"]
+        ack = _req(a, abuf, 3, "recall", "Why did Solana cause dropped_tx?", timeout=2.0)
+        assert ack["body"]["status"] == "reasoning", ack
+        # flood the loop with traffic while the worker derives off-loop (stand-in for the sensor load)
+        stop = threading.Event()
+        def flood():
+            rid, lb = 1000, protocol.LineBuffer()
+            while not stop.is_set():
+                rid += 1; _send(b, rid, "status"); _drain(b, lb, time.monotonic() + 0.02)
+        t = threading.Thread(target=flood, daemon=True); t.start()
+        evt = _wait_event(a, abuf, "recall_result", timeout=8.0)
+        stop.set(); t.join(timeout=1.0)
+        assert evt is not None and evt["grounded"] is True, evt        # worker completed off-loop
+        gap = evt.get("loop_max_gap_ms")
+        print(f"\n[gate3] recall grounded under flood; daemon loop_max_gap_ms = {gap} ms (poll=200ms)")
+        assert gap is not None and gap < 50, f"loop stalled while the worker was in flight: {gap} ms"
+    finally:
+        _send(a, 999, "shutdown"); time.sleep(0.3); a.close(); b.close(); server.join(timeout=3.0)
+
+
 def test_recall_hard_timeout_kills_worker_and_escalates(tmp_path, monkeypatch):
     """The time-bomb: a worker that doesn't answer within the ceiling is SIGKILL'd and the query escalates
     to Cloud — no hang. Forced by shrinking the ceiling below the worker's spawn time."""
