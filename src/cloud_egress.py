@@ -16,6 +16,8 @@ card instead of crashing/hanging (ADR-056 checklist).
 from __future__ import annotations
 
 import json
+import ssl
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -23,6 +25,20 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 EGRESS_TIMEOUT = 12.0   # hard network cap — no zombie workers on a dropped/handed-off connection
+
+
+def _ssl_context() -> ssl.SSLContext:
+    """A VERIFYING TLS context with a real CA bundle. macOS python.org Python ships no system root certs,
+    so a plain default context fails EVERY https verification (CERTIFICATE_VERIFY_FAILED) — prefer
+    certifi's bundle when present. Verification is NEVER disabled: we send the user's API key."""
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:  # noqa: BLE001 — no certifi (e.g. Linux with system roots) -> the default verifies there
+        return ssl.create_default_context()
+
+
+_SSL = _ssl_context()
 
 
 @dataclass(frozen=True)
@@ -61,7 +77,7 @@ HTTPTransport = Callable[[str, dict, dict, float], "tuple[int, bytes]"]
 def _urllib_post(url: str, headers: dict, body: dict, timeout: float) -> "tuple[int, bytes]":
     req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:        # noqa: S310 — one vetted endpoint
+        with urllib.request.urlopen(req, timeout=timeout, context=_SSL) as r:   # noqa: S310 — vetted endpoint
             return r.getcode(), r.read()
     except urllib.error.HTTPError as e:                                # 4xx/5xx carry a JSON error body
         return e.code, e.read()
@@ -119,9 +135,8 @@ def openai_complete(req: CloudRequest, *, api_key: str, model: str = "gpt-4o-min
     headers = {"Authorization": "Bearer " + api_key, "Content-Type": "application/json"}
     try:
         status, raw = transport("https://api.openai.com/v1/chat/completions", headers, payload, EGRESS_TIMEOUT)
-    except Exception:  # noqa: BLE001 — timeout / DNS / connection drop (cellular handoff etc.)
-        return CloudResult(ok=False, kind="timeout",
-                           error="The cloud request timed out or the network dropped. Retry, or switch to Private mode.")
+    except Exception as exc:  # noqa: BLE001 — timeout / DNS / TLS / connection drop
+        return _transport_error("openai", exc)
     return _parse_openai(status, raw)
 
 
@@ -164,9 +179,8 @@ def anthropic_complete(req: CloudRequest, *, api_key: str, model: str = "claude-
     headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"}
     try:
         status, raw = transport("https://api.anthropic.com/v1/messages", headers, payload, EGRESS_TIMEOUT)
-    except Exception:  # noqa: BLE001
-        return CloudResult(ok=False, kind="timeout",
-                           error="The cloud request timed out or the network dropped. Retry, or switch to Private mode.")
+    except Exception as exc:  # noqa: BLE001
+        return _transport_error("anthropic", exc)
     return _parse_anthropic(status, raw, structured=req.json_schema is not None)
 
 
@@ -183,6 +197,16 @@ def _parse_anthropic(status: int, raw: bytes, structured: bool) -> CloudResult:
                 return CloudResult(ok=True, text=block.get("text", ""))
         return CloudResult(ok=False, kind="bad_response", error="The cloud response had no usable content.")
     return _error_result(status, body.get("error") or {})
+
+
+def _transport_error(provider: str, exc: Exception) -> CloudResult:
+    """A network/TLS/timeout failure (no HTTP response). Log the REAL exception (so a cause like a missing
+    CA bundle is never masked as a generic 'timeout' again) and return a clear recovery message."""
+    sys.stderr.write(f"[cloud_egress] {provider} request failed: {type(exc).__name__}: {exc}\n")
+    kind = "timeout" if isinstance(exc, TimeoutError) else "network"
+    detail = "timed out" if kind == "timeout" else "couldn't reach the cloud (network/TLS)"
+    return CloudResult(ok=False, kind=kind,
+                       error=f"The cloud request {detail}. Retry, or switch to Private mode.")
 
 
 def _error_result(status: int, err: dict) -> CloudResult:
