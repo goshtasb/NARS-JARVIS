@@ -1,0 +1,152 @@
+# ADR-056: The Dual-Brain Multiplexer & Auditable Egress Seam
+
+> Numbering note: this is **ADR-056**, not "054" — ADR-054 is the NL Intent Router and ADR-055 is the
+> unified workspace window. (Truth over tidiness.)
+
+## Status
+**Proposed** — design document for review (no code). When ratified it becomes the build spec for a
+user-toggled Local/Cloud "dual-brain," with OpenAI as the first cloud provider.
+
+## Context
+We hit the hard ceiling of local-first compute. A quantized 7B doing live multi-hop web research is
+**slow (40–60 s) and shallow** — for general/web tasks it's not useful as an everyday assistant (the
+user's verdict, confirmed by the FIFA-fixtures failure). The fix is not to keep optimizing a losing
+battle but to let the user **choose the brain per task**:
+
+- **Private Mode** (today's behavior): the local 7B, full tool catalog, never leaves the machine.
+- **General Mode**: a user-supplied frontier model (OpenAI first) for fast, robust general work.
+
+Both brains feed the same symbolic memory (NARS ingests *Narsese*, not raw text), so the cloud brain
+makes the local NARS **smarter** without owning the memory graph.
+
+This is a real pivot, and it **breaks a foundational invariant** — so this ADR amends it honestly
+rather than stealth-editing it.
+
+## Decision
+
+### Vector 1 — Amend NFR-1/2 (the air-gap), explicitly
+`language/llm.py` and the README currently assert **"strictly local / air-gapped (NFR-1/2): no network
+at runtime,"** and `safespawn.scrub_environ()` strips every secret-bearing env var at boot so a key can
+never reach a child. This ADR **redefines NFR-1/2**:
+
+> **NFR-1/2 (amended):** JARVIS is **air-gapped by default and private-first**. Network egress to a
+> third-party model occurs **only** when the user explicitly engages General Mode, **only** through the
+> single auditable egress seam (Vector 2), and **only** with the data that seam is permitted to send.
+> Private Mode remains strictly local, zero-TCC, zero-egress. The default is Private.
+
+The README's "air-gapped" language and `llm.py`'s header comment are updated in the same change. No
+silent edits — the relaxation is documented, scoped, and default-off.
+
+### Vector 2 — The Egress Seam & the Contextual Firewall
+A single sanctioned module — **`cloud_egress.py`** — is the *only* place in the codebase that performs a
+network request to a model provider. It is the `safespawn` of the network: the one choke point, heavily
+audited, where the privacy boundary is enforced and every byte that leaves is logged.
+
+**The Contextual Firewall (the core safety mechanism).** The seam does not accept "the current prompt
+context" and trust the caller to have sanitized it. Instead it accepts a **closed, allowlisted request
+envelope** and constructs the outbound payload *itself* from only those fields. It is structurally
+impossible to attach private context because the seam has **no reference to** the persona store, the
+`usage_events` table, the NARS memory buffer, or the grounding cache.
+
+```
+struct CloudRequest {           // the ONLY shape the egress seam accepts
+    system: String              // a fixed, vetted system prompt (chosen from a constant set)
+    user: String                // the user's explicit message / the text to extract from
+    tools: [ExternalTool]        // EXTERNAL-only tool schemas (search_web, read_article, get_weather…)
+    jsonSchema: Schema?          // for structured tasks (intent / NARS claims) — strict mode
+    // NOTHING ELSE. No persona, no usage_events, no NARS graph, no grounding, no file contents.
+}
+```
+
+Enforcement is **belt-and-suspenders**:
+1. **By construction:** `cloud_egress` imports none of the private stores; it literally cannot read them.
+2. **Allowlist, not denylist:** the outbound JSON is built field-by-field from `CloudRequest`; there is
+   no "pass-through" path that could leak an extra field.
+3. **Egress log:** every call appends a record (provider, endpoint, byte count, the system-prompt id,
+   tool names, and a redaction-checked preview) to an auditable local log the user can inspect — so the
+   boundary is *verifiable*, not merely trusted. A test (`test_egress_firewall`) asserts that a request
+   built from a context containing seeded private tokens never emits them.
+4. **Tool airgap:** in General Mode the Multiplexer strips local tools (`summarize_file`, `report_usage`,
+   `set_volume`, …) from `tools` before the request reaches the seam. A Cloud brain literally never sees
+   that `summarize_file` exists; the Intent Router catches a local-only verb and the UI prompts:
+   *"That needs local file access — switch to Private Mode to run it."* The boundary is **enforced by
+   the absence of the capability**, not by a prompt instruction.
+
+### Vector 3 — Keychain & Concurrency
+- **Key storage = macOS Keychain.** The API key is entered in a settings pane and stored via the
+  Security framework (Swift client → Keychain). It is **never** placed in the environment —
+  `safespawn.scrub_environ()` would delete it, and env vars are the classic leak vector. The daemon
+  reads it on demand from the Keychain (or the client passes it per-request over the local socket; the
+  ADR's open question Q1). It is never written to disk in plaintext, never logged.
+- **Off-loop execution.** A cloud completion is network I/O of several seconds; run synchronously it
+  would freeze the single-threaded select loop exactly like a blocking local inference (ADR-003). The
+  `CloudDriver` runs **off-loop** using the proven offload pattern (ADR-052 / the WhisperJob seam): the
+  request executes in a detached worker (or a backgrounded URLSession whose completion fd the daemon
+  `select()`s), streaming progress back over the same mechanism, so chat / sensing / the Mirror keep
+  flowing while a cloud call is in flight.
+
+### Vector 4 — The Multiplexer Interface
+The rest of the system (NARS claim extractor, Intent Router, voice formatter, tool executors) must stay
+**unaware** of which brain is running. Today they call one of three methods on the local `LocalLLM`:
+`generate(system, sentence)` (GBNF claims), `generate_json(system, user, grammar)` (GBNF intent), and
+`generate_text(system, user, max_tokens)` (free text). The Multiplexer implements the **same three
+methods** behind a shared protocol and routes to the active driver:
+
+```
+protocol Brain {                         // identical surface to today's LocalLLM
+    func generate(system, sentence) -> String          // structured claims
+    func generateJSON(system, user, schema) -> String  // structured intent
+    func generateText(system, user, maxTokens) -> String
+}
+
+Multiplexer(Brain):                      // injected where make_claim_source() is today
+    mode: .private | .general            // global toggle (default .private)
+    local:  LocalLLMDriver               // wraps today's llama.cpp LocalLLM (GBNF)
+    cloud:  CloudDriver                  // wraps cloud_egress + OpenAI strict json_schema
+
+    generate / generateJSON / generateText:
+        if mode == .private:  return local.<m>(…)        // unchanged path
+        else:                 return cloud.<m>(…)         // via the egress seam
+```
+
+**Output unification** is the contract that lets callers stay ignorant of the brain:
+- **Structured tasks** (intent, NARS claims): local uses our **GBNF grammar** (guaranteed-valid tokens);
+  cloud uses **OpenAI Structured Outputs (`response_format: json_schema`, `strict: true`)** — the only
+  cloud feature with the same hard guarantee. Both return the *exact same parsed dict*; the existing
+  `validate_intent` / `parse_claims` run unchanged on either.
+- **Free text** (voice formatter, answers): both return a string; cloud answers are still validated by
+  `language.voice.sanitize_voice` exactly as local ones are.
+
+The Multiplexer is the **only** new injection point; `make_claim_source()` returns a Multiplexer instead
+of a bare `LocalLLM`, and nothing downstream changes.
+
+### The NARS ruling — Cloud extraction, contextually firewalled (ratified)
+In General Mode, claim-extraction runs on the **cloud** model (higher-fidelity ontology than the 7B, and
+the cloud already holds that text — no new exposure). But the extraction request goes through the same
+Contextual Firewall: the cloud sees **only** `[fixed "extract Narsese" system prompt] + [current user
+prompt] + [current cloud response]` — **never** the NARS memory buffer, the Cognitive-Identity baseline,
+or `usage_events`. The extracted `RelationClaim`/`PropertyClaim` objects come back through the egress
+seam and the **local** ONA ingests them. The cloud makes NARS smarter without ever seeing the memory graph.
+
+## UI (per the ratified plan, detailed in a later UI ADR)
+- A persistent **Local 🔒 / Cloud ☁️** toggle in the Universal Composer input bar, bound to the
+  Multiplexer mode (default Local). When Cloud is active, the Intent Router grays out local-only verbs.
+- A settings pane to paste the API key (→ Keychain) and pick the provider.
+- General Mode shows a subtle, honest indicator that *this turn leaves your machine* (egress is visible).
+
+## Consequences
+- General tasks get frontier speed/quality; sensitive tasks stay strictly local. The user owns the trade.
+- One auditable egress choke point + an allowlist envelope make the privacy boundary *verifiable*, not
+  trusted — the property a privacy-first app cannot lose.
+- New dependency surface is **one small, audited HTTP wrapper** (no LiteLLM) — minimal supply-chain risk.
+- The cloud brain improves local NARS (better extraction) while the memory graph never leaves.
+- Cost/honesty: the README and NFR are amended; the default remains private; nothing leaves without an
+  explicit user toggle and a visible indicator.
+
+## Open questions for review
+1. **Key delivery to the daemon:** daemon reads Keychain directly, or the Swift client passes the key
+   per-request over the local unix socket (keeps Keychain access in the signed app only)? I lean toward
+   the client passing it per-request — the daemon never persists a key.
+2. **Egress indicator granularity:** per-turn banner only, or also a running session egress log surfaced
+   in the UI?
+3. **Provider #2 order:** Anthropic (best ontological extraction) vs Google — both ~1 day via the driver.
