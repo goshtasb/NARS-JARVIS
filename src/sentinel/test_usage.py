@@ -1,6 +1,6 @@
 """ADR-050 slice — passive-usage aggregation (pure, no I/O)."""
 from sentinel import summarize_usage
-from sentinel.usage import app_name
+from sentinel.usage import _is_system, app_name
 
 
 def test_app_name_known_and_fallback() -> None:
@@ -9,6 +9,25 @@ def test_app_name_known_and_fallback() -> None:
     assert app_name("com.apple.safari") == "Safari"
     assert app_name("com.acme.fizzbuzz") == "Fizzbuzz"             # unknown -> cleaned component
     assert app_name("") == "an app"
+
+
+def test_app_name_corrective_iteration_additions() -> None:
+    # ADR-050 corrective iteration: the observed-but-unmapped + common power-user apps now resolve
+    # (case-insensitive prefix match — note real bundles are mixed-case, e.g. com.apple.Notes).
+    assert app_name("com.superhuman.electron") == "Superhuman"
+    assert app_name("com.apple.Notes") == "Notes"
+    assert app_name("com.apple.iCal") == "Calendar"
+    assert app_name("md.obsidian") == "Obsidian"
+    assert app_name("com.jetbrains.pycharm") == "PyCharm"
+
+
+def test_self_observation_is_filtered() -> None:
+    # The observer must not observe itself: JARVIS's own UI is excluded from aggregation, retroactively.
+    assert _is_system("com.nars.jarvis") is True
+    ev = [{"bundle": "com.nars.jarvis", "bucket": "other", "created_at": 1000.0},
+          {"bundle": "com.todesktop.x", "bucket": "dev", "created_at": 1100.0}]
+    out = summarize_usage(ev, now=1300.0)
+    assert "Jarvis" not in out and "Cursor" in out                  # our app dropped, real work kept
 
 
 def test_summarize_empty_is_blank() -> None:

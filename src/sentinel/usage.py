@@ -23,15 +23,26 @@ _KNOWN: dict[str, str] = {
     "net.whatsapp.whatsapp": "WhatsApp", "org.whispersystems.signal-desktop": "Signal",
     "com.openai.chat": "ChatGPT", "com.anthropic.claudefordesktop": "Claude",
     "notion.id": "Notion", "com.figma.desktop": "Figma", "us.zoom.xos": "Zoom",
+    # ADR-050 corrective iteration: observed-but-unmapped + common power-user apps (query-time names,
+    # so this fixes historical attribution without mutating any jarvis.db rows).
+    "com.superhuman": "Superhuman", "com.apple.notes": "Notes", "com.apple.ical": "Calendar",
+    "com.apple.reminders": "Reminders", "com.apple.preview": "Preview", "com.apple.textedit": "TextEdit",
+    "md.obsidian": "Obsidian", "com.docker.docker": "Docker", "com.postmanlabs": "Postman",
+    "com.microsoft.word": "Word", "com.microsoft.excel": "Excel", "com.microsoft.powerpoint": "PowerPoint",
+    "com.jetbrains.intellij": "IntelliJ", "com.jetbrains.pycharm": "PyCharm",
 }
 _DROP = {"com", "org", "net", "io", "co", "app", "www", "apple", "desktop", "macos", "client", "inc"}
 
 # System / background processes that aren't "apps you use" — filtered from the mirror so it reflects
 # real work, not auth prompts and window chrome. Matched as a bundle-id substring (case-insensitive).
+# Includes JARVIS's own UI: the observer must not observe itself (ADR-050) — its menu-bar/Canvas
+# rendering is not "user computer usage", so it's filtered at AGGREGATION (retroactive, raw rows kept).
 _SYSTEM_SKIP = (
     "securityagent", "loginwindow", "windowserver", "controlcenter", "notificationcenter",
     "spotlight", "dock", "systemuiserver", "coreservicesuiagent", "universalcontrol",
     "screensaver", "wallpaper", "talagent", "tipsd", "askpermissionui",
+    "universalaccessauth", "linkednotesui",        # transient accessibility/Notes auth + helper chrome
+    "nars.jarvis",                                  # our own app — never count it as the user's usage
 )
 
 
