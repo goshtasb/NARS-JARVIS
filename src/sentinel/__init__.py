@@ -18,6 +18,7 @@ from .sensor import BUCKETS, Sensor, bucket_for_uti, build_sensor, classify
 from .sensors import SystemSentinel
 from .store import SentinelStore
 from .surprise import SurpriseDetector, SurpriseEvent, expectation
+from .usage import app_name, summarize_usage
 
 __all__ = [
     "Ladder",
@@ -35,6 +36,8 @@ __all__ = [
     "SurpriseDetector",
     "SurpriseEvent",
     "expectation",
+    "summarize_usage",
+    "app_name",
     "Narrator",
     "sanitize_narration",
     "NARRATION_SYSTEM_PROMPT",

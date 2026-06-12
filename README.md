@@ -126,7 +126,7 @@ Safety isn't a feature here; it's the architecture. The guarantees:
 ## What it can do today
 
 Each capability links to the Architecture Decision Record (ADR) that documents how and why it was built.
-Released in tagged increments **v1.0.0 → v1.15.0**; **513 automated tests** currently pass.
+Released in tagged increments **v1.0.0 → v1.16.0**; **517 automated tests** currently pass.
 
 ### Conversation & memory
 - **Chat in plain English** — ask questions, give it facts to remember. ([ADR-007], [ADR-008])
@@ -317,7 +317,7 @@ sh src/ui/restart.sh                   # launch the daemon + app (🔵 appears i
 python3 -m playwright install chromium # one-time ~160MB; without it the web layer stays static-only
 
 # 5. Run the tests
-cd src && python3 -m pytest .          # 513 passing
+cd src && python3 -m pytest .          # 517 passing
 ```
 
 > The reference folders (`OpenNARS-for-Applications/`, `NARS-GPT/`, `OmniGlass/`) and your model weights
@@ -407,11 +407,11 @@ editing working code. Common extension points:
 ## Project conventions
 - **Source of truth for scope:** [`docs/prd/PRD.md`](docs/prd/PRD.md).
 - **Engineering rules:** [`CLAUDE.md`](CLAUDE.md) + [`standards/`](standards/).
-- **Architecture history:** [`docs/adrs/`](docs/adrs/) — **ADR-001 through ADR-049** (ADR-029 is
+- **Architecture history:** [`docs/adrs/`](docs/adrs/) — **ADR-001 through ADR-050** (ADR-029 is
   intentionally skipped; a cloud/Drive integration was proposed and dropped to preserve the local-first
   air-gap. ADR-038 is drafted on branch `adr-038-omniglass-draft`, merge gated on field-test review).
   Each module also has its own `README.md`.
-- **Releases:** annotated tags `v1.0.0` → `v1.15.0`, each tied to its ADR(s).
+- **Releases:** annotated tags `v1.0.0` → `v1.16.0`, each tied to its ADR(s).
 
 ---
 
@@ -477,3 +477,4 @@ separately are governed by their own (MIT) licenses.
 [ADR-047]: docs/adrs/ADR-047-largest-apps-and-unified-inspection-decision.md
 [ADR-048]: docs/adrs/ADR-048-sentinel-autostart.md
 [ADR-049]: docs/adrs/ADR-049-context-orchestration-layer.md
+[ADR-050]: docs/adrs/ADR-050-passive-observation-mirror.md

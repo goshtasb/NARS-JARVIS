@@ -22,7 +22,7 @@ from execution import DecisionStats, build_air_gapped_executor, decide
 from jarvis import Jarvis
 from language import IngestionGate, Translator, Voice, strip_acknowledgment
 from memory import MemoryStore, MetricsStore, SqliteGroundingStore
-from sentinel import SentinelStore, SurpriseDetector, SystemSentinel
+from sentinel import SentinelStore, SurpriseDetector, SystemSentinel, summarize_usage
 from sentinel.narrate import Narrator
 
 import safespawn
@@ -145,6 +145,7 @@ class Session:
             "forget": self._forget, "restore": self._restore,
             "habits": self._habits, "habit_forget": self._habit_forget,  # ADR-030: menu-bar dashboard
             "persona_list": self._persona_list, "persona_forget": self._persona_forget,  # ADR-037: glass box
+            "usage": self._usage,  # ADR-050 slice: "What I've noticed about your computer use"
             "chat_clear": self._chat_clear,  # ADR-041: end the short-term conversation window on demand
             "overnight_enqueue": self._overnight_enqueue, "overnight_start": self._overnight_start,
             "overnight_status": self._overnight_status,                   # ADR-031: overnight batch queue
@@ -385,6 +386,18 @@ class Session:
     # ── ADR-037: persona introspection & control (the Cognitive Identity glass box) ──
     def _persona_list(self, _arg: object) -> tuple[bool, object]:
         return True, {"rows": self._persona_loop.snapshot()}
+
+    def _usage(self, arg: object) -> tuple[bool, object]:
+        """ADR-050 (passive-observation slice): the 'What I've noticed about your computer use' summary,
+        aggregated from the content-blind app-switch log. `arg` = optional lookback in days (default 7)."""
+        try:
+            days = float(str(arg).strip()) if str(arg).strip() else 7.0
+        except ValueError:
+            days = 7.0
+        now = time.time()
+        text = summarize_usage(self._sentinel_store.recent_usage(now - days * 86400), now)
+        return True, {"text": text or "I haven't observed enough activity yet — leave me running and "
+                                      "the Sentinel will build a picture of how you use your Mac."}
 
     def _chat_clear(self, _arg: object) -> tuple[bool, object]:
         """ADR-041: explicit session boundary — drop the sliding conversation window (short-term only;

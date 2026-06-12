@@ -48,6 +48,17 @@ CREATE TABLE IF NOT EXISTS sentinel_settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+-- ADR-050 (passive-observation slice): a durable log of what the user actually does — one row per
+-- foreground app switch the sentinel observes. CONTENT-BLIND by design: bundle id + coarse category +
+-- timestamp ONLY — never a window title, url, or document. This is the raw stream the Cognitive
+-- Identity's "What I've noticed" view aggregates; it is NOT fed to the action firewall.
+CREATE TABLE IF NOT EXISTS usage_events (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    bundle     TEXT NOT NULL,
+    bucket     TEXT NOT NULL,
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_usage_time ON usage_events(created_at);
 """
 
 
@@ -68,6 +79,23 @@ class SentinelStore:
         should learn by default; a deliberate `sentinel off` is persisted and survives restarts."""
         row = self._db.execute("SELECT value FROM sentinel_settings WHERE key='enabled'").fetchone()
         return row is None or row[0] == "1"
+
+    # ── passive-usage log (ADR-050 slice) ──
+    def record_usage(self, bundle: str, bucket: str, now: float, *, retain_days: float = 30.0) -> None:
+        """Append one foreground-app-switch observation (content-blind). Lazily prunes rows older than
+        `retain_days` so the log stays bounded without a separate job."""
+        self._db.execute("INSERT INTO usage_events(bundle, bucket, created_at) VALUES (?,?,?)",
+                         (bundle, bucket, now))
+        if int(now) % 50 == 0:                          # cheap, occasional prune (not every insert)
+            self._db.execute("DELETE FROM usage_events WHERE created_at < ?", (now - retain_days * 86400,))
+        self._db.commit()
+
+    def recent_usage(self, since: float) -> list[dict]:
+        """All usage observations at/after `since` (unix seconds), oldest first. Read-only."""
+        rows = self._db.execute(
+            "SELECT bundle, bucket, created_at FROM usage_events WHERE created_at >= ? ORDER BY created_at",
+            (since,)).fetchall()
+        return [{"bundle": b, "bucket": k, "created_at": t} for b, k, t in rows]
 
     def set_enabled(self, on: bool) -> None:
         """Persist the user's on/off choice so it survives a restart (ADR-048)."""

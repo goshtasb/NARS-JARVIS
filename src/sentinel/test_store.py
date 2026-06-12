@@ -44,3 +44,15 @@ def test_enabled_defaults_on_and_persists(tmp_path) -> None:
     assert SentinelStore(db).enabled() is False                 # deliberate OFF persists across restart
     SentinelStore(db).set_enabled(True)
     assert SentinelStore(db).enabled() is True                  # back ON persists
+
+
+def test_usage_log_records_and_reads_recent() -> None:
+    # ADR-050 slice: content-blind app-switch log round-trips, time-filtered.
+    s = SentinelStore()
+    s.record_usage("com.todesktop.x", "dev", now=1000.0)
+    s.record_usage("com.tinyspeck.slackmacgap", "comms", now=1100.0)
+    s.record_usage("com.apple.safari", "web", now=50.0)        # older than the window
+    recent = s.recent_usage(since=900.0)
+    assert [e["bundle"] for e in recent] == ["com.todesktop.x", "com.tinyspeck.slackmacgap"]  # oldest first, filtered
+    assert recent[0]["bucket"] == "dev" and recent[0]["created_at"] == 1000.0
+    assert s.recent_usage(since=2000.0) == []                  # nothing newer

@@ -11,6 +11,7 @@ final class HabitsViewController: NSViewController {
     weak var client: JarvisClient?
     private let habitRows = NSStackView()
     private let personaRows = NSStackView()
+    private let noticed = NSTextField(wrappingLabelWithString: "")   // ADR-050: "What I've noticed" mirror
     private let status = NSTextField(labelWithString: "")
 
     override func loadView() {
@@ -37,7 +38,11 @@ final class HabitsViewController: NSViewController {
         for s in [habitRows, personaRows] {
             s.orientation = .vertical; s.alignment = .leading; s.spacing = 6
         }
+        noticed.font = .systemFont(ofSize: 11)
+        noticed.textColor = .labelColor
+        noticed.preferredMaxLayoutWidth = 396
         let outer = NSStackView(views: [
+            sectionLabel("What I've noticed — how you use your Mac (passive, content-blind)"), noticed,
             sectionLabel("Routine Cadence — habits (when/where you act)"), habitRows,
             sectionLabel("Persona Constraints — style/focus (how you want answers)"), personaRows,
         ])
@@ -58,6 +63,10 @@ final class HabitsViewController: NSViewController {
 
     @objc func refresh() {
         status.stringValue = "loading…"
+        client?.call("usage", "7") { [weak self] _, body in           // ADR-050: the passive-usage mirror
+            let text = (body["text"] as? String) ?? ""
+            DispatchQueue.main.async { self?.noticed.stringValue = text }
+        }
         client?.call("habits") { [weak self] _, body in
             let rows = (body["rows"] as? [[String: Any]]) ?? []
             DispatchQueue.main.async { self?.fill(self?.habitRows, rows.map { self!.habitRow($0) },

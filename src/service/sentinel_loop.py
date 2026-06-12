@@ -155,6 +155,8 @@ class SentinelLoop:
         bundle, _, ls_cat = rest.partition(" ")
         bucket = self._store.resolve(bundle, ls_cat) if self._store else "?"
         self._last, self._events = bucket, self._events + 1
+        if self._store is not None:                    # ADR-050 slice: log the switch for "What I've noticed"
+            self._store.record_usage(bundle, bucket, time.time())
         if bucket in _DISTRACTION_BUCKETS:
             self._recent = ([(b, k) for (b, k) in self._recent if b != bundle] + [(bundle, bucket)])[-12:]
         now_mono, now_wall = time.monotonic(), time.time()
