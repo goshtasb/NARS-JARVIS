@@ -19,6 +19,7 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
     private var composer: NSView!
     private var micBtn: DSButton!
     private var sendBtn: DSButton!
+    private var consentHeight: NSLayoutConstraint!
     private let pickerHost = NSStackView()       // holds the pinned-verb chip, if any
     private let picker = ActionPicker()
     private var pinnedVerb: ActionPicker.Verb?
@@ -100,6 +101,8 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
             composer.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -20),
             composer.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -16),
         ])
+        consentHeight = consentBar.heightAnchor.constraint(equalToConstant: 0)   // collapses when no consent
+        consentHeight.isActive = true
         self.view = root
     }
 
@@ -128,7 +131,8 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
     }
 
     private func buildComposer() {
-        composer = DS.rounded(bg: DS.fieldBG, radius: 13, border: DS.separator)
+        let fieldBorder = DS.dynamic(light: NSColor(white: 0, alpha: 0.16), dark: NSColor(white: 1, alpha: 0.15))
+        composer = DS.rounded(bg: DS.fieldBG, radius: 13, border: fieldBorder, borderWidth: 1)
         let plus = DSButton(nil, symbol: "plus", variant: .icon) { [weak self] in self?.attach() }
         let slash = DSButton(nil, symbol: "slash.circle", variant: .icon) { [weak self] in self?.togglePicker() }
         pickerHost.orientation = .horizontal; pickerHost.spacing = 6
@@ -146,7 +150,7 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
         stack.translatesAutoresizingMaskIntoConstraints = false
         composer.addSubview(stack)
         NSLayoutConstraint.activate([
-            composer.heightAnchor.constraint(greaterThanOrEqualToConstant: 46),
+            composer.heightAnchor.constraint(equalToConstant: 50),   // FIXED — must not stretch to fill
             stack.leadingAnchor.constraint(equalTo: composer.leadingAnchor, constant: 8),
             stack.trailingAnchor.constraint(equalTo: composer.trailingAnchor, constant: -7),
             stack.centerYAnchor.constraint(equalTo: composer.centerYAnchor),
@@ -408,11 +412,16 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
         input.placeholderString = up ? (pinnedVerb == nil ? "Ask, or type / to run a job…" : input.placeholderString)
                                      : "Reconnecting to the engine…"
     }
-    func showConsent(_ id: Int, _ prompt: String) { consentId = id; consentLabel.stringValue = prompt; consentBar.isHidden = false }
-    func clearConsent(_ id: Int) { if consentId == id { consentId = nil; consentBar.isHidden = true } }
+    func showConsent(_ id: Int, _ prompt: String) {
+        loadViewIfNeeded(); consentId = id; consentLabel.stringValue = prompt
+        consentBar.isHidden = false; consentHeight.constant = 46
+    }
+    func clearConsent(_ id: Int) {
+        if consentId == id { consentId = nil; consentBar.isHidden = true; consentHeight?.constant = 0 }
+    }
     private func resolveConsent(_ ok: Bool) {
         guard let id = consentId else { return }
-        consentId = nil; consentBar.isHidden = true; onConsent?(id, ok)
+        consentId = nil; consentBar.isHidden = true; consentHeight.constant = 0; onConsent?(id, ok)
     }
 }
 

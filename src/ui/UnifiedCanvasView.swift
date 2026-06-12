@@ -70,6 +70,24 @@ final class UnifiedCanvasViewController: NSViewController {
         }
     }
 
+    /// Headless layout preview (offline) — render representative rows without a daemon.
+    func previewSeed(_ which: Int) {
+        seg.selectedSegment = which; sub = which; clearBtn.isHidden = (which != 2)
+        let nowRows: [[String: Any]] = [
+            ["action": "summarize_file", "arg": "/Users/me/Q3-PRD.pdf", "status": "running", "result": "summarizing… chunk 7/12"],
+            ["action": "find_file", "arg": "notes", "status": "pending"],
+        ]
+        let activityRows: [[String: Any]] = [
+            ["action": "report_system", "arg": "", "status": "done", "result": "System report:\n- CPU: 17%\n- Memory: 70% used\n- Disk: 7% used"],
+            ["action": "read_article", "arg": "/Users/me/PRD.pdf", "status": "failed", "result": "[ERROR: \"/Users/me/PRD.pdf\" is a local file, not a web page — try Summarize a document.]"],
+            ["action": "empty_trash", "arg": "", "status": "held", "id": 1],
+        ]
+        let schedRows: [[String: Any]] = [
+            ["action": "report_system", "arg": "", "status": "pending", "run_at": Date().timeIntervalSince1970 + 6*3600 + 40*60],
+        ]
+        render(which == 0 ? nowRows : (which == 1 ? schedRows : activityRows))
+    }
+
     private func render(_ all: [[String: Any]]) {
         let now = Date().timeIntervalSince1970
         func runAt(_ r: [String: Any]) -> Double? { r["run_at"] as? Double }
@@ -88,8 +106,11 @@ final class UnifiedCanvasViewController: NSViewController {
             empty = "Nothing running.  Start a job from Chat and watch it here."
         }
         list.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        if items.isEmpty { list.addArrangedSubview(emptyRow(empty)); return }
-        for r in items { list.addArrangedSubview(taskRow(r, now: now)) }
+        let rows: [NSView] = items.isEmpty ? [emptyRow(empty)] : items.map { taskRow($0, now: now) }
+        for r in rows {
+            list.addArrangedSubview(r)
+            r.widthAnchor.constraint(equalTo: list.widthAnchor, constant: -48).isActive = true   // after add
+        }
     }
 
     private func emptyRow(_ s: String) -> NSView {
@@ -97,7 +118,6 @@ final class UnifiedCanvasViewController: NSViewController {
         let wrap = NSView(); wrap.translatesAutoresizingMaskIntoConstraints = false
         wrap.addSubview(t)
         NSLayoutConstraint.activate([
-            wrap.widthAnchor.constraint(equalTo: list.widthAnchor, constant: -48),
             wrap.heightAnchor.constraint(equalToConstant: 120),
             t.centerXAnchor.constraint(equalTo: wrap.centerXAnchor),
             t.centerYAnchor.constraint(equalTo: wrap.centerYAnchor),
@@ -158,7 +178,6 @@ final class UnifiedCanvasViewController: NSViewController {
         head.widthAnchor.constraint(equalTo: col.widthAnchor).isActive = true
         card.addSubview(col)
         NSLayoutConstraint.activate([
-            card.widthAnchor.constraint(equalTo: list.widthAnchor, constant: -48),
             col.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 13),
             col.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -13),
             col.topAnchor.constraint(equalTo: card.topAnchor, constant: 11),

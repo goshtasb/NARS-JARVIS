@@ -134,8 +134,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         unifiedCanvas.client = c                            // ADR-053: canvas shares the same socket
         // ADR-055/UX bridge: a fired job must NOT force-switch tabs (no hijack); the in-chat live chip
         // is Phase 2. So chat.onOpenCanvas is intentionally left unwired here.
-        setConnected(true)
-        chat.append(reconnect ? "↻ reconnected to JARVIS." : "✓ connected to JARVIS.")
+        setConnected(true)        // connection now shows in the toolbar pill — no chat noise (keeps the empty state)
         _log("UI: \(reconnect ? "reconnected" : "connected") to daemon at \(sockPath)")
     }
 
@@ -149,7 +148,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func setupVoice() {
         AudioRecorder.requestPermission()
         chat.onToggleVoice = { [weak self] in self?.toggleVoice() }
-        chat.append("🎙 click 'Listen' to talk; click again (or it auto-stops at 30s) to send.")
     }
 
     private func toggleVoice() {

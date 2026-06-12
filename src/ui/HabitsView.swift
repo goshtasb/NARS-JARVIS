@@ -49,6 +49,21 @@ final class HabitsViewController: NSViewController {
 
     override func viewDidAppear() { super.viewDidAppear(); refresh() }
 
+    /// Headless layout preview (offline).
+    func previewSeed() {
+        let mirror = """
+        What I've noticed about your computer use (3 hours, 108 app switches):
+        - Most of your time: Cursor (2 h 10 m), Chrome (1 h 5 m), Terminal (8 m)
+        - By kind: development, communication, media
+        - Busiest around: 3 PM
+        (Learned passively from which app is in front — never your screen contents.)
+        """
+        let habits = [habitRow(["description": "You open Slack around 9 AM most weekdays", "state": "armed", "key": "h1"]),
+                      habitRow(["description": "You switch to Spotify after lunch", "state": "learning", "key": "h2"])]
+        let persona = [personaRow(["phrase": "Prefers terse answers with code first", "state": "Active", "term": "p1"])]
+        rebuild(mirror: mirror, habits: habits, persona: persona)
+    }
+
     @objc func refresh() {
         guard !refreshing else { return }
         refreshing = true
