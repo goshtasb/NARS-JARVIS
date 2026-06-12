@@ -35,10 +35,12 @@ for s in "$here"/*.swift; do
 done
 [ "$needbuild" -eq 0 ] || "$here/build.sh"
 
-# Don't open a second instance — a running app auto-reconnects to the fresh daemon (ADR-017).
+# Always relaunch the FRESH build. A running instance is the OLD binary — just rebuilding on disk and
+# leaving it running means rebuilds never appear. Kill it, then open the newly-built app.
 if pgrep -f "build/JARVIS.app/Contents/MacOS/JARVIS" >/dev/null 2>&1; then
-  echo "JARVIS app already running — it will auto-reconnect to the daemon."
-else
-  open "$here/build/JARVIS.app"
+  echo "restarting JARVIS app with the latest build…"
+  pkill -f "build/JARVIS.app/Contents/MacOS/JARVIS" 2>/dev/null || true
+  for i in $(seq 1 20); do pgrep -f "build/JARVIS.app/Contents/MacOS/JARVIS" >/dev/null 2>&1 || break; sleep 0.1; done
 fi
+open "$here/build/JARVIS.app"
 echo "JARVIS is in your menu bar (🔵). Daemon log: ${TMPDIR:-/tmp}/nars-jarvisd.log"
