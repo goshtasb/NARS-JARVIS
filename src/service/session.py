@@ -128,6 +128,7 @@ class Session:
         self._flow = SentinelLoop(db_path, self._emit, consent_request=self._consent.request)
         self._pending_learn: dict[str, dict] = {}
         self._voice_jobs: dict[int, WhisperJob] = {}   # fd -> in-flight transcription
+        self._cloud_jobs: dict[int, dict] = {}         # ADR-056: fd -> in-flight off-loop cloud call
         self._token = 0
         self._shutdown = False                          # set by the `shutdown` command (kill switch)
         # ADR-048: AUTO-START the Flow Sentinel at boot if the user hasn't turned it off — so app-focus
@@ -157,6 +158,8 @@ class Session:
             "overnight_enqueue_batch": self._overnight_enqueue_batch,     # ADR-033: batch commit
             "overnight_schedule_batch": self._overnight_schedule_batch,   # ADR-053: commit with a run_at
             "action_alternatives": self._action_alternatives,             # ADR-053: failed-task recovery routing
+            "cloud_ask": self._cloud_ask,                                 # ADR-056: General Mode — off-loop cloud answer
+            "egress_log": self._egress_log,                               # ADR-056: Privacy Receipts (Identity tab)
             "intent_parse": self._intent_parse,                           # ADR-054: NL -> validated Canvas intent
             "catalog_schema": self._catalog_schema,                       # ADR-033: palette for the canvas
             "briefing": self._briefing, "briefing_resolve": self._briefing_resolve,  # ADR-031: morning
@@ -724,6 +727,72 @@ class Session:
         self._emit("answer", {"text": spoken})            # on-screen keeps the visible "(Saved: …)"
         speak(strip_acknowledgment(spoken))               # but never voice the confirmation suffix
 
+    # ── ADR-056: General Mode (Dual-Brain) — the off-loop cloud answer path ──
+    _CLOUD_SYSTEM = ("You are JARVIS in General Mode — a concise, accurate assistant. Answer the user's "
+                     "question directly. Do not claim to have access to their files, memory, or device.")
+
+    def _cloud_ask(self, arg: object) -> tuple[bool, object]:
+        """General Mode: answer via the user's cloud brain, OFF the select loop. The API key is passed
+        per-request (ADR-056: the daemon never persists it); it lives only in this in-flight job's closure
+        and is gone when the job completes. Returns an immediate ack; the answer arrives as a
+        `cloud_answer` event so chat / sensing / the Mirror keep flowing while the cloud is thinking."""
+        if not isinstance(arg, dict):
+            return False, {"text": "cloud_ask expects {text, key, provider?, model?}"}
+        text = str(arg.get("text", "")).strip()
+        key = str(arg.get("key", ""))
+        provider = str(arg.get("provider", "openai")) or "openai"
+        model = str(arg.get("model", ""))
+        if not text:
+            return False, {"text": "cloud_ask expects a non-empty 'text'"}
+        if not key:
+            return False, {"text": "No API key for Cloud mode — add one, or stay On-device."}
+        if not hasattr(self._llm, "cloud_complete"):
+            return False, {"text": "Cloud brain not wired in this build — staying On-device."}
+
+        from cloud_egress import CloudRequest
+        from service.cloud_job import CloudJob
+        req = CloudRequest(system=self._CLOUD_SYSTEM, user=text)
+        # The closure runs in the CloudJob's background thread. It captures `key` locally (never stored on
+        # the session) and uses the thread-safe one-shot path (no shared-context race).
+        llm = self._llm
+        job = CloudJob(lambda: llm.cloud_complete(req, key=key, provider=provider, model=model))
+        self._token += 1
+        token = self._token
+        self._cloud_jobs[job.fileno()] = {"job": job, "token": token, "provider": provider, "text": text}
+        self._persona_loop.observe(text, "user")          # the question is the user's, regardless of brain
+        return True, {"status": "thinking", "token": token, "provider": provider}
+
+    def _read_cloud(self, fd: int) -> None:
+        entry = self._cloud_jobs.get(fd)
+        if entry is None:
+            return
+        job = entry["job"]
+        if not job.ready():
+            return
+        res = job.result()
+        del self._cloud_jobs[fd]
+        job.close()
+        if res is not None and res.ok:
+            # Both brains feed the same memory: buffer the cloud answer for idle persona learning. (NARS
+            # cloud-claim extraction is a chained follow-on — tracked separately; not on this hot path.)
+            self._persona_loop.observe(res.text, "assistant")
+            self._emit("cloud_answer", {"token": entry["token"], "ok": True,
+                                        "provider": entry["provider"], "text": res.text})
+        else:
+            kind = res.kind if res is not None else "network"
+            err = res.error if res is not None else "The cloud call failed."
+            self._emit("cloud_answer", {"token": entry["token"], "ok": False,
+                                        "provider": entry["provider"], "kind": kind, "error": err})
+
+    def _egress_log(self, arg: object) -> tuple[bool, object]:
+        """ADR-056 Privacy Receipts: the auditable record of everything that has left the machine this
+        session. Plain-language receipts (what was asked, to whom) — the byte count is a detail, not the
+        headline. Importantly, this reads the egress seam's own log; it cannot expose private stores."""
+        import cloud_egress
+        receipts = [{"t": r["t"], "provider": r["provider"], "bytes": r["bytes"], "asked": r["preview"]}
+                    for r in cloud_egress.egress_log()]
+        return True, {"receipts": receipts, "count": len(receipts)}
+
     def _do_shutdown(self, arg: object) -> tuple[bool, object]:
         """Emergency stop / kill switch: the daemon loop exits after replying, closing the brains,
         the sentinel, and the actuator. The single off-switch for the whole system."""
@@ -740,12 +809,15 @@ class Session:
         if sfd is not None:
             fds.append(sfd)
         fds += list(self._voice_jobs)
+        fds += list(self._cloud_jobs)           # ADR-056: in-flight off-loop cloud calls
         fds += self._overnight.extra_fds()      # ADR-052: the offloaded summary worker's stdout
         return fds
 
     def handle_fd(self, fd: int) -> None:
         if fd in self._voice_jobs:
             self._read_voice(fd)
+        elif fd in self._cloud_jobs:             # ADR-056: drain a completed cloud answer
+            self._read_cloud(fd)
         elif fd in self._overnight.extra_fds():  # ADR-052: drain the detached summary worker
             self._overnight.handle_fd(fd)
         elif fd == self._flow.fileno():

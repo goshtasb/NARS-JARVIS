@@ -108,6 +108,14 @@ class Multiplexer:
             raise CloudError(res)
         return res
 
+    def cloud_complete(self, req: CloudRequest, *, key: str, provider: str = "openai",
+                       model: str = "") -> CloudResult:
+        """A one-shot cloud call with EXPLICIT credentials that does NOT read/write the shared per-request
+        context — so it is safe to run inside the off-loop CloudJob thread while the main loop keeps
+        serving other requests (no race on `_ctx`). Returns the raw CloudResult (ok or error) so the
+        failure `kind` survives into the recovery card; it does not raise."""
+        return self._dispatch(req, provider=provider, key=key, model=model)
+
     # ── the three brain methods (identical signatures to LocalLLM, + optional json_schema for cloud) ──
     def generate(self, system_prompt: str, sentence: str) -> str:
         """NARS claim extraction. Returns a top-level JSON array string (unified across brains)."""
