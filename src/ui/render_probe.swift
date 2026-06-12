@@ -12,6 +12,7 @@ struct Render {
 
         dump(makeChatDefault(), 960, 620, "\(outDir)/chat_default.png")     // On-device toggle in the composer
         dump(makeChatCloud(), 960, 620, "\(outDir)/chat_cloud.png")         // Cloud engaged + answer + footer
+        dump(makeChatRecall(), 960, 640, "\(outDir)/chat_recall.png")       // grounded "Why" panel + Ask-Cloud
         dump(makeHabits(), 960, 700, "\(outDir)/identity_receipts.png")     // Privacy Receipts section
         print("RENDER-OK \(outDir)")
     }
@@ -31,6 +32,11 @@ struct Render {
         let vc = ChatViewController(); _ = vc.view
         vc.previewCloud()
         let v = host(vc, 960, 620); v.layoutSubtreeIfNeeded(); return v
+    }
+    static func makeChatRecall() -> NSView {
+        let vc = ChatViewController(); _ = vc.view
+        vc.previewRecall()
+        let v = host(vc, 960, 640); v.layoutSubtreeIfNeeded(); return v
     }
     static func makeHabits() -> NSView {
         let vc = HabitsViewController(); _ = vc.view

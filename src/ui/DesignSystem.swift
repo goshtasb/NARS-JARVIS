@@ -173,6 +173,7 @@ final class LayerView: NSView {
 final class DSButton: NSView {
     enum Variant { case primary, secondary, destructive, quiet, icon, pillAccent, stopPill }
     private let handler: () -> Void
+    var onPress: (() -> Void)?            // settable post-init (e.g. a self-referential disclosure toggle)
     private let variant: Variant
     private let bgLayer = CALayer()
     private var hovering = false
@@ -268,7 +269,7 @@ final class DSButton: NSView {
     override func mouseExited(with e: NSEvent) { hovering = false; needsDisplay = true }
     override func mouseDown(with e: NSEvent) {}
     override func mouseUp(with e: NSEvent) {
-        if bounds.contains(convert(e.locationInWindow, from: nil)) { handler() }
+        if bounds.contains(convert(e.locationInWindow, from: nil)) { (onPress ?? handler)() }
     }
 }
 

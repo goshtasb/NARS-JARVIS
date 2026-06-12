@@ -342,6 +342,11 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
         if cloudMode && !known {
             sendToCloud(line); return
         }
+        // On-device: a plain question runs the hybrid-retrieval engine (symbolic memory + STAMP). On a
+        // grounded derivation we render the "Why" panel; on honest abstention we offer Ask Cloud.
+        if !cloudMode && !known {
+            sendToRecall(line); return
+        }
         let cmd = known ? head : "ask", arg = known ? (parts.count > 1 ? parts[1] : "") : line
         client.call(cmd, arg) { [weak self] _, body in
             DispatchQueue.main.async {
@@ -442,6 +447,137 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
                            11, .regular, DS.label3)
         note.translatesAutoresizingMaskIntoConstraints = false
         addRow(note, align: .leading)
+    }
+
+    // ── Hybrid retrieval (recall): grounded answer + the "Why" panel, or the Ask-Cloud escape hatch ──
+    private func sendToRecall(_ text: String) {
+        guard let client = client else { return }
+        client.call("recall", text) { [weak self] _, body in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if (body["grounded"] as? Bool) == true {
+                    self.renderGrounded(body)
+                } else {
+                    self.renderAskCloud(text)                 // honest abstention -> the flywheel
+                }
+            }
+        }
+    }
+
+    private func renderGrounded(_ body: [String: Any]) {
+        let answer = body["answer"] as? String ?? ""
+        let conf = ((body["truth"] as? [String: Any])?["confidence"] as? Double).map { String(format: "%.0f%% confident", $0 * 100) } ?? ""
+        let provenance = body["provenance"] as? [[String: Any]] ?? []
+        addRow(groundedView(answer: answer, conf: conf, provenance: provenance), align: .leading)
+    }
+
+    /// The grounded answer with an expandable "Why" panel listing the EXACT historical facts that derived
+    /// it (each with its english mirror + when it was learned + confidence). The glass box, rendered.
+    private func groundedView(answer: String, conf: String, provenance: [[String: Any]], expanded: Bool = false) -> NSView {
+        let col = NSStackView(); col.orientation = .vertical; col.alignment = .leading; col.spacing = 6
+        col.translatesAutoresizingMaskIntoConstraints = false
+        let head = conf.isEmpty ? "From your memory:  \(answer)" : "From your memory:  \(answer)   ·  \(conf)"
+        col.addArrangedSubview(bubble(head, bg: DS.fill(0.07), fg: DS.label))
+
+        let details = NSStackView(); details.orientation = .vertical; details.alignment = .leading; details.spacing = 4
+        details.translatesAutoresizingMaskIntoConstraints = false
+        details.isHidden = !expanded
+        for p in provenance { details.addArrangedSubview(provenanceRow(p)) }
+
+        let n = provenance.count
+        let label = "Why?  (\(n) fact\(n == 1 ? "" : "s") from your vault)"
+        let toggle = DSButton((expanded ? "▾ " : "▸ ") + label, variant: .quiet, size: 12) { }
+        toggle.onPress = { [weak details, weak toggle] in
+            guard let details, let toggle else { return }
+            details.isHidden.toggle()
+            toggle.titleField?.stringValue = (details.isHidden ? "▸ " : "▾ ") + label
+        }
+        col.addArrangedSubview(toggle)
+        col.addArrangedSubview(details)
+        return col
+    }
+
+    private func provenanceRow(_ p: [String: Any]) -> NSView {
+        let english = (p["english"] as? String) ?? ""
+        let narsese = (p["narsese"] as? String) ?? ""
+        let primary = english.isEmpty ? narsese : english
+        let conf = (p["confidence"] as? Double).map { String(format: "%.0f%%", $0 * 100) } ?? ""
+        let when = (p["learned_at"] as? Double).map(learnedString) ?? ""
+        let sub = [when, conf].filter { !$0.isEmpty }.joined(separator: "  ·  ")
+        let card = DS.rounded(bg: DS.card, radius: 8, border: DS.separator)
+        let glyph = DS.symbol("checkmark.seal.fill", 12, .medium, DS.green)
+        let textCol = NSStackView(views: [DS.text(primary, 12, .medium, DS.label, wrap: true),
+                                          DS.text(sub, 10.5, .regular, DS.label3)])
+        textCol.orientation = .vertical; textCol.alignment = .leading; textCol.spacing = 1
+        let st = NSStackView(views: [glyph, textCol]); st.orientation = .horizontal; st.spacing = 8; st.alignment = .top
+        st.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(st)
+        NSLayoutConstraint.activate([
+            st.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 9),
+            st.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -9),
+            st.topAnchor.constraint(equalTo: card.topAnchor, constant: 6),
+            st.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -6),
+        ])
+        return card
+    }
+
+    private func learnedString(_ ts: Double) -> String {
+        let f = DateFormatter(); f.dateFormat = "MMM d"
+        return "learned " + f.string(from: Date(timeIntervalSince1970: ts))
+    }
+
+    /// Honest abstention: the local vault doesn't know -> offer to escalate THIS question to Cloud. On
+    /// the way back, the cloud extractor harvests the alias, so next time it resolves locally (the flywheel).
+    private func renderAskCloud(_ text: String) {
+        let card = DS.rounded(bg: DS.fill(0.05), radius: 12, border: DS.separator)
+        let msg = DS.text("I don't have that in your local memory yet.", 13, .regular, DS.label2, wrap: true)
+        let btn = DSButton("Use Cloud for this", symbol: "cloud.fill", variant: .pillAccent, size: 12) { [weak self] in
+            self?.escalateToCloud(text)
+        }
+        let st = NSStackView(views: [msg, NSView(), btn]); st.orientation = .horizontal; st.spacing = 10; st.alignment = .centerY
+        st.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(st)
+        NSLayoutConstraint.activate([
+            st.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
+            st.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -10),
+            st.topAnchor.constraint(equalTo: card.topAnchor, constant: 9),
+            st.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -9),
+        ])
+        addRow(card, align: .leading)
+    }
+
+    private func escalateToCloud(_ text: String) {
+        let go = { [weak self] in self?.setCloudMode(true); self?.sendToCloud(text) }
+        if (CloudKeychain.load(cloudProvider) ?? "").isEmpty || !CloudPrefs.disclosureShown {
+            // first-time: one-time disclosure (if needed) then key entry, then escalate
+            let afterDisclosure = { [weak self] in
+                guard let self else { return }
+                if (CloudKeychain.load(self.cloudProvider) ?? "").isEmpty {
+                    CloudUI.presentKeyEntry(on: self.view.window, provider: self.cloudProvider) { saved in if saved { go() } }
+                } else { go() }
+            }
+            if CloudPrefs.disclosureShown { afterDisclosure() }
+            else {
+                CloudUI.presentDisclosure(on: view.window, provider: cloudProvider) { accepted in
+                    guard accepted else { return }
+                    CloudPrefs.disclosureShown = true; afterDisclosure()
+                }
+            }
+        } else { go() }
+    }
+
+    /// Headless preview of the recall surfaces (grounded "Why" panel + the Ask-Cloud abstention).
+    func previewRecall() {
+        loadViewIfNeeded()
+        addUser("Why did Solana cause dropped_tx?")
+        let prov: [[String: Any]] = [
+            ["narsese": "<solana --> timeout>", "english": "SOL hit a connection timeout",
+             "confidence": 0.9, "learned_at": Date().timeIntervalSince1970 - 86400 * 6],
+            ["narsese": "<timeout --> dropped_tx>", "english": "a timeout drops the transaction",
+             "confidence": 0.9, "learned_at": Date().timeIntervalSince1970 - 86400 * 2]]
+        addRow(groundedView(answer: "<solana --> dropped_tx>", conf: "81% confident", provenance: prov, expanded: true), align: .leading)
+        addUser("Why is my MAC dropping packets?")
+        renderAskCloud("Why is my MAC dropping packets?")
     }
 
     private func cloudThinkingRow() -> NSView {
