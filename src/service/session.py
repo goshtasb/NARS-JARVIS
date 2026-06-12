@@ -167,6 +167,7 @@ class Session:
             "cloud_ask": self._cloud_ask,                                 # ADR-056: General Mode — off-loop cloud answer
             "egress_log": self._egress_log,                               # ADR-056: Privacy Receipts (Identity tab)
             "lexicon_stats": self._lexicon_stats,                         # ADR-056/Gate 2: inspect the L2 namespace index
+            "recall": self._recall,                                       # ADR-056/Gate 2: hybrid retrieval + STAMP provenance
             "intent_parse": self._intent_parse,                           # ADR-054: NL -> validated Canvas intent
             "catalog_schema": self._catalog_schema,                       # ADR-033: palette for the canvas
             "briefing": self._briefing, "briefing_resolve": self._briefing_resolve,  # ADR-031: morning
@@ -895,6 +896,21 @@ class Session:
             out["resolved"] = self._lexicon.resolve(mention)
             out["aliases"] = self._lexicon.resolve_alias(mention)
         return True, out
+
+    def _recall(self, arg: object) -> tuple[bool, object]:
+        """ADR-056/Gate 2: answer a question by HYBRID RETRIEVAL over the live L2 graph, returning the
+        ONA-derived answer + its STAMP provenance (the 'Why' panel). On abstention (no local subgraph,
+        chain too deep, or no derivation) the body carries escalate:'cloud' so the client offers Ask Cloud
+        — never a crash or a hang. Stage 4 uses a FRESH ISOLATED ONA loaded with ONLY the top_k beliefs,
+        so the stamp is clean and the main brain is never polluted."""
+        query = str(arg).strip()
+        if not query:
+            return False, {"text": "usage: recall <question>"}
+        from brain import Brain
+        from retrieval.pipeline import recall
+        res = recall(query, store=self._store, lexicon=self._lexicon,
+                     brain_factory=lambda: Brain(cycles_per_step=300), now=time.time())
+        return True, res.to_body()
 
     def _do_shutdown(self, arg: object) -> tuple[bool, object]:
         """Emergency stop / kill switch: the daemon loop exits after replying, closing the brains,

@@ -34,7 +34,8 @@ _STOPWORDS = frozenset({
 })
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_./-]*")   # words, tickers, paths, hyphenated/underscored ids
-_SPLIT_RE = re.compile(r"[/._\-]+")                      # path/dotted/hyphen compounds -> component mentions
+_SPLIT_RE = re.compile(r"[/.\-]+")                       # split path/dotted/hyphen compounds (NOT '_': an
+                                                         # underscored token IS a canonical atom, e.g. dropped_tx)
 
 
 @dataclass(frozen=True)

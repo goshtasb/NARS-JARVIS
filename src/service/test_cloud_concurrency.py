@@ -155,6 +155,55 @@ def test_live_cloud_failure_becomes_recovery_event_not_a_crash(tmp_path, monkeyp
         _send(a, 999, "shutdown"); time.sleep(0.3); a.close(); server.join(timeout=3.0)
 
 
+def _req(sock, buf, rid, cmd, arg, timeout=6.0):
+    _send(sock, rid, cmd, arg)
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        for f in _drain(sock, buf, end):
+            if f.get("t") == protocol.RES and f.get("id") == rid:
+                return f
+    return None
+
+
+def test_recall_grounds_a_real_question_against_live_sqlite(tmp_path):
+    """Gate 2 live wire: a question over the socket hits the real L2 store, runs the hybrid pipeline, and
+    returns the ONA-derived answer + STAMP provenance enriched with English mirrors + learned-at."""
+    sock_path = os.path.join(tempfile.mkdtemp(prefix="jx", dir="/tmp"), "j.sock")
+    server = _start_daemon(sock_path, str(tmp_path / "j.db"))
+    a = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); a.connect(sock_path)
+    buf = protocol.LineBuffer()
+    try:
+        # teach the local vault the chain (tell -> L1 + L2 + lexicon term sink)
+        assert _req(a, buf, 1, "tell", "<solana --> timeout>.")["ok"]
+        assert _req(a, buf, 2, "tell", "<timeout --> dropped_tx>.")["ok"]
+        # ask a real question; 'Solana' is the entity anchor, 'dropped_tx' the target (both resolve from L2)
+        r = _req(a, buf, 3, "recall", "Why did Solana cause dropped_tx?", timeout=8.0)
+        assert r is not None and r["ok"], r
+        body = r["body"]
+        assert body.get("grounded") is True, body
+        assert body["answer"] == "<solana --> dropped_tx>", body
+        cited = {p["narsese"] for p in body["provenance"]}
+        assert cited == {"<solana --> timeout>", "<timeout --> dropped_tx>"}, body   # exactly the chain
+        assert all("learned_at" in p for p in body["provenance"])                     # dated provenance for the panel
+    finally:
+        _send(a, 999, "shutdown"); time.sleep(0.3); a.close(); server.join(timeout=3.0)
+
+
+def test_recall_abstains_and_escalates_when_local_memory_is_empty(tmp_path):
+    sock_path = os.path.join(tempfile.mkdtemp(prefix="jx", dir="/tmp"), "j.sock")
+    server = _start_daemon(sock_path, str(tmp_path / "j.db"))
+    a = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); a.connect(sock_path)
+    buf = protocol.LineBuffer()
+    try:
+        r = _req(a, buf, 1, "recall", "Why did Ethereum halt Staking?", timeout=8.0)
+        assert r is not None and r["ok"], r
+        body = r["body"]
+        assert body.get("grounded") is False and body.get("escalate") == "cloud", body   # clean escalation
+        assert "Ask Cloud" in body.get("text", "")
+    finally:
+        _send(a, 999, "shutdown"); time.sleep(0.3); a.close(); server.join(timeout=3.0)
+
+
 def test_cloud_answer_feeds_the_local_vault(tmp_path, monkeypatch):
     """The Dual-Brain thesis: a cloud insight becomes PERMANENT local symbolic memory. One fake serves
     both legs of the pipeline — prose for the answer (no schema), claims JSON for the extraction (schema
