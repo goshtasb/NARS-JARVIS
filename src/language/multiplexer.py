@@ -53,13 +53,22 @@ def _property(type_name: str) -> dict:
             "required": ["type", "subject", "value"], "additionalProperties": False}
 
 
+_ALIAS = {"type": "object",
+          "properties": {"surface": {"type": "string"}, "canonical": {"type": "string"}},
+          "required": ["surface", "canonical"], "additionalProperties": False}
+
 CLAIMS_JSON_SCHEMA = {
     "type": "object",
-    "properties": {"claims": {"type": "array", "items": {"anyOf": [
-        _relation("RelationClaim"), _relation("NegatedRelationClaim"),
-        _property("PropertyClaim"), _property("NegatedPropertyClaim"),
-    ]}}},
-    "required": ["claims"], "additionalProperties": False,
+    "properties": {
+        "claims": {"type": "array", "items": {"anyOf": [
+            _relation("RelationClaim"), _relation("NegatedRelationClaim"),
+            _property("PropertyClaim"), _property("NegatedPropertyClaim"),
+        ]}},
+        # ADR-056/Gate 2: surface->canonical mappings the extractor used (e.g. SOL->solana) — feeds the
+        # L2 lexicon alias table. Empty when the text used canonical names directly.
+        "aliases": {"type": "array", "items": _ALIAS},
+    },
+    "required": ["claims", "aliases"], "additionalProperties": False,
 }
 
 

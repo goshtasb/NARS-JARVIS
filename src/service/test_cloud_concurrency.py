@@ -161,8 +161,9 @@ def test_cloud_answer_feeds_the_local_vault(tmp_path, monkeypatch):
     set) — and we assert the extracted belief is queryable from the LOCAL ONA afterward."""
     def fake(req, *, api_key, model="", now=None, transport=None):
         if req.json_schema is not None:                         # phase 2: extraction leg (firewalled)
-            return CloudResult(ok=True, text=json.dumps({"claims": [
-                {"type": "RelationClaim", "subject": "Solana", "verb": "IsA", "object": "blockchain"}]}))
+            return CloudResult(ok=True, text=json.dumps({
+                "claims": [{"type": "RelationClaim", "subject": "Solana", "verb": "IsA", "object": "blockchain"}],
+                "aliases": [{"surface": "SOL", "canonical": "solana"}]}))   # extractor yields the alias it used
         return CloudResult(ok=True, text="Solana is a blockchain.")   # phase 1: the answer leg
     monkeypatch.setattr(cloud_egress, "openai_complete", fake)
 
@@ -194,5 +195,16 @@ def test_cloud_answer_feeds_the_local_vault(tmp_path, monkeypatch):
                 if f.get("t") == protocol.RES and f.get("id") == rid: got = f
         assert got is not None and got["ok"]
         assert "no answer in memory" not in (got["body"].get("text") or ""), got["body"]
+
+        # Gate 2: the ingest left a PERMANENT, non-empty footprint in the L2 lexicon — terms (via
+        # tell()->sink) AND the harvested alias (SOL -> solana). No cloud involved in the lookup.
+        rid, lex = 3, None
+        end = time.monotonic() + 2.0
+        _send(a, rid, "lexicon_stats", "SOL")
+        while lex is None and time.monotonic() < end:
+            for f in _drain(a, abuf, end):
+                if f.get("t") == protocol.RES and f.get("id") == rid: lex = f["body"]
+        assert lex is not None and lex["term_count"] >= 2, lex          # solana + blockchain at minimum
+        assert lex["resolved"] == "solana", lex                          # the alias SOL -> solana resolved
     finally:
         _send(a, 999, "shutdown"); time.sleep(0.3); a.close(); server.join(timeout=3.0)

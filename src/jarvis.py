@@ -241,6 +241,7 @@ class Jarvis:
                  navigate: Callable[[str, str], str] | None = None,
                  habit_observer: Callable[[str, str, str], None] | None = None,
                  habit_admin: Callable[[str, str], str] | None = None,
+                 lexicon_sink: Callable[[str], None] | None = None,
                  ) -> None:
         self._translator = translator
         self._store = store
@@ -252,6 +253,9 @@ class Jarvis:
         # Embedder for the auto-memory semantic echo-guard (ADR-008). None => guard degrades to the
         # verbatim/normalized filter + prompt only (tests / offline).
         self._embedder = embedder if (embedder is not None and hasattr(embedder, "embed")) else None
+        # ADR-056 / Gate 2: best-effort hook fired with each committed canonical Narsese term, so the L2
+        # lexicon populates as a living reflection of ingestion. None => no lexicon (tests/offline).
+        self._lexicon_sink = lexicon_sink
         # Dynamic context (ADR-010): a shell-provided callable returning the fresh live-facts block
         # (date/time + system + foreground) injected each turn. None => no live context (tests/offline).
         self._context_provider = context_provider
@@ -386,7 +390,17 @@ class Jarvis:
             return None  # ONA rejected on parse; do not commit (keeps L1/L2 in sync)
         term, frequency, confidence = self._canonical(out, statement)
         self._store.upsert(term, frequency, confidence, english=sentence)  # canonical, after L1 OK
+        self._fire_lexicon(term)
         return statement
+
+    def _fire_lexicon(self, term: str) -> None:
+        """Feed the committed canonical term to the L2 lexicon. Best-effort: a lexicon error must NEVER
+        break ingestion (the system of record is L1/L2; the lexicon is a derived index)."""
+        if self._lexicon_sink is not None:
+            try:
+                self._lexicon_sink(term)
+            except Exception:  # noqa: BLE001
+                pass
 
     def _canonical(self, output: list[str], statement: str) -> tuple[str, float, float]:
         """ONA's normalized (term, freq, conf) from the 'Input:' echo, so L2 mirrors L1 exactly.
@@ -424,6 +438,7 @@ class Jarvis:
         term, frequency, confidence = self._canonical(output, statement)
         self._store.upsert(term, frequency, confidence, english="")  # commit L2 only after L1 OK
         observe(self._store, output)  # persist any truths ONA revised/derived this step
+        self._fire_lexicon(term)
         return True
 
     def ask(self, question: str):

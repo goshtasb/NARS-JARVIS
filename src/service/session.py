@@ -112,7 +112,8 @@ class Session:
                               ax_provider=self._ax_provider,  # GUI actuation: focused-window DOM (ADR-021)
                               ax_dispatch=self._ax_dispatch_verb,  # GUI actuation: verb -> consent -> actuate
                               nav_dispatch=self._nav_dispatch,  # self-navigating recipes (ADR-022)
-                              navigate=self._navigate)  # bounded agent loop (ADR-024 P2)
+                              navigate=self._navigate,  # bounded agent loop (ADR-024 P2)
+                              lexicon_sink=self._record_lexicon)  # ADR-056/Gate 2: ingest -> L2 lexicon
         # M2 system sentinel (CPU/mem surprise) feeds the knowledge brain; alerts push as events.
         narrator = Narrator(NoNarrationLLM(), on_alert=lambda t: self._emit("alert", {"text": "⚠  " + t}))
         self._sys_detector = SurpriseDetector(self._brain, threshold=0.5, on_surprise=narrator.narrate)
@@ -130,6 +131,8 @@ class Session:
         self._pending_learn: dict[str, dict] = {}
         self._voice_jobs: dict[int, WhisperJob] = {}   # fd -> in-flight transcription
         self._cloud_jobs: dict[int, dict] = {}         # ADR-056: fd -> in-flight off-loop cloud call
+        from retrieval.lexicon import LexiconStore     # ADR-056/Gate 2: the L2 namespace index
+        self._lexicon = LexiconStore(db_path)          # populated at ingest (terms + aliases)
         self._cloud_loop_gap_max = 0.0                 # Gate 1: worst select()-loop gap during a cloud call
         self._token = 0
         self._shutdown = False                          # set by the `shutdown` command (kill switch)
@@ -162,6 +165,7 @@ class Session:
             "action_alternatives": self._action_alternatives,             # ADR-053: failed-task recovery routing
             "cloud_ask": self._cloud_ask,                                 # ADR-056: General Mode — off-loop cloud answer
             "egress_log": self._egress_log,                               # ADR-056: Privacy Receipts (Identity tab)
+            "lexicon_stats": self._lexicon_stats,                         # ADR-056/Gate 2: inspect the L2 namespace index
             "intent_parse": self._intent_parse,                           # ADR-054: NL -> validated Canvas intent
             "catalog_schema": self._catalog_schema,                       # ADR-033: palette for the canvas
             "briefing": self._briefing, "briefing_resolve": self._briefing_resolve,  # ADR-031: morning
@@ -737,7 +741,16 @@ class Session:
     # [this fixed system prompt] + [the cloud's own answer]. No private store is ever attached.
     _EXTRACT_SYSTEM = ("Extract the factual claims stated in the text as structured JSON: "
                        "subject-relation-object (RelationClaim) and subject-property (PropertyClaim). "
-                       "Assert ONLY what the text states. If nothing factual is asserted, return an empty list.")
+                       "Assert ONLY what the text states. If nothing factual is asserted, return empty lists. "
+                       "Also return 'aliases': for any entity you wrote under a canonical name but the text "
+                       "referred to by a different surface form (e.g. text 'SOL' -> canonical 'solana'), "
+                       "emit {surface, canonical}. Omit aliases when the text used the canonical name.")
+
+    def _record_lexicon(self, term: str) -> None:
+        """Jarvis fires this with each committed canonical Narsese term -> populate the L2 lexicon. The
+        lexicon only ever sees canonical atoms here (raw telemetry frames never reach it)."""
+        from retrieval.lexicon_ingest import record_narsese_terms
+        record_narsese_terms(self._lexicon, term, now=time.time())
 
     def _cloud_ask(self, arg: object) -> tuple[bool, object]:
         """General Mode: answer via the user's cloud brain, OFF the select loop. The API key is passed
@@ -838,11 +851,14 @@ class Session:
             return
         import json
         from language import claims_to_narsese, parse_claims
+        from retrieval.lexicon_ingest import record_alias_pairs
         try:
             obj = json.loads(res.text or "{}")
             claims = parse_claims(json.dumps(obj.get("claims", [])))   # unwrap object-root -> bare array
         except Exception:  # noqa: BLE001 — malformed extraction -> the answer still stands
             return
+        # harvest surface->canonical aliases the cloud extractor yielded (terms populate via tell()->sink)
+        record_alias_pairs(self._lexicon, obj.get("aliases", []), now=time.time())
         learned: list[str] = []
         for narsese in claims_to_narsese(claims):
             try:
@@ -861,6 +877,17 @@ class Session:
         receipts = [{"t": r["t"], "provider": r["provider"], "bytes": r["bytes"], "asked": r["preview"]}
                     for r in cloud_egress.egress_log()]
         return True, {"receipts": receipts, "count": len(receipts)}
+
+    def _lexicon_stats(self, arg: object) -> tuple[bool, object]:
+        """ADR-056/Gate 2: inspect the L2 lexicon — term count, and (if a mention is given) what it
+        resolves to deterministically (exact term or top alias). Read-only."""
+        mention = str(arg).strip() if arg else ""
+        out: dict = {"term_count": self._lexicon.term_count()}
+        if mention:
+            out["mention"] = mention
+            out["resolved"] = self._lexicon.resolve(mention)
+            out["aliases"] = self._lexicon.resolve_alias(mention)
+        return True, out
 
     def _do_shutdown(self, arg: object) -> tuple[bool, object]:
         """Emergency stop / kill switch: the daemon loop exits after replying, closing the brains,
@@ -923,6 +950,7 @@ class Session:
     def close(self) -> None:
         self._flow.close()
         self._brain.close()
+        self._lexicon.close()             # ADR-056/Gate 2: the L2 namespace index
         self._sentinel_store.close()
         self._habit_store.close()
         self._persona_brain.close()      # ADR-036: tear down the isolated persona ONA
