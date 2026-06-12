@@ -26,6 +26,19 @@ _KNOWN: dict[str, str] = {
 }
 _DROP = {"com", "org", "net", "io", "co", "app", "www", "apple", "desktop", "macos", "client", "inc"}
 
+# System / background processes that aren't "apps you use" — filtered from the mirror so it reflects
+# real work, not auth prompts and window chrome. Matched as a bundle-id substring (case-insensitive).
+_SYSTEM_SKIP = (
+    "securityagent", "loginwindow", "windowserver", "controlcenter", "notificationcenter",
+    "spotlight", "dock", "systemuiserver", "coreservicesuiagent", "universalcontrol",
+    "screensaver", "wallpaper", "talagent", "tipsd", "askpermissionui",
+)
+
+
+def _is_system(bundle: str) -> bool:
+    bl = (bundle or "").lower()
+    return any(tok in bl for tok in _SYSTEM_SKIP)
+
 
 def app_name(bundle: str) -> str:
     """Best-effort friendly name from a bundle id. Pure."""
@@ -58,7 +71,8 @@ def _hour12(h: int) -> str:
 
 def summarize_usage(events: list[dict], now: float) -> str:
     """[{bundle, bucket, created_at}…] + now -> a 'What I've noticed' summary. '' when no data."""
-    events = sorted([e for e in events if e.get("created_at") is not None], key=lambda e: e["created_at"])
+    events = sorted([e for e in events if e.get("created_at") is not None
+                     and not _is_system(e.get("bundle", ""))], key=lambda e: e["created_at"])
     if not events:
         return ""
     span_h = (now - events[0]["created_at"]) / 3600

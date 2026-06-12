@@ -28,3 +28,14 @@ def test_summarize_aggregates_time_and_apps() -> None:
     assert "never your screen contents" in out                 # privacy line present
     # Cursor (3000+200s) should rank before Slack (600s) in "Most of your time"
     assert out.index("Cursor") < out.index("Slack")
+
+
+def test_summarize_filters_system_processes() -> None:
+    # ADR-050: SecurityAgent/WindowServer etc. are not "apps you use" — excluded from the mirror.
+    ev = [{"bundle": "com.apple.SecurityAgent", "bucket": "other", "created_at": 1000.0},
+          {"bundle": "com.todesktop.x", "bucket": "dev", "created_at": 1100.0}]
+    out = summarize_usage(ev, now=1300.0)
+    assert "Securityagent" not in out and "Cursor" in out
+    # a stream of only system processes yields a blank mirror (nothing real observed)
+    assert summarize_usage([{"bundle": "com.apple.WindowServer", "bucket": "other", "created_at": 1.0}],
+                           now=2.0) == ""
