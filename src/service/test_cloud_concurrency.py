@@ -6,6 +6,7 @@ ordinary requests. If the off-loop dispatch is correct, those requests stay prom
 select() thread is never blocked, so the Sentinel's sensor fd (drained by that same loop) cannot drop a
 frame. No network, no API key: the cloud HTTP is a slow fake injected at the egress seam.
 """
+import json
 import os
 import socket
 import tempfile
@@ -146,5 +147,48 @@ def test_live_cloud_failure_becomes_recovery_event_not_a_crash(tmp_path, monkeyp
                     answer = f["body"]
         assert answer is not None and answer["ok"] is False
         assert answer["kind"] == "rate_limit" and "Rate-limited" in answer["error"]   # recovery, no crash
+    finally:
+        _send(a, 999, "shutdown"); time.sleep(0.3); a.close(); server.join(timeout=3.0)
+
+
+def test_cloud_answer_feeds_the_local_vault(tmp_path, monkeypatch):
+    """The Dual-Brain thesis: a cloud insight becomes PERMANENT local symbolic memory. One fake serves
+    both legs of the pipeline — prose for the answer (no schema), claims JSON for the extraction (schema
+    set) — and we assert the extracted belief is queryable from the LOCAL ONA afterward."""
+    def fake(req, *, api_key, model="", now=None, transport=None):
+        if req.json_schema is not None:                         # phase 2: extraction leg (firewalled)
+            return CloudResult(ok=True, text=json.dumps({"claims": [
+                {"type": "RelationClaim", "subject": "Solana", "verb": "IsA", "object": "blockchain"}]}))
+        return CloudResult(ok=True, text="Solana is a blockchain.")   # phase 1: the answer leg
+    monkeypatch.setattr(cloud_egress, "openai_complete", fake)
+
+    sock_path = os.path.join(tempfile.mkdtemp(prefix="jx", dir="/tmp"), "j.sock")
+    db_path = str(tmp_path / "j.db")
+    server = _start_daemon(sock_path, db_path)
+    a = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); a.connect(sock_path)
+    abuf = protocol.LineBuffer()
+    try:
+        _send(a, 1, "cloud_ask", {"text": "what is Solana?", "key": "sk-x", "provider": "openai"})
+        answer, learned = None, None
+        end = time.monotonic() + 4.0
+        while (answer is None or learned is None) and time.monotonic() < end:
+            for f in _drain(a, abuf, end):
+                if f.get("t") == protocol.EVT and f.get("kind") == "cloud_answer": answer = f["body"]
+                if f.get("t") == protocol.EVT and f.get("kind") == "cloud_learned": learned = f["body"]
+        assert answer is not None and answer["ok"], "no cloud answer"
+        # the cloud's claim became a committed local belief (tell() returned True -> L1 ONA + L2 store)
+        assert learned is not None and learned["count"] >= 1, "cloud did not feed the vault"
+        # atom() normalizes terms to lowercase -> '<solana --> blockchain>.'
+        assert any("solana" in n.lower() and "blockchain" in n.lower() for n in learned["narsese"]), learned["narsese"]
+
+        # PERSISTENCE proof: query the LOCAL vault for the cloud-taught fact (no cloud involved).
+        rid, got = 2, None
+        end = time.monotonic() + 3.0
+        _send(a, rid, "ask", "<solana --> blockchain>?")
+        while got is None and time.monotonic() < end:
+            for f in _drain(a, abuf, end):
+                if f.get("t") == protocol.RES and f.get("id") == rid: got = f
+        assert got is not None and got["ok"]
+        assert "no answer in memory" not in (got["body"].get("text") or ""), got["body"]
     finally:
         _send(a, 999, "shutdown"); time.sleep(0.3); a.close(); server.join(timeout=3.0)

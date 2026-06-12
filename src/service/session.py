@@ -730,6 +730,12 @@ class Session:
     # ── ADR-056: General Mode (Dual-Brain) — the off-loop cloud answer path ──
     _CLOUD_SYSTEM = ("You are JARVIS in General Mode — a concise, accurate assistant. Answer the user's "
                      "question directly. Do not claim to have access to their files, memory, or device.")
+    # The cloud's answer is fed back through the SAME firewall to extract symbolic claims for local NARS —
+    # the reason General Mode exists (a frontier model makes the local vault smarter). Firewall inputs:
+    # [this fixed system prompt] + [the cloud's own answer]. No private store is ever attached.
+    _EXTRACT_SYSTEM = ("Extract the factual claims stated in the text as structured JSON: "
+                       "subject-relation-object (RelationClaim) and subject-property (PropertyClaim). "
+                       "Assert ONLY what the text states. If nothing factual is asserted, return an empty list.")
 
     def _cloud_ask(self, arg: object) -> tuple[bool, object]:
         """General Mode: answer via the user's cloud brain, OFF the select loop. The API key is passed
@@ -758,7 +764,10 @@ class Session:
         job = CloudJob(lambda: llm.cloud_complete(req, key=key, provider=provider, model=model))
         self._token += 1
         token = self._token
-        self._cloud_jobs[job.fileno()] = {"job": job, "token": token, "provider": provider, "text": text}
+        # The key/model ride along the in-flight pipeline entry (ask -> extract) only — dropped when the
+        # pipeline ends. Still ephemeral and never persisted; this is the "life of one request" window.
+        self._cloud_jobs[job.fileno()] = {"job": job, "token": token, "provider": provider,
+                                          "key": key, "model": model, "kind": "ask"}
         self._persona_loop.observe(text, "user")          # the question is the user's, regardless of brain
         return True, {"status": "thinking", "token": token, "provider": provider}
 
@@ -772,17 +781,61 @@ class Session:
         res = job.result()
         del self._cloud_jobs[fd]
         job.close()
+        if entry["kind"] == "extract":                    # phase 2: the cloud's claims -> local vault
+            self._ingest_cloud_claims(res, entry)
+            return
+        # phase 1: the cloud's answer
         if res is not None and res.ok:
-            # Both brains feed the same memory: buffer the cloud answer for idle persona learning. (NARS
-            # cloud-claim extraction is a chained follow-on — tracked separately; not on this hot path.)
             self._persona_loop.observe(res.text, "assistant")
             self._emit("cloud_answer", {"token": entry["token"], "ok": True,
                                         "provider": entry["provider"], "text": res.text})
+            self._spawn_cloud_extraction(res.text, entry)   # ADR-056: the cloud feeds the symbolic vault
         else:
             kind = res.kind if res is not None else "network"
             err = res.error if res is not None else "The cloud call failed."
             self._emit("cloud_answer", {"token": entry["token"], "ok": False,
                                         "provider": entry["provider"], "kind": kind, "error": err})
+
+    def _spawn_cloud_extraction(self, answer_text: str, entry: dict) -> None:
+        """Phase 2 of the pipeline: route the cloud's OWN answer back through the egress seam (firewall +
+        strict claims schema) to mine RelationClaim/PropertyClaim objects — OFF the loop, like phase 1."""
+        text = (answer_text or "").strip()
+        if not text:
+            return
+        from cloud_egress import CloudRequest
+        from language.multiplexer import CLAIMS_JSON_SCHEMA
+        from service.cloud_job import CloudJob
+        llm, key = self._llm, entry["key"]
+        provider, model = entry["provider"], entry["model"]
+        req = CloudRequest(system=self._EXTRACT_SYSTEM, user=text, json_schema=CLAIMS_JSON_SCHEMA)
+        job = CloudJob(lambda: llm.cloud_complete(req, key=key, provider=provider, model=model))
+        # key/model are captured in the closure only — NOT stored on the extract entry, so they vanish
+        # when this final leg completes (credential-stateless beyond the active request).
+        self._cloud_jobs[job.fileno()] = {"job": job, "token": entry["token"],
+                                          "provider": provider, "kind": "extract"}
+
+    def _ingest_cloud_claims(self, res, entry: dict) -> None:
+        """The payoff: cloud-extracted claims become PERMANENT local symbolic memory via the same durable
+        sink as `learn`/`tell` (L1 ONA + L2 store). Runs on the main loop — ONA is single-owner. A bad
+        single claim is skipped, never crashes the daemon."""
+        if res is None or not res.ok:
+            return
+        import json
+        from language import claims_to_narsese, parse_claims
+        try:
+            obj = json.loads(res.text or "{}")
+            claims = parse_claims(json.dumps(obj.get("claims", [])))   # unwrap object-root -> bare array
+        except Exception:  # noqa: BLE001 — malformed extraction -> the answer still stands
+            return
+        learned: list[str] = []
+        for narsese in claims_to_narsese(claims):
+            try:
+                if self._jarvis.tell(narsese):
+                    learned.append(narsese)
+            except Exception:  # noqa: BLE001 — a single malformed/rejected claim never aborts the batch
+                continue
+        if learned:
+            self._emit("cloud_learned", {"token": entry["token"], "count": len(learned), "narsese": learned})
 
     def _egress_log(self, arg: object) -> tuple[bool, object]:
         """ADR-056 Privacy Receipts: the auditable record of everything that has left the machine this

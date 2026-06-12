@@ -248,6 +248,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             chat.append((body["text"] as? String ?? ""))
         case "cloud_answer":                                 // ADR-056: off-loop General-Mode reply
             chat.cloudAnswer(body)
+        case "cloud_learned":                                // ADR-056: the cloud's claims hit the vault
+            chat.cloudLearned((body["count"] as? Int) ?? 0)
         case "overnight_progress", "overnight_started", "overnight_done":  // ADR-053: drive the Canvas, not chat
             unifiedCanvas.onOvernightEvent()
         default:                                             // "alert" (sentinel / system)

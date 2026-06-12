@@ -34,10 +34,20 @@ the backend proves it juggles them invisibly):
     render-verified (PNG).
   - NFR-1/2 amended in the README + `language/llm.py` header (no silent edits).
   - Suite 558 → 573.
-- **Remaining (follow-ons, tracked):** cloud claim-extraction → local NARS ingest (a chained off-loop
-  job — today the cloud answer feeds persona-observe but not yet ONA); the "Default brain" power-user
-  setting (deliberately withheld per ratification — "let the power users complain first"); cloud-without-
-  any-local-model (today the Multiplexer wraps a local model; cloud requires a GGUF present).
+- **Phase 4 — Cloud → NARS (the vault is fed)** — landed: a successful `cloud_ask` answer triggers a
+  SECOND off-loop cloud call that routes the cloud's own answer back through the firewall + strict
+  `CLAIMS_JSON_SCHEMA` to mine `RelationClaim`/`PropertyClaim` objects; those are compiled to Narsese and
+  committed to the LOCAL ONA via the same durable `Jarvis.tell` sink as `learn` (L1 + L2), on the main
+  loop (single-owner). A `cloud_learned` event drives a quiet "🧠 N facts added to your local memory"
+  note. The key rides the in-flight pipeline (ask→extract) only, then is dropped. **Proven end-to-end**
+  (`test_cloud_answer_feeds_the_local_vault`): a cloud insight (`Solana is a blockchain`) becomes the
+  committed local belief `<solana --> blockchain>.`, queryable from the vault afterward with no cloud
+  involved. Suite 573 → 574.
+- **Remaining (follow-ons, tracked):** the "Default brain" power-user setting (deliberately withheld per
+  ratification — "let the power users complain first"); cloud-without-any-local-model (today the
+  Multiplexer wraps a local model, so General Mode requires a GGUF present); cloud-extracted claims
+  currently bypass the embedder grounding/escalation gate that local `learn` uses (they go straight to
+  the durable `tell` sink) — acceptable for now, but a grounding pass is a future hardening.
 
 **Ratified rulings (binding):**
 - **Key delivery:** the signed Swift client passes the API key **per-request over the local socket**;

@@ -434,6 +434,16 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
         }
     }
 
+    /// A quiet note that the cloud turn became permanent local memory (the Dual-Brain payoff).
+    func cloudLearned(_ count: Int) {
+        guard count > 0 else { return }
+        loadViewIfNeeded()
+        let note = DS.text("🧠 \(count) fact\(count == 1 ? "" : "s") added to your local memory",
+                           11, .regular, DS.label3)
+        note.translatesAutoresizingMaskIntoConstraints = false
+        addRow(note, align: .leading)
+    }
+
     private func cloudThinkingRow() -> NSView {
         let v = bubble("Thinking… ☁️ \(cloudProvider.display)", bg: DS.fill(0.07), fg: DS.label2)
         addRow(v, align: .leading)
