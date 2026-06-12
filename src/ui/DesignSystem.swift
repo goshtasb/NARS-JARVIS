@@ -160,8 +160,21 @@ final class LayerView: NSView {
     var border: NSColor?
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
-        if let bg { layer?.backgroundColor = bg.cgColor }
-        if let border { layer?.borderColor = border.cgColor }
+        // Resolve dynamic colors against THIS view's appearance — .cgColor otherwise uses the stale
+        // NSAppearance.current, so a runtime light/dark toggle wouldn't actually recolor the layer.
+        applyInCurrentAppearance {
+            if let bg { layer?.backgroundColor = bg.cgColor }
+            if let border { layer?.borderColor = border.cgColor }
+        }
+    }
+}
+
+extension NSView {
+    /// Run `body` with NSAppearance.current set to this view's effectiveAppearance, so `.cgColor`
+    /// resolutions inside pick the correct light/dark variant.
+    func applyInCurrentAppearance(_ body: () -> Void) {
+        if #available(macOS 11.0, *) { effectiveAppearance.performAsCurrentDrawingAppearance(body) }
+        else { let prev = NSAppearance.current; NSAppearance.current = effectiveAppearance; body(); NSAppearance.current = prev }
     }
 }
 
@@ -173,6 +186,8 @@ final class DSButton: NSView {
     private let bgLayer = CALayer()
     private var hovering = false
     var titleField: NSTextField?
+    private var symbolView: NSImageView?
+    private var iconPt: CGFloat = 14
 
     init(_ title: String?, symbol: String? = nil, variant: Variant = .secondary,
          size: CGFloat = 12.5, square: CGFloat? = nil, radius: CGFloat? = nil,
@@ -185,7 +200,8 @@ final class DSButton: NSView {
         let stack = NSStackView(); stack.orientation = .horizontal; stack.spacing = 6
         stack.alignment = .centerY; stack.translatesAutoresizingMaskIntoConstraints = false
         let fg = foreground()
-        if let symbol { stack.addArrangedSubview(DS.symbol(symbol, size + 0.5, .medium, fg)) }
+        iconPt = size + 0.5
+        if let symbol { let sv = DS.symbol(symbol, iconPt, .medium, fg); symbolView = sv; stack.addArrangedSubview(sv) }
         if let title {
             let t = DS.text(title, size, .medium, fg); titleField = t
             stack.addArrangedSubview(t)
@@ -250,6 +266,10 @@ final class DSButton: NSView {
         default: return DS.fill(0.06)
         }
     }
+    func setSymbol(_ name: String) {
+        let cfg = NSImage.SymbolConfiguration(pointSize: iconPt, weight: NSFont.Weight.medium.symbolWeight())
+        symbolView?.image = NSImage(systemSymbolName: name, accessibilityDescription: name)?.withSymbolConfiguration(cfg)
+    }
     override func hitTest(_ point: NSPoint) -> NSView? { bounds.contains(convert(point, from: superview)) ? self : nil }
     override func mouseEntered(with e: NSEvent) { hovering = true; applyColors() }
     override func mouseExited(with e: NSEvent) { hovering = false; applyColors() }
@@ -257,7 +277,10 @@ final class DSButton: NSView {
     override func mouseUp(with e: NSEvent) {
         if bounds.contains(convert(e.locationInWindow, from: nil)) { handler() }
     }
-    override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); applyColors() }
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyInCurrentAppearance { applyColors() }
+    }
 }
 
 private extension NSFont.Weight {

@@ -101,7 +101,7 @@ final class TabSwitcher: NSView {
         }
         private func refresh() {
             let bg: NSColor = selected ? DS.fill(0.10) : (hovering ? DS.fill(0.05) : .clear)
-            layer?.backgroundColor = bg.cgColor
+            applyInCurrentAppearance { layer?.backgroundColor = bg.cgColor }
             let fg = selected ? DS.label : DS.label2
             icon.contentTintColor = fg; label.textColor = fg
         }
