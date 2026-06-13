@@ -24,6 +24,7 @@ TIMEOUT_S = 5.0     # the hard ceiling — past this the worker is SIGKILL'd and
 class RecallJob:
     def __init__(self, beliefs: list[dict], question: str, token: int, *, timeout: float | None = None) -> None:
         self.token = token
+        self.topic_hash = ""                              # set by the session; carried to the completion metric
         self.deadline = time.monotonic() + (TIMEOUT_S if timeout is None else timeout)   # read at call time
         self._proc = safespawn.popen(
             [sys.executable, "-m", "service.recall_worker"],

@@ -35,28 +35,39 @@ def _abstain(reason: str) -> RecallResult:
     return RecallResult(grounded=False, reason=reason)
 
 
-def plan(query: str, *, store, lexicon, now: float, max_hops: int = 4, top_k: int = 12):
-    """Stages 0-3 (parse -> resolve -> traverse -> rank), SYNCHRONOUS — single-digit ms with FTS. Returns
-    `(beliefs, question)` for the off-loop Stage-4 worker, or None to abstain. `beliefs` is a list of plain
-    dicts (raw Narsese + truth) — the only thing the worker is handed (payload boundary: no store, no
-    private state)."""
+@dataclass
+class PlanResult:
+    anchors: list           # resolved canonical anchor atoms ([] = zero-anchor query, excluded from FA-LGR)
+    targets: set            # resolved canonical target atoms
+    beliefs: list | None = None     # None = couldn't ground (no anchor / no subgraph / no question)
+    question: str | None = None
+
+    @property
+    def groundable(self) -> bool:
+        return self.beliefs is not None
+
+
+def plan(query: str, *, store, lexicon, now: float, max_hops: int = 4, top_k: int = 12) -> PlanResult:
+    """Stages 0-3 (parse -> resolve -> traverse -> rank), SYNCHRONOUS — single-digit ms with FTS. Always
+    returns the resolved anchors/targets (for the topic hash); `beliefs`/`question` are set only when the
+    vault can ground the query. `beliefs` is plain dicts — the only thing the worker is handed."""
     qm = extract_mentions(query)
-    if not qm.anchors:
-        return None                                          # no entity anchor -> abstain
     # Stage 1: deterministic lexicon resolution (exact -> alias); unresolved mentions fall back to their
     # own atom (which may itself be a graph term); a truly unknown one is simply absent from the graph.
     anchors = [lexicon.resolve(a) or a for a in qm.anchors]
     targets = {(lexicon.resolve(m) or m) for m in qm.mentions if m not in qm.anchors}
+    if not anchors:
+        return PlanResult(anchors, targets)                  # no entity anchor -> not groundable
     facts = _fetch_neighborhood(store, anchors + list(targets), max_hops=max_hops)
     top = select_grounded(BeliefGraph(beliefs_from_facts(facts)), anchors, targets,
                           now=now, max_hops=max_hops, top_k=top_k)
     if not top:
-        return None                                          # no connecting subgraph / chain too deep
+        return PlanResult(anchors, targets)                  # no connecting subgraph / chain too deep
     question = _question(anchors, targets, {b.narsese for b in top})
     if question is None:
-        return None
+        return PlanResult(anchors, targets)
     beliefs = [{"narsese": b.narsese, "frequency": b.frequency, "confidence": b.confidence} for b in top]
-    return beliefs, question
+    return PlanResult(anchors, targets, beliefs=beliefs, question=question)
 
 
 def enrich_provenance(store, answer_term: str, stamp_terms: list[str]) -> list[dict]:
@@ -73,9 +84,9 @@ def recall(query: str, *, store, lexicon, brain_factory, now: float,
     """In-process convenience (the direct/test path): plan -> derive in a fresh ONA -> enrich. The DAEMON
     uses `plan()` + an off-loop worker instead, so a pathological derivation can't block the select loop."""
     planned = plan(query, store=store, lexicon=lexicon, now=now, max_hops=max_hops, top_k=top_k)
-    if planned is None:
+    if not planned.groundable:
         return _abstain("no local subgraph connects the query")
-    beliefs, question = planned
+    beliefs, question = planned.beliefs, planned.question
     brain = brain_factory()
     try:
         for b in beliefs:

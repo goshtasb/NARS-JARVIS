@@ -134,6 +134,8 @@ class Session:
         self._cloud_jobs: dict[int, dict] = {}         # ADR-056: fd -> in-flight off-loop cloud call
         from retrieval.lexicon import LexiconStore     # ADR-056/Gate 2: the L2 namespace index
         self._lexicon = LexiconStore(db_path)          # populated at ingest (terms + aliases)
+        from retrieval.metrics import RecallMetrics    # ADR-056/Gate 2 §8: content-free compounding telemetry
+        self._recall_metrics = RecallMetrics(db_path)
         self._loop_gap_max = 0.0                 # Gate 1: worst select()-loop gap during a cloud call
         self._recall_jobs: dict[int, object] = {}      # ADR-056/Gate 2: fd -> in-flight off-loop Stage-4 worker
         self._token = 0
@@ -169,6 +171,7 @@ class Session:
             "egress_log": self._egress_log,                               # ADR-056: Privacy Receipts (Identity tab)
             "lexicon_stats": self._lexicon_stats,                         # ADR-056/Gate 2: inspect the L2 namespace index
             "recall": self._recall,                                       # ADR-056/Gate 2: hybrid retrieval + STAMP provenance
+            "metrics": self._metrics_summary,                             # ADR-056 §8: compounding-value readout (Identity tab)
             "intent_parse": self._intent_parse,                           # ADR-054: NL -> validated Canvas intent
             "catalog_schema": self._catalog_schema,                       # ADR-033: palette for the canvas
             "briefing": self._briefing, "briefing_resolve": self._briefing_resolve,  # ADR-031: morning
@@ -904,6 +907,11 @@ class Session:
                     for r in cloud_egress.egress_log()]
         return True, {"receipts": receipts, "count": len(receipts)}
 
+    def _metrics_summary(self, arg: object) -> tuple[bool, object]:
+        """ADR-056 §8: the compounding-value readout for the Cognitive Identity tab — FA-LGR, stamp-age
+        depth, flywheel close rate. Computed locally from content-free rows; nothing leaves the machine."""
+        return True, self._recall_metrics.summary()
+
     def _lexicon_stats(self, arg: object) -> tuple[bool, object]:
         """ADR-056/Gate 2: inspect the L2 lexicon — term count, and (if a mention is given) what it
         resolves to deterministically (exact term or top alias). Read-only."""
@@ -925,15 +933,17 @@ class Session:
         if not query:
             return False, {"text": "usage: recall <question>"}
         from retrieval.pipeline import plan
-        planned = plan(query, store=self._store, lexicon=self._lexicon, now=time.time())
+        pr = plan(query, store=self._store, lexicon=self._lexicon, now=time.time())
         self._token += 1
         token = self._token
-        if planned is None:                              # Stages 0-3 abstained -> no worker, escalate now
+        topic = self._recall_metrics.topic_hash(pr.anchors + list(pr.targets))   # '' -> zero-anchor (excluded)
+        if not pr.groundable:                            # Stage 0-3 abstained -> no worker; UI falls to Tier 2
+            self._recall_metrics.record(topic, grounded=False)
             return True, {"grounded": False, "escalate": "cloud", "token": token,
                           "text": "I don't have enough local context to answer this — Ask Cloud?"}
-        beliefs, question = planned
         from service.recall_job import RecallJob
-        job = RecallJob(beliefs, question, token)
+        job = RecallJob(pr.beliefs, pr.question, token)
+        job.topic_hash = topic                            # carried to the completion metric
         self._recall_jobs[job.fileno()] = job
         self._loop_gap_max = 0.0                          # start the Gate-3 loop-liveness meter for this worker
         return True, {"status": "reasoning", "token": token}
@@ -947,24 +957,32 @@ class Session:
             return                                       # still accumulating the worker's output
         del self._recall_jobs[fd]
         job.cleanup()
-        self._emit_recall(job.token, res)
+        self._emit_recall(job.token, res, getattr(job, "topic_hash", ""))
 
-    def _emit_recall(self, token: int, res: dict) -> None:
-        """Enrich the worker's STAMP from L2 (main thread owns the store) and emit. No answer / no
-        provenance / a timeout-kill all collapse to the same honest abstention -> the Ask-Cloud bridge."""
+    def _emit_recall(self, token: int, res: dict, topic: str = "") -> None:
+        """Enrich the worker's STAMP from L2 (main thread owns the store), record the metric, and emit. No
+        answer / no provenance / a timeout-kill all collapse to the same honest abstention."""
         gap_ms = round(self._loop_gap_max * 1000, 1)     # Gate-3 reading: worst loop gap during the worker
         sys.stderr.write(f"[gate3] recall worker done; worst select()-loop gap while in flight: {gap_ms} ms\n")
         if res.get("grounded") and res.get("answer"):
             from retrieval.pipeline import enrich_provenance
             prov = enrich_provenance(self._store, res["answer"], res.get("stamp", []))
             if prov:
+                self._recall_metrics.record(topic, grounded=True, stamp_age_days=self._stamp_age_days(prov))
                 self._emit("recall_result", {"token": token, "grounded": True, "answer": res["answer"],
                                              "truth": res.get("truth"), "provenance": prov,
                                              "loop_max_gap_ms": gap_ms})
                 return
+        self._recall_metrics.record(topic, grounded=False)
         self._emit("recall_result", {"token": token, "grounded": False, "escalate": "cloud",
                                      "loop_max_gap_ms": gap_ms,
                                      "text": "I don't have enough local context to answer this — Ask Cloud?"})
+
+    @staticmethod
+    def _stamp_age_days(provenance: list) -> float | None:
+        """Stamp-Age Depth: age (days) of the OLDEST cited premise — the compounding signal."""
+        ages = [p["learned_at"] for p in provenance if p.get("learned_at")]
+        return None if not ages else max(0.0, (time.time() - min(ages)) / 86400.0)
 
     # ── the time-bomb (hard 5s ceiling on the Stage-4 worker) ──
     def next_recall_deadline(self):
@@ -978,7 +996,7 @@ class Session:
             if job.expired(now):
                 job.kill()
                 del self._recall_jobs[fd]
-                self._emit_recall(job.token, {"grounded": False})   # timeout -> abstain -> Ask Cloud
+                self._emit_recall(job.token, {"grounded": False}, getattr(job, "topic_hash", ""))   # timeout
 
     def _do_shutdown(self, arg: object) -> tuple[bool, object]:
         """Emergency stop / kill switch: the daemon loop exits after replying, closing the brains,
@@ -1048,6 +1066,7 @@ class Session:
         self._flow.close()
         self._brain.close()
         self._lexicon.close()             # ADR-056/Gate 2: the L2 namespace index
+        self._recall_metrics.close()      # ADR-056 §8: compounding telemetry
         self._sentinel_store.close()
         self._habit_store.close()
         self._persona_brain.close()      # ADR-036: tear down the isolated persona ONA

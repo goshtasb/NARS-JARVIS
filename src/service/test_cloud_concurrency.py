@@ -245,6 +245,27 @@ def test_gate3_recall_worker_loop_gap_stays_pegged_under_flood(tmp_path):
         _send(a, 999, "shutdown"); time.sleep(0.3); a.close(); b.close(); server.join(timeout=3.0)
 
 
+def test_recall_records_compounding_metrics_end_to_end(tmp_path):
+    """ADR-056 §8: a live grounded recall records a content-free metric row; the `metrics` command then
+    computes FA-LGR + stamp-age from it. Proves the instrumentation is wired through the real daemon."""
+    sock_path = os.path.join(tempfile.mkdtemp(prefix="jx", dir="/tmp"), "j.sock")
+    server = _start_daemon(sock_path, str(tmp_path / "j.db"))
+    a = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); a.connect(sock_path)
+    abuf = protocol.LineBuffer()
+    try:
+        assert _req(a, abuf, 1, "tell", "<solana --> timeout>.")["ok"]
+        assert _req(a, abuf, 2, "tell", "<timeout --> dropped_tx>.")["ok"]
+        assert _req(a, abuf, 3, "recall", "Why did Solana cause dropped_tx?", timeout=2.0)["body"]["status"] == "reasoning"
+        evt = _wait_event(a, abuf, "recall_result", timeout=6.0)
+        assert evt is not None and evt["grounded"] is True, evt
+        s = _req(a, abuf, 4, "metrics", "", timeout=2.0)["body"]
+        assert s["queries"] >= 1 and s["topics"] >= 1, s
+        assert s["fa_lgr"] == 1.0, s                                   # the one topic grounded on first ask
+        assert s["stamp_age_median_days"] is not None and s["stamp_age_median_days"] >= 0.0, s
+    finally:
+        _send(a, 999, "shutdown"); time.sleep(0.3); a.close(); server.join(timeout=3.0)
+
+
 def test_recall_hard_timeout_kills_worker_and_escalates(tmp_path, monkeypatch):
     """The time-bomb: a worker that doesn't answer within the ceiling is SIGKILL'd and the query escalates
     to Cloud — no hang. Forced by shrinking the ceiling below the worker's spawn time."""
