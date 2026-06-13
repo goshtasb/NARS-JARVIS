@@ -134,7 +134,27 @@ Safety isn't a feature here; it's the architecture. The guarantees:
 ## What it can do today
 
 Each capability links to the Architecture Decision Record (ADR) that documents how and why it was built.
-Released in tagged increments **v1.0.0 → v1.16.3**; **519 automated tests** currently pass.
+Released in tagged increments **v1.0.0 → v1.23.0**; **625 automated tests** currently pass.
+
+### The Dual-Brain & the Cognitive Vault (ADR-056) — the headline
+Every On-device question runs a strict, descending **3-tier cascade** — local truth first, the cloud only
+as a last resort:
+
+1. **The Vault (Tier 1)** — a *deterministic* symbolic-memory lookup over the NARS graph (FTS5
+   term-scoped, ~5 ms, **0% hallucination by construction**). When it grounds an answer, the chat shows a
+   🔒 **"Why" panel**: the exact, *dated* historical beliefs that logically derived it (ONA's evidential
+   STAMP) — verifiable provenance, not a fuzzy guess.
+2. **The local model (Tier 2)** — if the vault can't ground it, the on-device 7B answers privately
+   (🧠 footer); it's instructed to refuse live-data questions rather than fabricate.
+3. **The Cloud (Tier 3)** — a manual **🔒 ↔ ☁️ toggle** (Bring Your Own Key: OpenAI or Anthropic). Only
+   your current message leaves; your memory, habits, files, and identity never do — enforced by a single
+   audited egress seam (`cloud_egress.py`) that structurally imports none of the private stores, a
+   per-turn "what stayed on your Mac" footer, and a Privacy Receipt. A cloud answer is then mined for
+   symbolic claims that feed the local vault — so the cloud makes your *private* memory smarter (the
+   ingestion flywheel).
+
+Local, **content-free** metrics (First-Ask Local Grounding Rate, Stamp-Age Depth, Flywheel Close Rate)
+track that the vault compounds over time — computed on-device, never phoned home.
 
 ### Conversation & memory
 - **Chat in plain English** — ask questions, give it facts to remember. ([ADR-007], [ADR-008])
@@ -252,8 +272,10 @@ Dependencies flow inward toward `shared/`; modules never reach into each other's
 
 | Module | Responsibility |
 |---|---|
-| `brain/` | Wraps ONA (the C reasoner): add beliefs, ask questions, get truth values. |
-| `language/` | The LLM channel: English ↔ Narsese translation, grounding, free-text generation. |
+| `brain/` | Wraps ONA (the C reasoner): add beliefs, ask questions, get truth values + the evidential STAMP. |
+| `language/` | The LLM channel: English ↔ Narsese translation, grounding, free-text generation, + the Dual-Brain Multiplexer. |
+| `retrieval/` | The hybrid retrieval engine (ADR-056 Gate 2): parse → lexicon resolve → graph traversal → truth ranking → ONA STAMP provenance; the FTS5 term index + content-free compounding metrics. |
+| `cloud_egress.py` | The single sanctioned network egress seam (ADR-056): the closed `CloudRequest` envelope + OpenAI/Anthropic drivers; imports no private store (a test asserts it). |
 | `memory/` | Durable SQLite system-of-record (facts + auto-extracted memories) + grounding store. |
 | `contradiction/` | Pre-commit guard that flags conflicting facts before they're stored. |
 | `consent/` | Pure consent ledger (the data model behind Approve/Deny). |
@@ -419,11 +441,11 @@ editing working code. Common extension points:
 ## Project conventions
 - **Source of truth for scope:** [`docs/prd/PRD.md`](docs/prd/PRD.md); all product briefs are indexed in [`docs/prd/`](docs/prd/README.md).
 - **Engineering rules:** [`CLAUDE.md`](CLAUDE.md) + [`standards/`](standards/).
-- **Architecture history:** [`docs/adrs/`](docs/adrs/) — **ADR-001 through ADR-050** (ADR-029 is
+- **Architecture history:** [`docs/adrs/`](docs/adrs/) — **ADR-001 through ADR-056** (ADR-029 is
   intentionally skipped; a cloud/Drive integration was proposed and dropped to preserve the local-first
   air-gap. ADR-038 is drafted on branch `adr-038-omniglass-draft`, merge gated on field-test review).
   Each module also has its own `README.md`.
-- **Releases:** annotated tags `v1.0.0` → `v1.16.3`, each tied to its ADR(s).
+- **Releases:** annotated tags `v1.0.0` → `v1.23.0`, each tied to its ADR(s).
 
 ---
 

@@ -43,11 +43,26 @@ the backend proves it juggles them invisibly):
   (`test_cloud_answer_feeds_the_local_vault`): a cloud insight (`Solana is a blockchain`) becomes the
   committed local belief `<solana --> blockchain>.`, queryable from the vault afterward with no cloud
   involved. Suite 573 → 574.
-- **Remaining (follow-ons, tracked):** the "Default brain" power-user setting (deliberately withheld per
-  ratification — "let the power users complain first"); cloud-without-any-local-model (today the
-  Multiplexer wraps a local model, so General Mode requires a GGUF present); cloud-extracted claims
-  currently bypass the embedder grounding/escalation gate that local `learn` uses (they go straight to
-  the durable `tell` sink) — acceptable for now, but a grounding pass is a future hardening.
+- **Gate 2 — the Cognitive Vault (hybrid retrieval) + the 3-Tier Cascade** — landed and tested
+  (`retrieval/`): Stage 0 model-free parse → Stage 1 deterministic lexicon resolve (exact/alias,
+  populated at ingest incl. local grounding-harvested aliases) → Stage 2 inverted-index graph traversal
+  → Stage 3 chain-aware truth ranking (path-pinning, hard top-k=12) → Stage 4 **isolated ephemeral ONA
+  worker** (off-loop subprocess, hard 5 s SIGKILL+reap) yielding the evidential **STAMP**. Provenance is
+  stamp-gated — **0.00% false-ground across the adversarial crucible** (ambiguous-anchor, revision,
+  saturated-budget). The 4 k recency-cliff was removed by an **FTS5** external-content term index
+  (`memory/store.py`, `tokenchars '_'` to keep compound atoms whole). The On-device path is a strict
+  cascade: **Tier 1 vault → Tier 2 private local 7B (`converse`) → Tier 3 manual ☁️ cloud**, with
+  distinct UI footers (🔒 expandable Why panel / 🧠 private guess / ☁️ egress receipt). Content-free
+  compounding metrics (FA-LGR / Stamp-Age / Flywheel-Close) in `retrieval/metrics.py` (salted
+  per-install hash). Suite → 625.
+- **Production hardening (live-fire):** TLS via `certifi` (macOS python.org ships no CA roots — was
+  masquerading as "timeout"); app-wide copy/paste (Edit menu for the LSUIElement app); "+" file
+  attach reads text/PDF → cloud evaluation; the local 7B instructed to refuse live-data questions
+  (no fabrication); the brain switch is one 🔒↔☁️ toggle with hover tooltips.
+- **Remaining (follow-ons, tracked):** **P0 (v1.21+):** off-load Tier-2 `converse` the same way as the
+  ONA worker (it currently blocks the select loop ~2–10 s on a slow 7B). Surface the §8 metrics in the
+  Cognitive Identity tab. The "Default brain" power-user setting (deliberately withheld). Cloud-extracted
+  claims bypass the embedder grounding/escalation gate (straight to `tell`) — a future hardening.
 
 **Ratified rulings (binding):**
 - **Key delivery:** the signed Swift client passes the API key **per-request over the local socket**;
