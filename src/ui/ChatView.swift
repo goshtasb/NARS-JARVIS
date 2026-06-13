@@ -31,7 +31,7 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
 
     // ── Dual-Brain (ADR-056): per-conversation brain mode. On-device is the resting state; Cloud is a
     // deliberate, temporary escalation that auto-reverts (new conversation / relaunch). ──
-    private var brainToggle: DSButton!
+    private let brainToggleHost = NSView()   // a 2-segment [🔒 Private | ☁️ Cloud] toggle, rebuilt on switch
     private var cloudMode = false
     private var cloudProvider: CloudProvider { CloudPrefs.provider }
     private var cloudThinkingRows: [Int: NSView] = [:]   // token -> the transient "thinking…" row
@@ -153,8 +153,7 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
         composer = DS.rounded(bg: DS.fieldBG, radius: 13, border: fieldBorder, borderWidth: 1)
         // all controls are 30×30 (design spec: .input-ctl / .send-btn)
         // the brain toggle sits leftmost: [🔒 On-device] <-> [☁️ Cloud]. A tap escalates/returns.
-        brainToggle = DSButton("On-device", symbol: "lock.fill", variant: .secondary, size: 11.5) { [weak self] in self?.toggleBrain() }
-        brainToggle.toolTip = "On-device — your question never leaves this Mac. Tap to ask the Cloud."
+        brainToggleHost.translatesAutoresizingMaskIntoConstraints = false
         let plus = DSButton(nil, symbol: "plus", variant: .icon, square: 30, radius: 8) { [weak self] in self?.attach() }
         let slash = DSButton(nil, symbol: "line.diagonal", variant: .icon, square: 30, radius: 8) { [weak self] in self?.togglePicker() }
         pickerHost.orientation = .horizontal; pickerHost.spacing = 6
@@ -167,7 +166,8 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
         micBtn = DSButton(nil, symbol: "mic", variant: .icon, square: 30, radius: 8) { [weak self] in self?.onToggleVoice?() }
         sendBtn = DSButton(nil, symbol: "arrow.up", variant: .primary, square: 30, radius: 9) { [weak self] in self?.submit() }
 
-        let stack = NSStackView(views: [brainToggle, plus, slash, pickerHost, input, micBtn, sendBtn])
+        rebuildBrainToggle()
+        let stack = NSStackView(views: [brainToggleHost, plus, slash, pickerHost, input, micBtn, sendBtn])
         stack.orientation = .horizontal; stack.spacing = 4; stack.alignment = .centerY
         stack.translatesAutoresizingMaskIntoConstraints = false
         composer.addSubview(stack)
@@ -423,10 +423,35 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
     }
 
     // ── Dual-Brain: the toggle, the cloud send, and the answer footer ──
-    private func toggleBrain() {
-        if cloudMode { setCloudMode(false); return }                 // returning home is always one tap
-        let go = { [weak self] in self?.ensureKeyThenEngage() }
-        if CloudPrefs.disclosureShown { go() }                       // escalating: disclose once, then engage
+    /// The [🔒 Private | ☁️ Cloud] segmented toggle. The active segment is filled (accent); tapping the
+    /// other switches. Rebuilt on each switch so the highlight follows the mode.
+    private func rebuildBrainToggle() {
+        brainToggleHost.subviews.forEach { $0.removeFromSuperview() }
+        let priv = DSButton("Private", symbol: "lock.fill",
+                            variant: cloudMode ? .secondary : .primary, size: 11, radius: 13) { [weak self] in self?.selectPrivate() }
+        let cloud = DSButton(cloudProvider.display, symbol: "cloud.fill",
+                             variant: cloudMode ? .primary : .secondary, size: 11, radius: 13) { [weak self] in self?.selectCloud() }
+        priv.toolTip = "Private — runs on your Mac; nothing leaves."
+        cloud.toolTip = "Cloud (\(cloudProvider.display)) — this turn leaves your Mac."
+        let row = NSStackView(views: [priv, cloud]); row.spacing = 4; row.alignment = .centerY
+        row.translatesAutoresizingMaskIntoConstraints = false
+        brainToggleHost.addSubview(row)
+        NSLayoutConstraint.activate([
+            row.leadingAnchor.constraint(equalTo: brainToggleHost.leadingAnchor),
+            row.trailingAnchor.constraint(equalTo: brainToggleHost.trailingAnchor),
+            row.topAnchor.constraint(equalTo: brainToggleHost.topAnchor),
+            row.bottomAnchor.constraint(equalTo: brainToggleHost.bottomAnchor),
+        ])
+    }
+
+    private func selectPrivate() {
+        if cloudMode { setCloudMode(false) }                         // returning home is always one tap
+    }
+
+    private func selectCloud() {
+        if cloudMode { return }
+        let go = { [weak self] in self?.ensureKeyThenEngage() }      // disclose once, then key, then engage
+        if CloudPrefs.disclosureShown { go() }
         else {
             CloudUI.presentDisclosure(on: view.window, provider: cloudProvider) { accepted in
                 guard accepted else { return }
@@ -446,12 +471,7 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
     private func setCloudMode(_ on: Bool) {
         cloudMode = on
         loadViewIfNeeded()
-        brainToggle.titleField?.stringValue = on ? cloudProvider.display : "On-device"
-        brainToggle.setSymbol(on ? "cloud.fill" : "lock.fill")
-        brainToggle.titleField?.textColor = on ? DS.accent : DS.label
-        brainToggle.toolTip = on
-            ? "Cloud (\(cloudProvider.display)) — this turn leaves your Mac. Tap to return On-device."
-            : "On-device — your question never leaves this Mac. Tap to ask the Cloud."
+        rebuildBrainToggle()                                         // re-highlight the active segment
         if pinnedVerb == nil {
             input.placeholderString = on ? "Ask \(cloudProvider.display)… (this turn leaves your Mac)"
                                          : "Ask, or type / to run a job…"
