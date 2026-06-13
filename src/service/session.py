@@ -111,12 +111,18 @@ class Session:
         # callback and flushes bounded candidate batches we drain in handle_fd. CAPTURE only — the ingest is
         # the overnight runner's deferred job.
         self._ingest_watch = None
+        self._ingest_drain = None
         _watch_dir = os.environ.get("NARS_JARVIS_WATCH_DIR")
         if _watch_dir:
             from sentinel.ingest_watch import IngestWatcher
             self._ingest_watch = IngestWatcher(db_path, _watch_dir)
             if not self._ingest_watch.start():            # swiftc/source unavailable -> degrade silently
                 self._ingest_watch = None
+        if self._ingest_watch is not None:                # Sprint 2: the overnight drain over the captured queue
+            from sentinel.ingest_drain import IngestDrain
+            self._ingest_watch.queue.reset_running()      # crash recovery: re-queue a row stranded 'running'
+            self._ingest_drain = IngestDrain(self._ingest_watch.queue, self._ingest_watch.watch_root,
+                                             ingest_fn=self._ingest_to_overnight)
         # Persona cognitive layer (ADR-036): an ISOLATED, resilient persona ONA learns the user's
         # style/focus from idle-gated batches; the system prompt is injected from SQLite. Separate brain
         # so persona concepts never crowd the conversational memory bag.
@@ -1156,6 +1162,25 @@ class Session:
     def wants_shutdown(self) -> bool:
         return self._shutdown
 
+    def _ingest_to_overnight(self, path: str) -> None:
+        """Sprint 2 splice: a validated, changed captured file goes through the EXISTING off-loop SummaryJob
+        chunker via the overnight queue (which archives it to the durable summary store the vault surfaces).
+        CAPTURE -> drain -> the same pipeline an attached doc uses."""
+        self._overnight_queue.enqueue("summarize_file", path)
+        if not self._overnight.active:
+            self._overnight.start()
+
+    @staticmethod
+    def _on_ac_power() -> bool:
+        """Drives the deferred-payload budget: True = run heavy candidates. No battery sensor (desktop) ->
+        treated as plugged in."""
+        try:
+            import psutil
+            batt = psutil.sensors_battery()
+            return batt is None or batt.power_plugged
+        except Exception:  # noqa: BLE001
+            return True
+
     # ── On-device (private) file evaluation: local summarizer -> chat ──
     def _file_summarize(self, arg):
         """Evaluate an attached document with the LOCAL model — the private-mode default. Spawns the same
@@ -1259,6 +1284,15 @@ class Session:
                                     overnight_active=self._overnight.active)  # never during a Tier-2 decode
         except Exception as exc:  # noqa: BLE001 — a persona hiccup must never kill the loop
             self._emit("alert", {"text": f"[persona error] {exc}"})
+        try:
+            # v1.24.0 Sprint 2: drain ONE captured candidate per tick, but only when the user is idle AND
+            # the overnight runner is free (don't compete) AND no Tier-2 decode is in flight — so passive
+            # ingestion stays an idle/overnight activity, never a tax on active work.
+            if (self._ingest_drain is not None and idle and not self._overnight.active
+                    and not self._localbrain.busy):
+                self._ingest_drain.drain_once(on_ac=self._on_ac_power())
+        except Exception as exc:  # noqa: BLE001 — a drain hiccup must never kill the loop
+            self._emit("alert", {"text": f"[ingest error] {exc}"})
         try:
             self._sys_sentinel.run_once()
             import psutil
