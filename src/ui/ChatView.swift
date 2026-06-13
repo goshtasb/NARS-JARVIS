@@ -383,6 +383,12 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
 
     private func fileReadingRow(_ name: String) -> NSView {
         let v = bubble("📄 Reading \(name) on-device…", bg: DS.fill(0.05), fg: DS.label3)
+        v.wantsLayer = true                                     // pulse while the local read is in flight
+        let pulse = CABasicAnimation(keyPath: "opacity")
+        pulse.fromValue = 1.0; pulse.toValue = 0.4; pulse.duration = 0.8
+        pulse.autoreverses = true; pulse.repeatCount = .infinity
+        pulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        v.layer?.add(pulse, forKey: "readingPulse")             // freed with the view when the result arrives
         addRow(v, align: .leading)
         return v.superview ?? v
     }

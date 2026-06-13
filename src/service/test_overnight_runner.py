@@ -62,11 +62,16 @@ def test_dispatch_briefing_approve_executes_held_action() -> None:
     ok, body = Session._briefing(stub, "")
     assert any(d["action"] == "find_file" for d in body["done"])
     assert len(body["held"]) == 1 and body["held"][0]["action"] == "empty_trash"
-    hid = body["held"][0]["id"]
-    ok, _ = Session._briefing_resolve(stub, {"id": hid, "accepted": True})
+    # The Canvas resolves by the QUEUE id (its Activity rows come from overnight_status, not the
+    # held-ledger). Here ledger id (1) != queue task_id (2) — the exact mismatch that broke Approve.
+    tid = body["held"][0]["task_id"]
+    assert tid != body["held"][0]["id"]                   # ids genuinely differ -> regression guard
+    ok, _ = Session._briefing_resolve(stub, {"id": tid, "accepted": True})
     assert ok and ("empty_trash", "") in ar.calls         # approval IS the consent gate -> it runs now
-    # denying a second time is a safe no-op (already resolved)
-    ok, body = Session._briefing_resolve(stub, {"id": hid, "accepted": False})
+    held_row = [r for r in q.list_all() if r["id"] == tid][0]
+    assert held_row["status"] == "done"                   # queue row left the held state -> leaves Activity
+    # resolving again is a safe no-op (already resolved)
+    ok, body = Session._briefing_resolve(stub, {"id": tid, "accepted": False})
     assert ok and "no held action" in body["text"]
 
 

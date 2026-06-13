@@ -23,6 +23,7 @@ from brain import Brain
 from habits import HabitStore
 from persona import PersonaStore, render_persona
 from overnight import HeldLedger, OvernightQueue, safe_autonomous
+from summaries import SummaryArchive
 from context import render_habits, render_live_context
 from execution import DecisionStats, build_air_gapped_executor, decide
 from jarvis import Jarvis
@@ -89,7 +90,13 @@ class Session:
         # hold everything else for explicit morning approval. Durable across daemon restarts.
         self._overnight_queue = OvernightQueue(db_path)
         self._held_ledger = HeldLedger(db_path)
-        self._overnight = OvernightRunner(self._overnight_queue, self._held_ledger, self._actions, self._emit)
+        # ADR-058: the durable archive of briefed document summaries. The runner appends to it via the
+        # on_summary hook when a `summarize_file` task completes; the Canvas Summary tab reads it back.
+        self._summaries = SummaryArchive(db_path)
+        self._backfill_summaries()
+        self._overnight = OvernightRunner(
+            self._overnight_queue, self._held_ledger, self._actions, self._emit,
+            on_summary=lambda path, text: self._summaries.add(os.path.basename(path), path, text))
         # Persona cognitive layer (ADR-036): an ISOLATED, resilient persona ONA learns the user's
         # style/focus from idle-gated batches; the system prompt is injected from SQLite. Separate brain
         # so persona concepts never crowd the conversational memory bag.
@@ -185,6 +192,7 @@ class Session:
             "catalog_schema": self._catalog_schema,                       # ADR-033: palette for the canvas
             "briefing": self._briefing, "briefing_resolve": self._briefing_resolve,  # ADR-031: morning
             "briefing_dismiss_done": self._briefing_dismiss_done,         # ADR-033: clear completed
+            "summary_list": self._summary_list, "summary_get": self._summary_get,  # ADR-058: Summary archive
             "ax_context": self._ax_context, "ax_result": self._ax_result,  # GUI actuation (ADR-021)
             "axdump": self._axdump,  # ADR-023: inspect the captured control tree (recipe-matcher authoring)
             "shutdown": self._do_shutdown,
@@ -612,6 +620,28 @@ class Session:
     def _briefing_dismiss_done(self, _arg: object) -> tuple[bool, object]:
         """Clear finished (done/failed) rows so the briefing doesn't grow forever. Held/pending untouched."""
         return True, {"cleared": self._overnight_queue.purge_done()}
+
+    # ── ADR-058: the Canvas Summary tab — durable archive of briefed document summaries ──
+    def _backfill_summaries(self) -> None:
+        """One-time, idempotent: seed the archive from any already-done `summarize_file` queue rows
+        (briefed before the archive existed) so the Summary tab isn't empty on first launch."""
+        for r in self._overnight_queue.list_all():
+            if (r["status"] == "done" and r["action"] == "summarize_file" and r["result"]
+                    and not self._summaries.has(r["arg"], r["result"])):
+                self._summaries.add(os.path.basename(r["arg"]), r["arg"], r["result"])
+
+    def _summary_list(self, _arg: object) -> tuple[bool, object]:
+        """The Summary tab's list: newest-first {id, source_name, created_at, chars} (no body)."""
+        return True, {"rows": self._summaries.list()}
+
+    def _summary_get(self, arg: object) -> tuple[bool, object]:
+        """Fetch one archived summary's full text (the Swift client renders it to a PDF and opens it)."""
+        sid = int(arg.get("id", 0)) if isinstance(arg, dict) else int(arg or 0)
+        row = self._summaries.get(sid)
+        if row is None:
+            return True, {"text": "no summary with that id."}
+        return True, {"id": row["id"], "source_name": row["source_name"],
+                      "text": row["text"], "created_at": row["created_at"]}
 
     def _ax_result(self, arg: object) -> tuple[bool, object]:
         """The app reports an actuation outcome; surface it to the user as an answer event."""

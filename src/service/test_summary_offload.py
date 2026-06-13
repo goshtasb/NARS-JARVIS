@@ -89,6 +89,23 @@ def test_runner_offloads_summarize_and_finalizes_from_worker() -> None:
     assert runner.extra_fds() == [] and runner._job is None
 
 
+# ── ADR-058: the on_summary archive hook fires once, with (source_path, text), on completion ──
+def test_runner_on_summary_archives_briefed_result() -> None:
+    q, led = OvernightQueue(":memory:"), HeldLedger(":memory:")
+    q.enqueue("summarize_file", "/tmp/doc.pdf")
+    archived: list[tuple[str, str]] = []
+    runner = OvernightRunner(q, led, _BoomRunner(), lambda k, b: None,
+                             make_job=_FakeJob, on_summary=lambda p, t: archived.append((p, t)))
+    runner.start(); runner.advance()                       # offload
+    fd = runner.extra_fds()[0]
+    runner.handle_fd(fd); runner.handle_fd(fd)             # progress 1/2, 2/2 -> no archive yet
+    assert archived == []
+    runner.handle_fd(fd)                                   # result -> archive exactly once
+    assert archived == [("/tmp/doc.pdf", "Summarized doc:\n\nthe gist")]
+    runner.handle_fd(fd)                                   # eof
+    assert len(archived) == 1                              # not re-fired on eof
+
+
 # ── the worker end-to-end (fake LLM, real file + protocol, no GPU) ──
 def test_summary_worker_streams_progress_then_result(tmp_path, monkeypatch, capsys) -> None:
     doc = tmp_path / "note.txt"

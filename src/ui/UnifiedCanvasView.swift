@@ -6,13 +6,15 @@ import AppKit
 
 final class UnifiedCanvasViewController: NSViewController {
     weak var client: JarvisClient?
-    private let seg = NSSegmentedControl(labels: ["Now", "Scheduled", "Activity"],
+    private let seg = NSSegmentedControl(labels: ["Now", "Scheduled", "Activity", "Summary"],
                                          trackingMode: .selectOne, target: nil, action: nil)
     private let list = NSStackView()
     private var listScroll: NSScrollView!
     private var clearBtn: DSButton!
     private var pollTimer: Timer?
-    private var sub = 0      // 0 Now · 1 Scheduled · 2 Activity
+    private var sub = 0      // 0 Now · 1 Scheduled · 2 Activity · 3 Summary
+    private var activitySig: String?   // Activity rows are terminal; skip the 1 Hz teardown when unchanged
+    private var summarySig: String?    // ADR-058: same skip for the Summary tab's archived rows
 
     override func loadView() {
         let root = LayerView(); root.wantsLayer = true; root.bg = DS.contentBG; root.layer?.backgroundColor = DS.contentBG.cgColor
@@ -61,9 +63,20 @@ final class UnifiedCanvasViewController: NSViewController {
         pollTimer?.invalidate()
         pollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in self?.refresh() }
     }
-    @objc private func subChanged() { sub = seg.selectedSegment; clearBtn.isHidden = (sub != 2); refresh() }
+    @objc private func subChanged() {
+        sub = seg.selectedSegment; clearBtn.isHidden = (sub != 2)
+        activitySig = nil; summarySig = nil      // a tab switch always rebuilds
+        refresh()
+    }
 
     func refresh() {
+        if sub == 3 {                            // ADR-058: the Summary tab reads its own archive
+            client?.call("summary_list") { [weak self] _, body in
+                let rows = (body["rows"] as? [[String: Any]]) ?? []
+                DispatchQueue.main.async { self?.renderSummaries(rows) }
+            }
+            return
+        }
         client?.call("overnight_status") { [weak self] _, body in
             let rows = (body["rows"] as? [[String: Any]]) ?? []
             DispatchQueue.main.async { self?.render(rows) }
@@ -105,11 +118,78 @@ final class UnifiedCanvasViewController: NSViewController {
             items = all.filter { runAt($0) == nil && ["pending", "running"].contains($0["status"] as? String ?? "") }
             empty = "Nothing running.  Start a job from Chat and watch it here."
         }
+        // The Activity tab's rows are terminal (done/failed/held) and carry interactive buttons. The
+        // 1 Hz poll otherwise tears the whole list down and rebuilds it under the cursor, killing clicks
+        // mid-press. Rebuild only when the data actually changed; Now/Scheduled still rebuild each tick.
+        if sub == 2 {
+            let sig = items.map { r in
+                "\(r["action"] as? String ?? "")|\(r["arg"] as? String ?? "")|\(r["status"] as? String ?? "")|\(r["result"] as? String ?? "")|\(r["id"] as? Int ?? -1)"
+            }.joined(separator: "¦")
+            if sig == activitySig { return }
+            activitySig = sig
+        } else {
+            activitySig = nil   // force a rebuild when returning to Activity
+        }
         list.arrangedSubviews.forEach { $0.removeFromSuperview() }
         let rows: [NSView] = items.isEmpty ? [emptyRow(empty)] : items.map { taskRow($0, now: now) }
         for r in rows {
             list.addArrangedSubview(r)
             r.widthAnchor.constraint(equalTo: list.widthAnchor, constant: -48).isActive = true   // after add
+        }
+    }
+
+    // ── ADR-058: the Summary tab — archived briefed summaries, each openable as a PDF ──
+    private func renderSummaries(_ items: [[String: Any]]) {
+        let sig = items.map { "\($0["id"] as? Int ?? -1)" }.joined(separator: "·")
+        if sig == summarySig { return }                 // unchanged → don't tear down the Open-PDF buttons
+        summarySig = sig
+        list.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        let rows: [NSView] = items.isEmpty
+            ? [emptyRow("No summaries yet.  Brief a document on the Canvas and it's archived here.")]
+            : items.map { summaryRow($0) }
+        for r in rows {
+            list.addArrangedSubview(r)
+            r.widthAnchor.constraint(equalTo: list.widthAnchor, constant: -48).isActive = true
+        }
+    }
+
+    private func summaryRow(_ r: [String: Any]) -> NSView {
+        let id = r["id"] as? Int ?? -1
+        let name = r["source_name"] as? String ?? "summary"
+        let created = r["created_at"] as? Double
+        let chars = r["chars"] as? Int ?? 0
+
+        let card = DS.rounded(bg: DS.card, radius: 11, border: DS.separator)
+        card.translatesAutoresizingMaskIntoConstraints = false
+        let glyph = DS.symbol("doc.text", 17, .medium, DS.blue)
+        let titleCol = NSStackView(views: [DS.text(name, 13.5, .semibold, DS.label),
+                                           DS.text("\(fmtDate(created))   ·   \(chars) chars", 12, .regular, DS.label2)])
+        titleCol.orientation = .vertical; titleCol.alignment = .leading; titleCol.spacing = 2
+        let open = DSButton("Open PDF", symbol: "arrow.up.forward.app", variant: .secondary, size: 12) {
+            [weak self] in self?.openSummary(id: id, name: name)
+        }
+        let head = NSStackView(views: [glyph, titleCol, NSView(), open])
+        head.orientation = .horizontal; head.spacing = 10; head.alignment = .centerY
+        head.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(head)
+        NSLayoutConstraint.activate([
+            head.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 13),
+            head.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -13),
+            head.topAnchor.constraint(equalTo: card.topAnchor, constant: 11),
+            head.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -11),
+        ])
+        return card
+    }
+
+    private func openSummary(id: Int, name: String) {
+        client?.call("summary_get", ["id": id]) { _, body in
+            let text = (body["text"] as? String) ?? ""
+            let title = (body["source_name"] as? String) ?? name
+            DispatchQueue.main.async {
+                if let url = SummaryPDF.write(name: name, id: id, title: title, text: text) {
+                    NSWorkspace.shared.open(url)
+                }
+            }
         }
     }
 
@@ -302,6 +382,11 @@ final class UnifiedCanvasViewController: NSViewController {
     }
     private func fmtTime(_ epoch: Double) -> String {
         let f = DateFormatter(); f.dateFormat = "h:mm a"; return f.string(from: Date(timeIntervalSince1970: epoch))
+    }
+    private func fmtDate(_ epoch: Double?) -> String {
+        guard let epoch else { return "" }
+        let f = DateFormatter(); f.dateStyle = .medium; f.timeStyle = .short
+        return f.string(from: Date(timeIntervalSince1970: epoch))
     }
 }
 

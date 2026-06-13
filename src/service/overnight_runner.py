@@ -28,14 +28,17 @@ _OFFLOAD = {"summarize_file"}
 
 class OvernightRunner:
     def __init__(self, queue, ledger, action_runner, emit: Callable[[str, dict], None],
-                 make_job: Callable[..., object] = SummaryJob) -> None:
+                 make_job: Callable[..., object] = SummaryJob,
+                 on_summary: Callable[[str, str], None] | None = None) -> None:
         self._queue = queue
         self._ledger = ledger
         self._actions = action_runner          # ActionRunner: .perform(name, arg) -> str
         self._emit = emit
         self._make_job = make_job              # injectable for tests; default spawns the real worker
+        self._on_summary = on_summary          # ADR-058: (source_path, text) -> archive a briefed summary
         self._active = False
         self._job = None                       # the in-flight offloaded SummaryJob (None when idle)
+        self._job_arg = ""                     # the source path of the in-flight summary (for the archive)
 
     @property
     def active(self) -> bool:
@@ -95,6 +98,7 @@ class OvernightRunner:
     def _spawn_offload(self, tid: int, name: str, arg: str) -> None:
         try:
             self._job = self._make_job(arg, tid, action=name)
+            self._job_arg = arg                              # ADR-058: remember the source path to archive
         except Exception as exc:  # noqa: BLE001 — if the worker can't even start, fail the task loudly
             self._queue.mark(tid, "failed", result=f"[ERROR: could not start summary worker: {exc}]")
             self._emit("overnight_progress", {"id": tid, "action": name, "status": "failed"})
@@ -119,6 +123,8 @@ class OvernightRunner:
                             "detail": f"{i}/{n}"})
             elif tag == "result":
                 self._queue.mark(job.task_id, "done", result=str(payload))
+                if self._on_summary is not None:             # ADR-058: archive the briefed summary
+                    self._on_summary(self._job_arg, str(payload))
                 self._emit("overnight_progress",
                            {"id": job.task_id, "action": job.action, "status": "done"})
             elif tag == "error":
