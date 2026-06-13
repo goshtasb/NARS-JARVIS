@@ -896,6 +896,17 @@ class Session:
     # ── ADR-056: General Mode (Dual-Brain) — the off-loop cloud answer path ──
     _CLOUD_SYSTEM = ("You are JARVIS in General Mode — a concise, accurate assistant. Answer the user's "
                      "question directly. Do not claim to have access to their files, memory, or device.")
+
+    def _cloud_system(self) -> str:
+        """The cloud system prompt + the user's CURRENT local date/time/timezone (Phase 1 table-stakes fix).
+        The daemon already knows the clock — so the cloud brain should never refuse a time/date/'tomorrow'
+        question for lack of it. Injects ONLY the clock: no habits, no app usage, no files — the privacy
+        promise ('your memory, habits & files stayed on your Mac') is untouched."""
+        now = datetime.now().astimezone()
+        tz = now.tzname() or now.strftime("%z")
+        return (self._CLOUD_SYSTEM + " The user's current local date and time is "
+                f"{now.strftime('%A, %B %d, %Y at %I:%M %p')} {tz}. Use this for any time-, date-, or "
+                "today/tomorrow-relative question — you already know it and never need to ask.")
     # The cloud's answer is fed back through the SAME firewall to extract symbolic claims for local NARS —
     # the reason General Mode exists (a frontier model makes the local vault smarter). Firewall inputs:
     # [this fixed system prompt] + [the cloud's own answer]. No private store is ever attached.
@@ -950,7 +961,7 @@ class Session:
 
         from cloud_egress import CloudRequest
         from service.cloud_job import CloudJob
-        req = CloudRequest(system=self._CLOUD_SYSTEM, user=text)
+        req = CloudRequest(system=self._cloud_system(), user=text)   # Phase 1: cloud brain knows the time now
         # The closure runs in the CloudJob's background thread. It captures `key` locally (never stored on
         # the session) and uses the thread-safe one-shot path (no shared-context race).
         llm = self._llm
