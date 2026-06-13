@@ -105,7 +105,7 @@ class Session:
         self._backfill_summaries()
         self._overnight = OvernightRunner(
             self._overnight_queue, self._held_ledger, self._actions, self._emit,
-            on_summary=lambda path, text: self._summaries.add(os.path.basename(path), path, text))
+            on_summary=self._on_summary)
         # v1.24.0: Passive Context Ingestion — the FSEvents edge. Opt-in (only when NARS_JARVIS_WATCH_DIR is
         # set, so tests/normal runs spawn nothing); a Swift helper crushes filesystem noise at the kernel
         # callback and flushes bounded candidate batches we drain in handle_fd. CAPTURE only — the ingest is
@@ -178,6 +178,7 @@ class Session:
         self._loop_gap_max = 0.0                 # Gate 1: worst select()-loop gap during a cloud call
         self._recall_jobs: dict[int, object] = {}      # ADR-056/Gate 2: fd -> in-flight off-loop Stage-4 worker
         self._file_jobs: dict[int, dict] = {}          # on-device file eval: fd -> in-flight local SummaryJob -> chat
+        self._learn_jobs: dict[int, dict] = {}         # v1.24.0 Sprint 3: fd -> in-flight off-loop Narsese distillation
         self._converse_pending: dict[int, dict] = {}   # ADR-057: token -> {state, question, voice} awaiting decode
         self._token = 0
         self._shutdown = False                          # set by the `shutdown` command (kill switch)
@@ -1181,6 +1182,53 @@ class Session:
         except Exception:  # noqa: BLE001
             return True
 
+    # ── v1.24.0 Sprint 3: Narsese distillation (a completed summary -> beliefs in the vault) ──
+    def _on_summary(self, path: str, text: str) -> None:
+        """A SummaryJob finished: archive the summary (ADR-058) AND distill it into Narsese beliefs. The
+        distillation's LLM extraction runs OFF the loop in a LearnJob; only the cheap L1+L2 commit lands
+        here on the main thread, so the daemon stays sub-10ms."""
+        self._summaries.add(os.path.basename(path), path, text)
+        self._spawn_learn(text, source=path)
+
+    def _spawn_learn(self, text: str, source: str = "") -> None:
+        if not text or not text.strip():
+            return
+        from service.learn_job import LearnJob
+        self._token += 1
+        try:
+            job = LearnJob(text, self._token, source=source)
+        except Exception as exc:  # noqa: BLE001 — a spawn failure is logged, never crashes the daemon
+            sys.stderr.write(f"[learn] could not start distillation worker: {exc}\n")
+            return
+        self._learn_jobs[job.fileno()] = {"job": job, "narsese": [], "source": source}
+
+    def _read_learn_job(self, fd: int) -> None:
+        """Drain a completed distillation. The expensive extraction already ran off-loop; here we only
+        commit the returned statements to L1 ONA + L2 store via the SAME durable sink as tell()/the cloud
+        flywheel (single-owner main thread; a bad single claim is skipped, never aborts the batch)."""
+        entry = self._learn_jobs.get(fd)
+        if entry is None:
+            return
+        job = entry["job"]
+        for tag, payload in job.read():
+            if tag == "result":
+                entry["narsese"] = payload if isinstance(payload, list) else []
+            elif tag == "error":
+                sys.stderr.write(f"[learn] extraction error ({entry['source']}): {payload}\n")
+            elif tag == "eof":
+                del self._learn_jobs[fd]
+                job.cleanup()
+                learned: list[str] = []
+                for narsese in entry["narsese"]:
+                    try:
+                        if self._jarvis.tell(str(narsese)):
+                            learned.append(str(narsese))
+                    except Exception:  # noqa: BLE001 — one malformed/rejected claim never aborts the batch
+                        continue
+                if learned:
+                    self._emit("learned", {"source": entry["source"], "count": len(learned),
+                                           "narsese": learned})
+
     # ── On-device (private) file evaluation: local summarizer -> chat ──
     def _file_summarize(self, arg):
         """Evaluate an attached document with the LOCAL model — the private-mode default. Spawns the same
@@ -1235,6 +1283,7 @@ class Session:
         fds += list(self._cloud_jobs)           # ADR-056: in-flight off-loop cloud calls
         fds += list(self._recall_jobs)          # ADR-056/Gate 2: in-flight off-loop Stage-4 workers
         fds += list(self._file_jobs)            # on-device file eval: in-flight local summary -> chat
+        fds += list(self._learn_jobs)           # v1.24.0 Sprint 3: in-flight off-loop Narsese distillation
         fds.append(self._localbrain.fileno())   # ADR-057: the Tier-2 decode worker's completion pipe
         fds += self._overnight.extra_fds()      # ADR-052: the offloaded summary worker's stdout
         if self._ingest_watch is not None and (ifd := self._ingest_watch.fileno()) is not None:
@@ -1250,6 +1299,8 @@ class Session:
             self._read_cloud(fd)
         elif fd in self._file_jobs:              # on-device file eval: drain a completed local summary
             self._read_file_job(fd)
+        elif fd in self._learn_jobs:             # v1.24.0 Sprint 3: a distillation finished off-loop
+            self._read_learn_job(fd)
         elif fd == self._localbrain.fileno():    # ADR-057: a Tier-2 decode finished off-loop
             self._drain_converse()
         elif self._ingest_watch is not None and fd == self._ingest_watch.fileno():
@@ -1307,6 +1358,9 @@ class Session:
         for entry in list(self._file_jobs.values()):   # on-device file eval: reap any in-flight summarizer
             entry["job"].cleanup()
         self._file_jobs.clear()
+        for entry in list(self._learn_jobs.values()):  # Sprint 3: reap any in-flight distillation worker
+            entry["job"].cleanup()
+        self._learn_jobs.clear()
         self._localbrain.close()          # ADR-057: close the Tier-2 decode self-pipe
         if self._ingest_watch is not None:
             self._ingest_watch.stop()     # v1.24.0: reap the FSEvents helper + close the ingest queue
