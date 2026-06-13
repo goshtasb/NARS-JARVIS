@@ -159,17 +159,22 @@ class MemoryStore:
 
     def upsert(self, narsese: str, frequency: float, confidence: float,
                english: str | None = None, embedding: list[float] | None = None,
-               now: float | None = None) -> None:
+               now: float | None = None, source: str | None = None) -> None:
         """Write-through (creation) AND observe (revision): insert or update truth in place.
 
         On conflict, truth is overwritten, english/embedding kept if the new value is None,
         use_count incremented, recency bumped. Pinning is managed separately via pin()/unpin().
+
+        `source` (v1.24.0 provenance) is set ONCE, at row creation, and DELIBERATELY left untouched on
+        conflict: a re-observation must never rewrite an existing belief's tier — above all it must never
+        downgrade a NULL-trusted (legacy/told) belief to 'passive' just because the firehose saw it again.
+        Promotion (passive -> trusted) is the decay/rank engine's job (Step 3), not a write-path side effect.
         """
         now = time.time() if now is None else now
         self._db.execute(
-            """INSERT INTO facts (narsese, english, frequency, confidence, embedding,
+            """INSERT INTO facts (narsese, english, source, frequency, confidence, embedding,
                                   use_count, created_at, updated_at, last_used)
-               VALUES (?,?,?,?,?,1,?,?,?)
+               VALUES (?,?,?,?,?,?,1,?,?,?)
                ON CONFLICT(narsese) DO UPDATE SET
                  frequency=excluded.frequency,
                  confidence=excluded.confidence,
@@ -178,7 +183,7 @@ class MemoryStore:
                  use_count=facts.use_count+1,
                  updated_at=excluded.updated_at,
                  last_used=excluded.last_used""",
-            (narsese, english, frequency, confidence, pack_embedding(embedding), now, now, now),
+            (narsese, english, source, frequency, confidence, pack_embedding(embedding), now, now, now),
         )
         self._db.commit()
 
