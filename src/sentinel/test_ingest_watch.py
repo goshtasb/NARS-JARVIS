@@ -70,3 +70,24 @@ def test_micro_ingest_budget_defers_heavy_on_low_battery(tmp_path, monkeypatch) 
     w.ingest_payload({"paths": [heavy]})
     assert w.queue.all()[0]["status"] == "deferred"         # heavy + on battery <50% -> held for AC
     w.queue.close()
+
+
+def test_out_of_watch_paths_rejected(tmp_path) -> None:
+    # containment: an allowlisted file OUTSIDE the designated watch root must never be enqueued
+    watch = tmp_path / "watched"; watch.mkdir()
+    outside = tmp_path / "elsewhere"; outside.mkdir()
+    w = IngestWatcher(":memory:", watch_dir=str(watch))
+    inside = _mk(str(watch), "ok.md")
+    evil = _mk(str(outside), "secret.md")
+    n = w.ingest_payload({"paths": [inside, evil]})
+    assert n == 1 and {os.path.basename(r["path"]) for r in w.queue.all()} == {"ok.md"}
+    w.queue.close()
+
+
+def test_rescan_outside_watch_rejected(tmp_path) -> None:
+    watch = tmp_path / "watched"; watch.mkdir()
+    outside = tmp_path / "elsewhere"; outside.mkdir()
+    _mk(str(outside), "secret.md")
+    w = IngestWatcher(":memory:", watch_dir=str(watch))
+    assert w.ingest_payload({"rescan": str(outside)}) == 0 and w.queue.count() == 0   # arbitrary root refused
+    w.queue.close()

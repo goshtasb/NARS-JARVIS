@@ -56,8 +56,21 @@ class IngestWatcher:
     def __init__(self, db_path: str = ":memory:", watch_dir: str | None = None) -> None:
         self._queue = IngestQueue(db_path)
         self._watch = os.path.expanduser(watch_dir or "~/Desktop/VaultTest")
+        self._watch_real = os.path.realpath(self._watch)   # containment anchor (CodeRabbit PR#4)
         self._proc: subprocess.Popen | None = None
         self._buf = ""
+
+    def _within_watch(self, path: str) -> bool:
+        """Only ever enqueue/walk paths INSIDE the designated watch root. A crafted payload — or a
+        `{"rescan": …}` marker pointed at an arbitrary root — must not reach out-of-scope files."""
+        try:
+            resolved = os.path.realpath(path)
+        except OSError:
+            return False
+        try:
+            return os.path.commonpath([self._watch_real, resolved]) == self._watch_real
+        except ValueError:        # different volume / not comparable
+            return False
 
     @property
     def queue(self) -> IngestQueue:
@@ -81,9 +94,11 @@ class IngestWatcher:
         try:
             data = os.read(self._proc.stdout.fileno(), 65536)   # type: ignore[union-attr]
         except (OSError, AttributeError):
+            self._reap()
             return 0
         if not data:
-            return 0                                            # EOF — the watcher exited
+            self._reap()       # EOF: the helper exited -> drop our fd so the select loop stops waking on it
+            return 0           #      (fileno() now None -> excluded from extra_fds; no hot-loop)
         self._buf += data.decode("utf-8", "ignore")
         enqueued = 0
         while "\n" in self._buf:
@@ -112,6 +127,8 @@ class IngestWatcher:
         """A flood collapsed to a coarse marker: walk the dir ONCE, pruning denied dirs, capped at
         _RESCAN_CAP survivors — so even the degraded path stays bounded."""
         root = os.path.expanduser(root)
+        if not self._within_watch(root):     # a rescan marker must point inside the watch root, never elsewhere
+            return 0
         count = 0
         for dirpath, dirnames, filenames in os.walk(root):
             dirnames[:] = [d for d in dirnames if d not in _DENY_DIRS]   # prune in place -> never descend
@@ -123,7 +140,7 @@ class IngestWatcher:
         return count
 
     def _enqueue(self, path: str) -> bool:
-        if not _accept(path):
+        if not self._within_watch(path) or not _accept(path):
             return False
         try:
             size = os.path.getsize(path)
@@ -151,6 +168,20 @@ class IngestWatcher:
             return psutil.sensors_battery()
         except Exception:  # noqa: BLE001 — no battery sensor (desktop / unsupported) -> treat as plugged
             return None
+
+    def _reap(self) -> None:
+        """Detach a dead helper: close the pipe + reap the process so fileno() returns None and the fd
+        leaves extra_fds. The IngestQueue stays open (queryable); a later start() can respawn."""
+        if self._proc is not None:
+            try:
+                self._proc.stdout.close()   # type: ignore[union-attr]
+            except (OSError, AttributeError):
+                pass
+            try:
+                self._proc.wait(timeout=0.2)
+            except Exception:  # noqa: BLE001
+                pass
+            self._proc = None
 
     def running(self) -> bool:
         return self._proc is not None and self._proc.poll() is None
