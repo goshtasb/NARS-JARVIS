@@ -136,3 +136,55 @@ def test_anthropic_missing_key_never_calls_network() -> None:
     def transport(*a): called["n"] += 1; return 200, b"{}"
     assert anthropic_complete(CloudRequest(system="s", user="u"), api_key="", transport=transport).kind == "auth"
     assert called["n"] == 0
+
+
+# ── Phase 2: the agentic tool-call loop ──
+import json as _json
+from cloud_egress import ExternalTool, cloud_complete_with_tools
+
+_TOOL = ExternalTool(name="search_web", description="search", parameters={"type": "object"})
+
+
+def test_openai_tool_loop_executes_then_synthesizes():
+    seen = []
+    def transport(url, headers, body, timeout):
+        if any(m.get("role") == "tool" for m in body["messages"]):      # round 2: it has the search result
+            return 200, _json.dumps({"choices": [{"message": {"content": "Tomorrow in LA: sunny, 75F."}}]}).encode()
+        return 200, _json.dumps({"choices": [{"message": {"content": None, "tool_calls": [   # round 1: search
+            {"id": "c1", "function": {"name": "search_web",
+                                      "arguments": _json.dumps({"query": "weather Los Angeles tomorrow"})}}]}}]}).encode()
+    def executor(name, args):
+        seen.append((name, args)); return "LA tomorrow: sunny, high 75F (weather.com)."
+    req = CloudRequest(system="s", user="weather in LA tomorrow", tools=[_TOOL])
+    res = cloud_complete_with_tools(req, api_key="k", provider="openai", model="gpt-4o-mini",
+                                    tool_executor=executor, transport=transport)
+    assert res.ok and "sunny" in res.text, res
+    assert seen == [("search_web", {"query": "weather Los Angeles tomorrow"})]   # the daemon ran the search
+
+
+def test_anthropic_tool_loop_executes_then_synthesizes():
+    def transport(url, headers, body, timeout):
+        if any(m.get("role") == "user" and isinstance(m.get("content"), list) for m in body["messages"]):
+            return 200, _json.dumps({"content": [{"type": "text", "text": "Tomorrow in LA: sunny."}]}).encode()
+        return 200, _json.dumps({"content": [{"type": "tool_use", "id": "t1", "name": "search_web",
+                                              "input": {"query": "weather LA"}}]}).encode()
+    req = CloudRequest(system="s", user="weather LA", tools=[_TOOL])
+    res = cloud_complete_with_tools(req, api_key="k", provider="anthropic", model="claude-3-5-sonnet-latest",
+                                    tool_executor=lambda n, a: "sunny", transport=transport)
+    assert res.ok and "sunny" in res.text, res
+
+
+def test_tool_failure_is_fed_back_not_fatal():
+    def transport(url, headers, body, timeout):
+        if any(m.get("role") == "tool" for m in body["messages"]):
+            tool_msg = [m for m in body["messages"] if m.get("role") == "tool"][0]
+            assert "[ERROR" in tool_msg["content"]                       # the failure reached the model
+            return 200, _json.dumps({"choices": [{"message": {"content": "I couldn't fetch that."}}]}).encode()
+        return 200, _json.dumps({"choices": [{"message": {"content": None, "tool_calls": [
+            {"id": "c1", "function": {"name": "search_web", "arguments": "{}"}}]}}]}).encode()
+    def boom(name, args):
+        raise RuntimeError("network down")
+    req = CloudRequest(system="s", user="x", tools=[_TOOL])
+    res = cloud_complete_with_tools(req, api_key="k", provider="openai", model="m",
+                                    tool_executor=boom, transport=transport)
+    assert res.ok and "couldn't" in res.text                             # graceful, not a crash

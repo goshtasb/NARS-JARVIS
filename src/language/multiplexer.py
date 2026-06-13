@@ -118,11 +118,14 @@ class Multiplexer:
         return res
 
     def cloud_complete(self, req: CloudRequest, *, key: str, provider: str = "openai",
-                       model: str = "") -> CloudResult:
-        """A one-shot cloud call with EXPLICIT credentials that does NOT read/write the shared per-request
-        context — so it is safe to run inside the off-loop CloudJob thread while the main loop keeps
-        serving other requests (no race on `_ctx`). Returns the raw CloudResult (ok or error) so the
-        failure `kind` survives into the recovery card; it does not raise."""
+                       model: str = "", tool_executor=None) -> CloudResult:
+        """A cloud call with EXPLICIT credentials that does NOT read/write the shared per-request context —
+        safe to run inside the off-loop CloudJob thread (no race on `_ctx`). When the request carries tools
+        AND a tool_executor (and isn't a forced-JSON extraction), runs the Phase-2 agentic tool-call loop
+        (search_web etc.); otherwise a one-shot completion. Returns the raw CloudResult; never raises."""
+        if tool_executor is not None and req.tools and req.json_schema is None:
+            return cloud_egress.cloud_complete_with_tools(
+                req, api_key=key, provider=provider, model=model, tool_executor=tool_executor)
         return self._dispatch(req, provider=provider, key=key, model=model)
 
     # ── the three brain methods (identical signatures to LocalLLM, + optional json_schema for cloud) ──
