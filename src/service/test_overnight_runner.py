@@ -130,3 +130,36 @@ def test_error_string_result_is_marked_failed_not_done() -> None:
     row = q.list_all()[0]
     assert row["status"] == "failed"                        # not silently "done"
     assert row["result"].startswith("[ERROR")              # the error is preserved + surfaced
+
+
+class _CrashedJob:
+    """A SummaryJob that gets SIGKILL'd mid-extraction (e.g. the macOS OOM killer): it reports NO
+    [result] and NO [error] — its pipe just hits EOF. The runner must turn that silent death into a
+    loud, reviewable failure, never leave the task frozen in 'running'."""
+    def __init__(self, arg, task_id, action="summarize_file"):
+        self.task_id = task_id
+        self.action = action
+    def fileno(self) -> int:
+        return 7                                     # any fd; the runner compares against its own _job
+    def read(self):
+        return [("eof", None)]                       # killed: straight to EOF, nothing reported
+    def cleanup(self) -> None:
+        pass
+
+
+def test_offload_worker_killed_without_report_is_marked_failed() -> None:
+    # The eof silent-crash gap: a SIGKILL'd worker (no [error]) must become a failed P0, not a frozen
+    # 'running' bar the user wakes up to at 8 AM.
+    q, led = OvernightQueue(), HeldLedger()
+    q.enqueue("summarize_file", "/tmp/huge.pdf")     # heavy -> offloaded to the (doomed) worker
+    events: list = []
+    runner = OvernightRunner(q, led, _Runner(), lambda k, b: events.append((k, b)), make_job=_CrashedJob)
+    runner.start()
+    runner.advance()                                 # spawns the worker -> task marked running
+    assert q.list_all()[0]["status"] == "running"
+    runner.handle_fd(7)                              # the worker's pipe hits EOF with nothing reported
+    row = q.list_all()[0]
+    assert row["status"] == "failed", row            # silent death -> loud failure (floats to P0), not stuck
+    assert "out of memory" in (row["result"] or "")
+    assert any(b.get("status") == "failed" for k, b in events if k == "overnight_progress")
+    assert runner._job is None                        # cleaned up; next tick resumes the queue
