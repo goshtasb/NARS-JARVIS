@@ -16,6 +16,10 @@ import sys
 import safespawn
 
 _TAGS = ("progress", "result", "error")
+# `-m service.summary_worker` resolves the worker (and `actions`/`language`) from the cwd. Pin it to src/
+# (this file is src/service/summary_job.py) so the spawn works regardless of the daemon's launch cwd. The
+# file_path argument is absolute (UI / overnight pass absolute paths), so setting cwd doesn't affect it.
+_SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 class SummaryJob:
@@ -27,7 +31,7 @@ class SummaryJob:
         self.action = action
         self.arg = file_path
         self._proc = safespawn.popen(
-            [sys.executable, "-m", "service.summary_worker", file_path, str(task_id)],
+            [sys.executable, "-m", "service.summary_worker", file_path, str(task_id)], cwd=_SRC,
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         self._buf = b""
 

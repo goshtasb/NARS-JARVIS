@@ -19,6 +19,11 @@ import time
 import safespawn
 
 TIMEOUT_S = 5.0     # the hard ceiling — past this the worker is SIGKILL'd and the query escalates to Cloud
+# The worker is `python -m service.recall_worker`; `-m` resolves it (and `brain`/`memory`) from the cwd.
+# Pin the cwd to src/ (this file is src/service/recall_job.py) so the spawn works no matter where the
+# daemon — or pytest — was launched from. Without it, a run from the repo root can't import the worker and
+# every recall silently abstains (grounded=False). The worker is stdin-only (no file paths) -> cwd is safe.
+_SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 class RecallJob:
@@ -27,7 +32,7 @@ class RecallJob:
         self.topic_hash = ""                              # set by the session; carried to the completion metric
         self.deadline = time.monotonic() + (TIMEOUT_S if timeout is None else timeout)   # read at call time
         self._proc = safespawn.popen(
-            [sys.executable, "-m", "service.recall_worker"],
+            [sys.executable, "-m", "service.recall_worker"], cwd=_SRC,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         try:
             self._proc.stdin.write(json.dumps({"beliefs": beliefs, "question": question}).encode())
