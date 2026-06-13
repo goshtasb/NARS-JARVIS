@@ -127,7 +127,13 @@ class OvernightRunner:
                 self._job_terminal = True
                 self._queue.mark(job.task_id, "done", result=str(payload))
                 if self._on_summary is not None:             # ADR-058: archive the briefed summary
-                    self._on_summary(self._job_arg, str(payload))
+                    try:
+                        self._on_summary(self._job_arg, str(payload))
+                    except Exception as exc:  # noqa: BLE001 — handle_fd is UNGUARDED in the serve loop, so an
+                        # archive write failure here would crash the whole daemon (CodeRabbit PR#1). The summary
+                        # is done either way; a failed archive is reported, never fatal, never lost silently.
+                        import sys
+                        sys.stderr.write(f"[overnight] summary archive failed for {self._job_arg}: {exc}\n")
                 self._emit("overnight_progress",
                            {"id": job.task_id, "action": job.action, "status": "done"})
             elif tag == "error":

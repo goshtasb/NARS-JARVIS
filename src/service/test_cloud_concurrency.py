@@ -477,3 +477,23 @@ def test_tier2_local_decode_runs_offloop_without_blocking_the_loop(tmp_path):
         assert gap_ms is not None and gap_ms < 50, f"select loop stalled during the decode: {gap_ms}ms"
     finally:
         _send(a, 999, "shutdown"); time.sleep(0.3); a.close(); b.close(); server.join(timeout=3.0)
+
+
+def test_fd_handler_exception_is_contained_not_fatal(tmp_path, capsys):
+    """Glass-jaw hardening (CodeRabbit PR#1): the serve loop dispatches every ready fd through _dispatch,
+    which catches/logs/contains any handler fault. A raising pipe reader must NOT crash the daemon — it
+    must be logged (telemetry preserved) and the loop must survive."""
+    sock_path = os.path.join(tempfile.mkdtemp(prefix="jx", dir="/tmp"), "j.sock")
+    daemon = Daemon(db_path=str(tmp_path / "j.db"), sock_path=sock_path, poll_interval=0.2)
+    try:
+        def boom(_fd):
+            raise RuntimeError("simulated pipe-reader crash")
+        daemon._session.handle_fd = boom                 # a session-owned fd handler now blows up
+        daemon._dispatch(4242)                            # an int fd -> handle_fd -> raises; must be contained
+        err = capsys.readouterr().err
+        assert "fd handler crashed" in err, err           # logged, not swallowed
+        assert "simulated pipe-reader crash" in err       # the real traceback is preserved for debugging
+        # and the daemon object is still usable — the exception did not propagate out of _dispatch
+        daemon._dispatch(4242)                            # a second fault is likewise contained
+    finally:
+        daemon._session.close()
