@@ -21,7 +21,7 @@ from service.server import Daemon
 from service.wiring import DemoClaims
 
 
-def _start_daemon(sock_path, db_path):
+def _start_daemon(sock_path, db_path, local_llm=None):
     """Construct AND serve the daemon in ONE background thread so every SQLite store is created, used,
     and closed on that same thread (in production, construct+serve are both the main thread)."""
     holder = {}
@@ -30,6 +30,9 @@ def _start_daemon(sock_path, db_path):
         # No GGUF in CI -> swap in a Multiplexer so the cloud path is exercised (the real product has one
         # when a local model is present). Default dispatch routes to the monkeypatched (slow/failing) seam.
         daemon._session._llm = Multiplexer(DemoClaims())
+        if local_llm is not None:    # ADR-057: drop a fake LOCAL model into the serializer + point Tier-2 at it
+            daemon._session._localbrain._llm = local_llm
+            daemon._session._jarvis._assistant = daemon._session._localbrain
         holder["daemon"] = daemon
         daemon.serve()
     thread = threading.Thread(target=run, daemon=True)
@@ -355,3 +358,122 @@ def test_cloud_answer_feeds_the_local_vault(tmp_path, monkeypatch):
         assert lex["resolved"] == "solana", lex                          # the alias SOL -> solana resolved
     finally:
         _send(a, 999, "shutdown"); time.sleep(0.3); a.close(); server.join(timeout=3.0)
+
+
+# ── On-device (private) file evaluation: the local summarizer routed to chat, OFF the loop ──
+class _FakeSummaryJob:
+    """Stand-in for the real CPU summary worker (which would load a GGUF in a subprocess). Uses a real
+    pipe fd so the daemon's select() actually wakes on it, then hands back a canned [result]+[eof]. Proves
+    the file_summarize -> off-loop fd -> file_result-event plumbing without a model."""
+    def __init__(self, file_path, task_id, action="summarize_file"):
+        self.file_path = file_path
+        self._r, self._w = os.pipe()
+        self._done = False
+        # Wake the loop slightly AFTER the ack is delivered. The real worker takes seconds (model load +
+        # summarize), so the event never races the ack in production; an instant fake would, and `_req`
+        # draining the ack would swallow the same-chunk event. The delay makes the ordering deterministic.
+        threading.Timer(0.2, self._wake).start()
+
+    def _wake(self):
+        try:
+            os.write(self._w, b"x")                          # make the read-end selectable
+        except OSError:
+            pass
+
+    def fileno(self):
+        return self._r
+
+    def read(self):
+        if self._done:
+            return [("eof", None)]
+        self._done = True
+        name = os.path.basename(self.file_path)
+        return [("result", f"Summary of {name}: the document is about testing."), ("eof", None)]
+
+    def cleanup(self):
+        for fd in (self._r, self._w):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def test_file_summarize_runs_on_device_and_returns_a_chat_result(tmp_path, monkeypatch):
+    """Private-mode file eval: an attached document is summarized by the LOCAL worker (never the cloud)
+    and the summary comes back as a `file_result` event. The daemon thread imports SummaryJob at call
+    time, so patching the module attribute swaps in the fake across the thread boundary."""
+    import service.summary_job
+    monkeypatch.setattr(service.summary_job, "SummaryJob", _FakeSummaryJob)
+    doc = tmp_path / "report.txt"
+    doc.write_text("hello world, this is a test document.")
+
+    sock_path = os.path.join(tempfile.mkdtemp(prefix="jx", dir="/tmp"), "j.sock")
+    server = _start_daemon(sock_path, str(tmp_path / "j.db"))
+    a = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); a.connect(sock_path)
+    abuf = protocol.LineBuffer()
+    try:
+        # a missing file is an honest, immediate failure — never a silent "nothing returned"
+        miss = _req(a, abuf, 1, "file_summarize", {"path": str(tmp_path / "nope.txt")}, timeout=2.0)
+        assert miss is not None and miss["ok"] is False, miss
+
+        # a real file: fast ack (off-loop), then the summary arrives as an event
+        ack = _req(a, abuf, 2, "file_summarize", {"path": str(doc)}, timeout=2.0)
+        assert ack is not None and ack["ok"] and ack["body"]["status"] == "reading", ack
+        assert ack["body"]["name"] == "report.txt", ack
+
+        evt = _wait_event(a, abuf, "file_result", timeout=5.0)
+        assert evt is not None and evt["ok"] is True, evt
+        assert evt["name"] == "report.txt", evt
+        assert "Summary of report.txt" in evt["text"], evt
+    finally:
+        _send(a, 999, "shutdown"); time.sleep(0.3); a.close(); server.join(timeout=3.0)
+
+
+# ── ADR-057: Tier-2 local decode runs OFF the select() loop (the 8s-beachball fix) ──
+class _SlowLocalLLM:
+    """Stand-in for the local 7B: a `generate_text` that takes ~real-decode time. Proves the daemon stays
+    responsive while it runs. (DemoClaims has no generate_text, so without this the Tier-2 path would
+    answer synchronously from the grounded fallback and there'd be nothing to measure.)"""
+    def __init__(self, delay):
+        self._delay = delay
+
+    def generate_text(self, system, user, max_tokens=512):
+        time.sleep(self._delay)                      # llama.cpp releases the GIL during decode; sleep does too
+        return "Here is a Python function that sorts the hashes in place."
+
+
+def test_tier2_local_decode_runs_offloop_without_blocking_the_loop(tmp_path):
+    """The reported P0: a general/coding question falls to the local 7B, whose 512-token decode used to
+    lock the main thread for ~8s (beachball). ADR-057 moves the decode to the LocalBrain worker thread;
+    the handler returns a fast `thinking_local` ack, the loop answers concurrent traffic the whole time,
+    and the answer arrives as a `local_answer` event carrying the worst loop gap it measured."""
+    sock_path = os.path.join(tempfile.mkdtemp(prefix="jx", dir="/tmp"), "j.sock")
+    server = _start_daemon(sock_path, str(tmp_path / "j.db"), local_llm=_SlowLocalLLM(1.5))
+    a = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); a.connect(sock_path)
+    b = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); b.connect(sock_path)
+    abuf = protocol.LineBuffer()
+    try:
+        # the handler returns a FAST ack — prompt assembly only, never waiting on the 1.5s decode
+        t0 = time.monotonic()
+        ack = _req(a, abuf, 1, "ask", "write me a python script to sort these hashes", timeout=2.0)
+        ack_ms = (time.monotonic() - t0) * 1000
+        assert ack is not None and ack["ok"] and ack["body"]["status"] == "thinking_local", ack
+        assert ack_ms < 250, f"handler blocked on the decode: ack took {ack_ms:.0f}ms"
+        # flood the loop with continuous traffic while the 7B decodes off-loop (stand-in for the sensor
+        # load). The gap meter is only meaningful UNDER load: idle, the loop legitimately sleeps in
+        # select() up to poll=200ms; under traffic it must stay near the cadence, proving no CPU block.
+        stop = threading.Event()
+        def flood():
+            rid, lb = 1000, protocol.LineBuffer()
+            while not stop.is_set():
+                rid += 1; _send(b, rid, "status"); _drain(b, lb, time.monotonic() + 0.02)
+        t = threading.Thread(target=flood, daemon=True); t.start()
+        evt = _wait_event(a, abuf, "local_answer", timeout=6.0)
+        stop.set(); t.join(timeout=1.0)
+        assert evt is not None and "sorts the hashes" in evt["text"], evt   # decode completed off-loop
+        gap_ms = evt["loop_max_gap_ms"]
+        print(f"\n[tier2] handler ack={ack_ms:.1f}ms (off-loop); local 7B decoded under flood; "
+              f"daemon loop_max_gap_ms = {gap_ms} ms (poll=200ms)")
+        assert gap_ms is not None and gap_ms < 50, f"select loop stalled during the decode: {gap_ms}ms"
+    finally:
+        _send(a, 999, "shutdown"); time.sleep(0.3); a.close(); b.close(); server.join(timeout=3.0)

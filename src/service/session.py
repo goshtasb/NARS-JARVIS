@@ -8,6 +8,7 @@ clients of this same surface, so reasoning logic can never be polluted by — or
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 import uuid
@@ -60,7 +61,12 @@ class Session:
         self._brain = Brain(cycles_per_step=50)
         self._act_buf: list[str] = []
         self._executor = build_air_gapped_executor(sink=lambda t: self._act_buf.append(str(t)))
-        llm = make_claim_source()
+        from .local_brain import LocalBrain
+        # ADR-057: wrap the one local model context in the single-owner serializer. EVERY caller below is
+        # injected the SAME LocalBrain, so all inference is mutually exclusive (the llama context is
+        # non-reentrant) and the long Tier-2 decode can run OFF the select() loop.
+        self._localbrain = LocalBrain(make_claim_source())
+        llm = self._localbrain
         self._llm = llm                  # ADR-054: handle for the GBNF-constrained intent router
         embedder = make_embedder()
         gate = IngestionGate(embedder) if embedder is not None else None
@@ -138,6 +144,8 @@ class Session:
         self._recall_metrics = RecallMetrics(db_path)
         self._loop_gap_max = 0.0                 # Gate 1: worst select()-loop gap during a cloud call
         self._recall_jobs: dict[int, object] = {}      # ADR-056/Gate 2: fd -> in-flight off-loop Stage-4 worker
+        self._file_jobs: dict[int, dict] = {}          # on-device file eval: fd -> in-flight local SummaryJob -> chat
+        self._converse_pending: dict[int, dict] = {}   # ADR-057: token -> {state, question, voice} awaiting decode
         self._token = 0
         self._shutdown = False                          # set by the `shutdown` command (kill switch)
         # ADR-048: AUTO-START the Flow Sentinel at boot if the user hasn't turned it off — so app-focus
@@ -171,6 +179,7 @@ class Session:
             "egress_log": self._egress_log,                               # ADR-056: Privacy Receipts (Identity tab)
             "lexicon_stats": self._lexicon_stats,                         # ADR-056/Gate 2: inspect the L2 namespace index
             "recall": self._recall,                                       # ADR-056/Gate 2: hybrid retrieval + STAMP provenance
+            "file_summarize": self._file_summarize,                       # on-device (private) file evaluation -> chat
             "metrics": self._metrics_summary,                             # ADR-056 §8: compounding-value readout (Identity tab)
             "intent_parse": self._intent_parse,                           # ADR-054: NL -> validated Canvas intent
             "catalog_schema": self._catalog_schema,                       # ADR-033: palette for the canvas
@@ -191,10 +200,45 @@ class Session:
             return False, {"text": "usage: ask <english question> or ask <narsese?>"}
         raw = text.lstrip()
         if "-->" in raw or raw.startswith(("<", "(")):
-            answer = self._jarvis.ask(text)
+            answer = self._jarvis.ask(text)            # a fast ONA query — no model, stays synchronous
             return True, {"text": f"answer: {answer}" if answer is not None else "no answer in memory."}
         self._persona_loop.observe(text, "user")   # ADR-036: buffer the utterance for idle batch learning
-        return True, {"text": self._jarvis.converse(text)}
+        return self._begin_converse(text, voice=False)
+
+    # ── ADR-057: Tier-2 converse OFF the select() loop (the 8s-decode beachball fix) ──
+    def _begin_converse(self, text: str, voice: bool) -> tuple[bool, object]:
+        """Assemble the prompt on the main thread (ONA/SQLite), then hand the 512-token decode to the
+        LocalBrain worker. Returns a fast ack; the answer arrives later as a `local_answer` event. With no
+        model wired, `converse_begin` returns None and we answer synchronously from the grounded path."""
+        state = self._jarvis.converse_begin(text)
+        if state is None:
+            return True, {"text": self._jarvis.converse_fallback(text)}
+        self._token += 1
+        token = self._token
+        self._converse_pending[token] = {"state": state, "question": text, "voice": voice}
+        self._loop_gap_max = 0.0                          # start the loop-liveness meter for this decode
+        self._localbrain.submit(token, state["system"], state["user"], 512)
+        return True, {"status": "thinking_local", "token": token}
+
+    def _drain_converse(self) -> None:
+        """select() flagged the LocalBrain's self-pipe: one or more decodes finished. Post-process each on
+        the main thread (ONA/SQLite writes), emit the answer, and — if it came from voice — speak it."""
+        for token, ok, raw in self._localbrain.results():
+            entry = self._converse_pending.pop(token, None)
+            if entry is None:
+                continue
+            if ok:
+                final = self._jarvis.converse_resume(entry["state"], raw)
+            else:
+                sys.stderr.write(f"[localbrain] decode failed: {raw}\n")
+                final = self._jarvis.converse_fallback(entry["question"])
+            gap_ms = round(self._loop_gap_max * 1000, 1)   # ADR-057 liveness reading for this decode
+            sys.stderr.write(f"[tier2] local decode done; worst select()-loop gap while in flight: {gap_ms} ms\n")
+            self._persona_loop.observe(final, "assistant")
+            self._emit("local_answer", {"token": token, "text": final, "loop_max_gap_ms": gap_ms})
+            if entry["voice"]:
+                self._emit("answer", {"text": final})
+                speak(strip_acknowledgment(final))
 
     def _tell(self, arg: object) -> tuple[bool, object]:
         narsese = str(arg).strip()
@@ -729,7 +773,14 @@ class Session:
         if first in ("learn", "tell") and " " in transcript:
             cmd, arg = first, transcript.split(" ", 1)[1]
         else:
-            cmd, arg = "ask", transcript            # default: treat the utterance as a question
+            # default: treat the utterance as a question. ADR-057: a plain question decodes OFF the loop;
+            # the spoken reply is emitted by `_drain_converse` when the decode lands (voice=True).
+            raw = transcript.lstrip()
+            if not ("-->" in raw or raw.startswith(("<", "("))):
+                self._persona_loop.observe(transcript, "user")
+                self._begin_converse(transcript, voice=True)
+                return
+            cmd, arg = "ask", transcript
         ok, body = self.dispatch(cmd, arg)
         spoken = body.get("text") if isinstance(body, dict) else None
         if cmd == "learn" and isinstance(body, dict):
@@ -816,9 +867,10 @@ class Session:
         return bool(self._cloud_jobs)
 
     def offloop_in_flight(self) -> bool:
-        """Any off-loop job running (a cloud call OR a Stage-4 recall worker) — the window during which
-        the daemon measures the loop gap (Gate 1 = cloud, Gate 3 = the recall worker's pipe IPC)."""
-        return bool(self._cloud_jobs) or bool(self._recall_jobs)
+        """Any off-loop job running (a cloud call, a Stage-4 recall worker, OR a Tier-2 local decode) — the
+        window during which the daemon measures the loop gap (Gate 1 = cloud, Gate 3 = recall IPC, ADR-057
+        = the local 7B decode that used to beach-ball the loop)."""
+        return bool(self._cloud_jobs) or bool(self._recall_jobs) or self._localbrain.busy
 
     def note_loop_gap(self, gap: float) -> None:
         """Fed by the daemon every loop iteration while off-loop work runs. The MAX gap is the real
@@ -1007,6 +1059,50 @@ class Session:
     def wants_shutdown(self) -> bool:
         return self._shutdown
 
+    # ── On-device (private) file evaluation: local summarizer -> chat ──
+    def _file_summarize(self, arg):
+        """Evaluate an attached document with the LOCAL model — the private-mode default. Spawns the same
+        off-loop CPU summary worker the overnight runner uses, but routes its result to chat. The file is
+        read by the worker on this machine; it never leaves the Mac. Off the select() loop, so a large PDF
+        can't beach-ball the daemon."""
+        path = arg.get("path", "") if isinstance(arg, dict) else str(arg or "")
+        path = str(path).strip()
+        if not path:
+            return False, {"text": "file_summarize expects a {path}."}
+        if not os.path.isfile(path):
+            return False, {"text": f"No such file: {path}"}
+        from service.summary_job import SummaryJob
+        self._token += 1
+        token = self._token
+        try:
+            job = SummaryJob(path, token, action="summarize_file")
+        except Exception as exc:  # noqa: BLE001 — a spawn failure is reported, never crashes the daemon
+            return False, {"text": f"Couldn't start the local summarizer: {exc}"}
+        self._file_jobs[job.fileno()] = {"job": job, "token": token,
+                                         "name": os.path.basename(path), "text": None, "error": None}
+        return True, {"status": "reading", "token": token, "name": os.path.basename(path)}
+
+    def _read_file_job(self, fd: int) -> None:
+        entry = self._file_jobs.get(fd)
+        if entry is None:
+            return
+        job = entry["job"]
+        for tag, payload in job.read():
+            if tag == "result":
+                entry["text"] = payload if isinstance(payload, str) else str(payload)
+            elif tag == "error":
+                entry["error"] = payload if isinstance(payload, str) else str(payload)
+            elif tag == "eof":
+                del self._file_jobs[fd]
+                job.cleanup()
+                if entry["text"]:
+                    self._emit("file_result", {"token": entry["token"], "ok": True,
+                                               "name": entry["name"], "text": entry["text"]})
+                else:
+                    self._emit("file_result", {"token": entry["token"], "ok": False, "name": entry["name"],
+                                               "text": entry["error"] or "The local model couldn't read or "
+                                               "summarize that file."})
+
     # ── select-loop hooks for the daemon (sensor pipe + voice jobs) ────
     def extra_fds(self) -> list[int]:
         fds: list[int] = []
@@ -1016,6 +1112,8 @@ class Session:
         fds += list(self._voice_jobs)
         fds += list(self._cloud_jobs)           # ADR-056: in-flight off-loop cloud calls
         fds += list(self._recall_jobs)          # ADR-056/Gate 2: in-flight off-loop Stage-4 workers
+        fds += list(self._file_jobs)            # on-device file eval: in-flight local summary -> chat
+        fds.append(self._localbrain.fileno())   # ADR-057: the Tier-2 decode worker's completion pipe
         fds += self._overnight.extra_fds()      # ADR-052: the offloaded summary worker's stdout
         return fds
 
@@ -1026,6 +1124,10 @@ class Session:
             self._read_recall(fd)
         elif fd in self._cloud_jobs:             # ADR-056: drain a completed cloud answer
             self._read_cloud(fd)
+        elif fd in self._file_jobs:              # on-device file eval: drain a completed local summary
+            self._read_file_job(fd)
+        elif fd == self._localbrain.fileno():    # ADR-057: a Tier-2 decode finished off-loop
+            self._drain_converse()
         elif fd in self._overnight.extra_fds():  # ADR-052: drain the detached summary worker
             self._overnight.handle_fd(fd)
         elif fd == self._flow.fileno():
@@ -1038,7 +1140,10 @@ class Session:
         if self._pending_nav is not None and time.time() > self._pending_nav["deadline"]:
             self._emit("answer", {"text": "I couldn't find that control to set."})
             self._pending_nav = None
-        self._drive_agent()   # ADR-024 P2: advance an active agent loop on the settled DOM
+        # ADR-057: the agent step and the persona idle-batch both call the local model. While a Tier-2
+        # decode holds the LocalBrain, skip them — they'd otherwise block the loop on the context lock.
+        if not self._localbrain.busy:
+            self._drive_agent()   # ADR-024 P2: advance an active agent loop on the settled DOM
         try:
             self._habit_loop.propose_due()   # ADR-026: offer an armed habit for the current hour-bucket
         except Exception as exc:  # noqa: BLE001 — a habit-tick hiccup must never kill the loop
@@ -1049,7 +1154,8 @@ class Session:
             self._emit("alert", {"text": f"[overnight error] {exc}"})
         try:
             idle = (time.time() - self._last_request_at) >= IDLE_SECONDS   # ADR-036: persona ingestion,
-            self._persona_loop.tick(idle, overnight_active=self._overnight.active)  # idle-gated, batched
+            self._persona_loop.tick(idle and not self._localbrain.busy,    # idle-gated, batched; ADR-057:
+                                    overnight_active=self._overnight.active)  # never during a Tier-2 decode
         except Exception as exc:  # noqa: BLE001 — a persona hiccup must never kill the loop
             self._emit("alert", {"text": f"[persona error] {exc}"})
         try:
@@ -1063,6 +1169,10 @@ class Session:
         for job in list(self._recall_jobs.values()):   # ADR-056/Gate 2: SIGKILL + reap any in-flight worker
             job.cleanup()
         self._recall_jobs.clear()
+        for entry in list(self._file_jobs.values()):   # on-device file eval: reap any in-flight summarizer
+            entry["job"].cleanup()
+        self._file_jobs.clear()
+        self._localbrain.close()          # ADR-057: close the Tier-2 decode self-pipe
         self._flow.close()
         self._brain.close()
         self._lexicon.close()             # ADR-056/Gate 2: the L2 namespace index

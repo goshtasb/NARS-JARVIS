@@ -361,6 +361,57 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
         }
     }
 
+    private var filePending: [Int: NSView] = [:]            // token -> the transient "reading…" row
+
+    /// Private default: evaluate the attached document with the LOCAL model. The file is read on-device by
+    /// the off-loop summary worker (it never leaves the Mac); the summary arrives as a `file_result` event.
+    private func sendFileLocal(_ path: String) {
+        guard let client = client else { return }
+        let row = fileReadingRow((path as NSString).lastPathComponent)
+        client.call("file_summarize", ["path": path]) { [weak self] ok, body in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if !ok || (body["status"] as? String) != "reading" {
+                    row.removeFromSuperview()
+                    self.addAssistant("📎 " + ((body["text"] as? String) ?? "Couldn't read that file."), error: true)
+                    return
+                }
+                if let token = body["token"] as? Int { self.filePending[token] = row }   // await the event
+            }
+        }
+    }
+
+    private func fileReadingRow(_ name: String) -> NSView {
+        let v = bubble("📄 Reading \(name) on-device…", bg: DS.fill(0.05), fg: DS.label3)
+        addRow(v, align: .leading)
+        return v.superview ?? v
+    }
+
+    /// Called by AppDelegate on a `file_result` event — the local summarizer's outcome. Carries the same
+    /// private footer as a Tier-2 local answer: it stayed on the Mac, and it's a model summary, not a fact.
+    func fileResult(_ body: [String: Any]) {
+        loadViewIfNeeded()
+        if let token = body["token"] as? Int, let row = filePending.removeValue(forKey: token) {
+            row.removeFromSuperview()
+        }
+        let name = (body["name"] as? String) ?? "the file"
+        let text = (body["text"] as? String) ?? ""
+        if (body["ok"] as? Bool) == true, !text.isEmpty {
+            addRow(fileSummaryView(text), align: .leading)
+        } else {
+            addAssistant("📄 " + (text.isEmpty ? "The local model couldn't summarize \(name)." : text), error: true)
+        }
+    }
+
+    private func fileSummaryView(_ text: String) -> NSView {
+        let col = NSStackView(); col.orientation = .vertical; col.alignment = .leading; col.spacing = 4
+        col.translatesAutoresizingMaskIntoConstraints = false
+        col.addArrangedSubview(bubble(text, bg: DS.fill(0.07), fg: DS.label))
+        col.addArrangedSubview(DS.text("📄 Summarized on-device by the local model · the file never left your Mac",
+                                       11, .regular, DS.label3))
+        return col
+    }
+
     // ── submit ──
     @objc private func submit() {
         let line = input.stringValue.trimmingCharacters(in: .whitespaces)
@@ -373,9 +424,7 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
             if cloudMode {
                 sendFileToCloud(file, line)                     // read + send to the cloud brain -> chat answer
             } else {
-                addAssistant("📎 Evaluating a document uses the Cloud brain (the file leaves your Mac). "
-                             + "Switch to ☁️ to evaluate \(name), or type /summarize_file for a local summary.",
-                             error: false)
+                sendFileLocal(file)                             // private default: local model reads it on-device
             }
             return
         }
@@ -572,12 +621,20 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
     }
 
     // ── Tier 2: the private local 7B (converse), reached when the vault can't ground the question ──
+    private var localPending: [Int: NSView] = [:]            // ADR-057: token -> the transient "thinking" row
+
     private func tryLocal(_ query: String) {
         guard let client = client, !query.isEmpty else { return }
         let thinking = localThinkingRow()
         client.call("ask", query) { [weak self] _, body in
             DispatchQueue.main.async {
                 guard let self else { return }
+                // ADR-057: the 7B decodes OFF the daemon's loop — a fast `thinking_local` ack now, the
+                // answer later as a `local_answer` event. (No model wired -> a synchronous `text` instead.)
+                if (body["status"] as? String) == "thinking_local", let token = body["token"] as? Int {
+                    self.localPending[token] = thinking
+                    return
+                }
                 thinking.removeFromSuperview()
                 let text = (body["text"] as? String) ?? ""
                 if text.isEmpty {
@@ -586,6 +643,20 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
                     self.addRow(self.localAnswerView(text), align: .leading)
                 }
             }
+        }
+    }
+
+    /// Called by AppDelegate on a `local_answer` event — the Tier-2 decode finished off-loop.
+    func localAnswer(_ body: [String: Any]) {
+        loadViewIfNeeded()
+        if let token = body["token"] as? Int, let row = localPending.removeValue(forKey: token) {
+            row.removeFromSuperview()
+        }
+        let text = (body["text"] as? String) ?? ""
+        if text.isEmpty {
+            addAssistant("The local model couldn't answer that. Toggle ☁️ for the cloud brain.", error: false)
+        } else {
+            addRow(localAnswerView(text), align: .leading)
         }
     }
 

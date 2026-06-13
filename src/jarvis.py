@@ -458,24 +458,36 @@ class Jarvis:
         return answer
 
     def converse(self, question: str) -> str:
-        """LLM-first answer (ADR-007) with short-term conversational memory (ADR-041): the exchange is
-        recorded AFTER the turn completes, on every return path — so the next question can say "what
-        about that?" and be understood. The wrapper is the single recording point; `_converse_inner`
-        owns the actual flow."""
-        reply = self._converse_inner(question)
-        self._chat.observe(question, reply)
-        return reply
+        """Synchronous LLM-first answer (ADR-007). Kept for voice and offline tests; the daemon's Tier-2
+        path instead drives the same three stages OFF the loop — `converse_begin` (prompt assembly) →
+        async decode → `converse_resume` (post-processing) — so a 512-token decode never blocks select()
+        (ADR-057). Both paths record the turn exactly once, on every return path (ADR-041)."""
+        state = self.converse_begin(question)
+        if state is None:
+            return self.converse_fallback(question)
+        try:
+            reply = self._assistant.generate_text(state["system"], state["user"], max_tokens=512)
+        except Exception:  # noqa: BLE001 — a model hiccup degrades to the grounded path, never crashes
+            return self.converse_fallback(question)
+        return self.converse_resume(state, reply)
 
     def clear_conversation(self) -> None:
         """ADR-041: explicitly end the short-term conversation window (durable memory untouched)."""
         self._chat.clear()
 
-    def _converse_inner(self, question: str) -> str:
-        """The model answers from its own knowledge with the user's persistent memory injected as
-        ground truth. Falls back to the legacy ONA-grounded path when no language model is wired
-        (tests / offline demo)."""
+    def converse_fallback(self, question: str) -> str:
+        """The legacy ONA-grounded answer, used when no language model is wired or a decode fails. Records
+        the turn (ADR-041), like every converse return path."""
+        reply = self._converse_grounded(question)
+        self._chat.observe(question, reply)
+        return reply
+
+    def converse_begin(self, question: str) -> dict | None:
+        """Stage 1 (ADR-057): assemble the prompt from persistent memory + live context + the turn window.
+        Touches ONA/SQLite, so it runs on the main thread. Returns the decode inputs and the context the
+        post-processing needs; `None` signals no model wired → the caller should use `converse_fallback`."""
         if self._assistant is None:
-            return self._converse_grounded(question)
+            return None
         memory = self._recall(question)
         live = self._context_provider() if self._context_provider is not None else ""
         habits = self._habits_provider() if self._habits_provider is not None else ""
@@ -507,10 +519,20 @@ class Jarvis:
         # SQLite (O(1), no ONA on the hot path); '' when nothing is confident enough or the layer is down.
         if self._persona_provider is not None and (persona := self._persona_provider()):
             system = system + "\n\n" + persona
-        try:
-            reply = self._assistant.generate_text(system, user, max_tokens=512)
-        except Exception:  # noqa: BLE001 — a model hiccup degrades to the grounded path, never crashes
-            return self._converse_grounded(question)
+        return {"question": question, "system": system, "user": user,
+                "memory": memory, "live": live, "habits": habits, "chat": chat}
+
+    def converse_resume(self, state: dict, reply: str) -> str:
+        """Stage 3 (ADR-057): turn the model's raw `reply` into the final answer — execute [[DO:]] actions,
+        resolve [[REMEMBER]]/[[FORGET]], ground against held self-facts. Touches ONA/SQLite, so it runs on
+        the main thread once the off-loop decode returns. Records the turn (ADR-041) on every path."""
+        final = self._resume_inner(state, reply)
+        self._chat.observe(state["question"], final)
+        return final
+
+    def _resume_inner(self, state: dict, reply: str) -> str:
+        question, memory, live, habits, chat = (state["question"], state["memory"],
+                                                state["live"], state["habits"], state["chat"])
         # Actions (ADR-019): pull [[DO:]] directives and execute each via the runner's closed catalog
         # (an unknown/unsafe action is a safe no-op string). Done first so the tags are stripped before
         # the memory parsers run; results are appended to the reply below.
