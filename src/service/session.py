@@ -62,6 +62,18 @@ _ACTIVITY_KINDS = ("work", "query", "diag", "argv", "nav")
 _CTX_RESERVE = 2048
 _SUMMARY_INTENT = re.compile(r"\b(summar(?:y|ise|ize|ies)|brief|tl;?dr|sum (?:it|this) up|recap|digest|gist)\b", re.I)
 _OVERFLOW_RE = re.compile(r"Requested tokens \((\d+)\) exceed context window")
+# Phase 2: the ONE general tool the cloud brain may call for live data. No weather/news special-casing —
+# it decides when a question needs the world. Executed by Session._web_search (the hardened DuckDuckGo
+# fetch the local research already uses), in the off-loop CloudJob thread.
+_SEARCH_WEB = {
+    "name": "search_web",
+    "description": ("Search the web for CURRENT or live information — weather, news, prices, scores, "
+                    "recent events, or anything past your training cutoff — and read the top results. "
+                    "Call this whenever answering accurately needs up-to-date or real-world data."),
+    "parameters": {"type": "object",
+                   "properties": {"query": {"type": "string", "description": "the web search query"}},
+                   "required": ["query"]},
+}
 
 
 class Session:
@@ -897,6 +909,27 @@ class Session:
     _CLOUD_SYSTEM = ("You are JARVIS in General Mode — a concise, accurate assistant. Answer the user's "
                      "question directly. Do not claim to have access to their files, memory, or device.")
 
+    @staticmethod
+    def _web_search(name: str, args: dict) -> str:
+        """Phase 2 tool executor (runs in the CloudJob thread, off the select loop): execute one web search
+        via the hardened, SSRF-guarded DuckDuckGo fetch the local research already uses (its own subprocess
+        — network + headless work stays out of the daemon). Returns the result snippets, or an [ERROR: …]
+        the model can react to. Never raises."""
+        if name != "search_web":
+            return f"[ERROR: unknown tool '{name}']"
+        query = str(args.get("query", "")).strip() if isinstance(args, dict) else ""
+        if not query:
+            return "[ERROR: empty search query]"
+        import safespawn
+        web_py = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "actions", "web.py")
+        try:
+            r = safespawn.run([sys.executable, web_py, "search", query],
+                              capture_output=True, text=True, timeout=20)
+            out = (getattr(r, "stdout", "") or "").strip()
+            return out or "[ERROR: web search returned nothing]"
+        except Exception as exc:  # noqa: BLE001 — timeout / spawn failure -> a result, never a crash
+            return f"[ERROR: web search failed: {exc}]"
+
     def _cloud_system(self) -> str:
         """The cloud system prompt + the user's CURRENT local date/time/timezone (Phase 1 table-stakes fix).
         The daemon already knows the clock — so the cloud brain should never refuse a time/date/'tomorrow'
@@ -959,13 +992,18 @@ class Session:
         if not hasattr(self._llm, "cloud_complete"):
             return False, {"text": "Cloud brain not wired in this build — staying On-device."}
 
-        from cloud_egress import CloudRequest
+        from cloud_egress import CloudRequest, ExternalTool
         from service.cloud_job import CloudJob
-        req = CloudRequest(system=self._cloud_system(), user=text)   # Phase 1: cloud brain knows the time now
-        # The closure runs in the CloudJob's background thread. It captures `key` locally (never stored on
-        # the session) and uses the thread-safe one-shot path (no shared-context race).
+        # Phase 2: give the cloud brain a GENERAL web-search tool (no weather/news special-casing). It
+        # decides when a question needs the live world; we just hand it the door. Phase 1's clock rides in
+        # the system prompt. A file attachment is mutually exclusive with the tool (the doc is the context).
+        tools = [] if file_path else [ExternalTool(**_SEARCH_WEB)]
+        req = CloudRequest(system=self._cloud_system(), user=text, tools=tools)
+        # The closure runs in the CloudJob's background thread, which also runs the tool-call loop — so the
+        # web fetch is off the select() loop too. `key` is captured locally (never stored on the session).
         llm = self._llm
-        job = CloudJob(lambda: llm.cloud_complete(req, key=key, provider=provider, model=model))
+        job = CloudJob(lambda: llm.cloud_complete(req, key=key, provider=provider, model=model,
+                                                  tool_executor=self._web_search))
         self._token += 1
         token = self._token
         # The key/model ride along the in-flight pipeline entry (ask -> extract) only — dropped when the
