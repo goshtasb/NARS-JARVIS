@@ -29,7 +29,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
     private func buildIfNeeded() {
         guard !built else { return }
         built = true
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 960, height: 680),
+        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1040, height: 700),
                          styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                          backing: .buffered, defer: false)
         w.titlebarAppearsTransparent = true
@@ -37,7 +37,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         w.isMovableByWindowBackground = false
         w.isReleasedWhenClosed = false
         w.isRestorable = false          // don't let macOS restore a previously-resized (square) frame
-        w.minSize = NSSize(width: 720, height: 520)
+        w.minSize = NSSize(width: 900, height: 560)
         w.delegate = self
 
         let root = NSView()
@@ -53,6 +53,13 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
             container.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             container.topAnchor.constraint(equalTo: bar.bottomAnchor),
             container.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            // The square-window fix: AppKit sizes the window to its content's fittingSize, and the panes
+            // prefer a narrow fit (ChatView composer 720+44=764; HabitsView column 680+48=728), so the
+            // window kept collapsing to a near-square no matter what forceRectangle set — minSize and
+            // contentMinSize are both soft against this programmatic content-fit. A REQUIRED floor on the
+            // container width (which equals the window content width) outranks that .defaultHigh pull and
+            // keeps the window a wide rectangle.
+            container.widthAnchor.constraint(greaterThanOrEqualToConstant: 1000),
         ])
         // contentView (NOT contentViewController) so the window keeps its 960×680 frame. Pane
         // viewDidAppear/Disappear are driven manually in selectTab().
@@ -132,7 +139,7 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         DispatchQueue.main.async { [weak self] in self?.forceRectangle() }   // re-assert after any late relayout/restoration
     }
     private func forceRectangle() {
-        var f = window.frame; f.size = NSSize(width: 960, height: 680)
+        var f = window.frame; f.size = NSSize(width: 1040, height: 700)
         window.setFrame(f, display: true, animate: false)
     }
     private func hide() {

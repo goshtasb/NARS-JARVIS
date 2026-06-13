@@ -115,5 +115,28 @@ class RecallMetrics:
             "flywheel_close_rate": (closed / opened) if opened else None,
         }
 
+    def trend(self, now: float | None = None) -> dict:
+        """Period-over-period FA-LGR for the 'compounding trajectory' headline: the grounding rate over
+        topics FIRST asked in the current 30 days vs the prior 30. Each window also carries its N so the UI
+        can gate on data-sufficiency (a 2-topic month is noise, not a trend). Content-free, read-time."""
+        now = time.time() if now is None else now
+        rows = self._db.execute(
+            "SELECT timestamp, topic_hash, grounded FROM recall_metrics ORDER BY timestamp").fetchall()
+        by_hash: dict[str, tuple[float, bool]] = {}
+        for ts, h, g in rows:
+            if h not in by_hash:                              # rows are time-ordered -> first seen = first ask
+                by_hash[h] = (ts, bool(g))
+        firsts = list(by_hash.values())
+        day = 86400.0
+
+        def window(lo: float, hi: float) -> tuple[float | None, int]:
+            sel = [g for ts, g in firsts if lo <= ts < hi]
+            return ((sum(sel) / len(sel)) if sel else None, len(sel))
+
+        cur_rate, cur_n = window(now - 30 * day, now + 1)
+        prior_rate, prior_n = window(now - 60 * day, now - 30 * day)
+        return {"current_fa_lgr": cur_rate, "current_n": cur_n,
+                "prior_fa_lgr": prior_rate, "prior_n": prior_n}
+
     def close(self) -> None:
         self._db.close()

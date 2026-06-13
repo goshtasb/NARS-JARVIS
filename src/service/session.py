@@ -507,17 +507,21 @@ class Session:
         return True, {"done": done, "held": self._held_ledger.pending()}
 
     def _briefing_resolve(self, arg: object) -> tuple[bool, object]:
-        """Approve/deny a held action. On approve, run it NOW — the briefing click IS the consent gate."""
+        """Approve/deny a held action from the Canvas. `id` is the overnight_queue row id (what the
+        Activity tab shows — its rows come from the queue, not the held-ledger). On approve, run it
+        NOW — the click IS the consent gate — then stamp the queue row terminal so the card leaves
+        the held state; on deny, record 'Declined' (also terminal, so it can be Cleared)."""
         if not isinstance(arg, dict):
             return False, {"text": "usage: briefing_resolve {id, accepted}"}
-        hid, accepted = int(arg.get("id", 0)), bool(arg.get("accepted"))
-        row = self._held_ledger.get(hid)
-        if row is None or row["disposition"] != "held":
+        tid, accepted = int(arg.get("id", 0)), bool(arg.get("accepted"))
+        row = self._held_ledger.resolve_by_task(tid, accepted)
+        if row is None:
             return True, {"text": "no held action with that id (already resolved?)."}
-        self._held_ledger.resolve(hid, accepted)
         if not accepted:
+            self._overnight_queue.mark(tid, "done", result="Declined — not run.")
             return True, {"text": f"declined: {row['action']}"}
         result = self._actions.perform(row["action"], row["arg"])   # human just approved -> execute
+        self._overnight_queue.mark(tid, "done", result=str(result))
         return True, {"text": result}
 
     # ── ADR-033: Batch Canvas (palette schema, batch commit, clear-completed) ──
@@ -961,8 +965,9 @@ class Session:
 
     def _metrics_summary(self, arg: object) -> tuple[bool, object]:
         """ADR-056 §8: the compounding-value readout for the Cognitive Identity tab — FA-LGR, stamp-age
-        depth, flywheel close rate. Computed locally from content-free rows; nothing leaves the machine."""
-        return True, self._recall_metrics.summary()
+        depth, flywheel close rate, plus the period-over-period trend for the headline. Computed locally
+        from content-free rows; nothing leaves the machine."""
+        return True, {**self._recall_metrics.summary(), **self._recall_metrics.trend()}
 
     def _lexicon_stats(self, arg: object) -> tuple[bool, object]:
         """ADR-056/Gate 2: inspect the L2 lexicon — term count, and (if a mention is given) what it

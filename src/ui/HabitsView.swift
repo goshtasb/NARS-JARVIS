@@ -62,14 +62,19 @@ final class HabitsViewController: NSViewController {
                       habitRow(["description": "You switch to Spotify after lunch", "state": "learning", "key": "h2"])]
         let persona = [personaRow(["phrase": "Prefers terse answers with code first", "state": "Active", "term": "p1"])]
         let receipts = [receiptRow(["provider": "openai", "asked": "best fixtures today", "bytes": 412, "t": Date().timeIntervalSince1970])]
-        rebuild(mirror: mirror, habits: habits, persona: persona, receipts: receipts)
+        let metrics: [String: Any] = ["queries": 140, "topics": 51, "fa_lgr": 0.73,
+                                      "stamp_age_median_days": 23.0, "flywheel_close_rate": 0.72,
+                                      "current_fa_lgr": 0.73, "current_n": 18, "prior_fa_lgr": 0.41, "prior_n": 12]
+        rebuild(mirror: mirror, habits: habits, persona: persona, receipts: receipts, metrics: metrics)
     }
 
     @objc func refresh() {
         guard !refreshing else { return }
         refreshing = true
         var mirror = "", habits: [NSView] = [], persona: [NSView] = [], receipts: [NSView] = []
+        var metrics: [String: Any] = [:]
         let group = DispatchGroup()
+        group.enter(); client?.call("metrics") { _, b in metrics = b; group.leave() }   // ADR-056 §8: compounding readout
         group.enter(); client?.call("usage", "7") { _, b in mirror = (b["text"] as? String) ?? ""; group.leave() }
         group.enter(); client?.call("habits") { [weak self] _, b in
             let rows = (b["rows"] as? [[String: Any]]) ?? []
@@ -82,12 +87,13 @@ final class HabitsViewController: NSViewController {
             receipts = rows.compactMap { self?.receiptRow($0) }; group.leave() }
         group.notify(queue: .main) { [weak self] in
             self?.refreshing = false
-            self?.rebuild(mirror: mirror, habits: habits, persona: persona, receipts: receipts)
+            self?.rebuild(mirror: mirror, habits: habits, persona: persona, receipts: receipts, metrics: metrics)
         }
     }
 
-    private func rebuild(mirror: String, habits: [NSView], persona: [NSView], receipts: [NSView]) {
+    private func rebuild(mirror: String, habits: [NSView], persona: [NSView], receipts: [NSView], metrics: [String: Any]) {
         column.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        column.addArrangedSubview(metricsCard(metrics))   // ADR-056 §8: the compounding headline, most prominent
         column.addArrangedSubview(mirrorCard(mirror))
         column.addArrangedSubview(DS.sectionHeader("Learned habits — when & where you act"))
         if habits.isEmpty { column.addArrangedSubview(DS.text("No habits yet — JARVIS learns as you repeat actions.", 12, .regular, DS.label3)) }
@@ -130,6 +136,74 @@ final class HabitsViewController: NSViewController {
             st.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
             st.topAnchor.constraint(equalTo: card.topAnchor, constant: 9),
             st.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -9),
+        ])
+        return card
+    }
+
+    // ── the Compounding-value card (ADR-056 §8): FA-LGR headline + period delta + supporting one-liners ──
+    // Stark and quantitative, no gamification. The headline is gated by a cold-start data-sufficiency check
+    // so a sparse vault shows the honest truth, never a fabricated or misleading percentage.
+    private func metricsCard(_ m: [String: Any]) -> NSView {
+        let card = DS.rounded(bg: DS.card, radius: 14, border: DS.separator)
+        let col = NSStackView(); col.orientation = .vertical; col.alignment = .leading; col.spacing = 7
+        col.translatesAutoresizingMaskIntoConstraints = false
+
+        let topics = (m["topics"] as? Int) ?? 0
+        let faLgr = m["fa_lgr"] as? Double                         // nil when no grounded first-asks yet
+        let minTopics = 8                                          // below this, a % is noise — say "still learning"
+
+        let tile = DS.iconTile("brain.head.profile", tint: DS.accent, side: 30, pt: 14)
+        let headLbl = DS.text("How much your vault answers on its own", 14, .semibold, DS.label)
+        let head = NSStackView(views: [tile, headLbl]); head.orientation = .horizontal; head.spacing = 9; head.alignment = .centerY
+        col.addArrangedSubview(head)
+
+        if faLgr == nil || topics < minTopics {
+            // Cold-start: the honest state. No fake number; a "0%" would read as failure, a sparkline as a lie.
+            col.addArrangedSubview(DS.text("Still learning", 15, .semibold, DS.label))
+            let n = topics
+            col.addArrangedSubview(DS.text("Your vault has handled \(n) distinct question\(n == 1 ? "" : "s") so far. The grounding rate appears here once it has more history.",
+                                           12.5, .regular, DS.label2, wrap: true))
+            return wrapCard(card, col)
+        }
+
+        // Headline: the stark FA-LGR percentage.
+        let pct = Int((faLgr! * 100).rounded())
+        col.addArrangedSubview(DS.text("\(pct)%", 40, .bold, DS.label))
+        col.addArrangedSubview(DS.text("of new questions, answered locally — no cloud needed", 12.5, .regular, DS.label2, wrap: true))
+
+        // Trajectory: period-over-period delta, gated so each window has enough first-asks to be non-noisy.
+        if let cur = m["current_fa_lgr"] as? Double, let prior = m["prior_fa_lgr"] as? Double,
+           (m["current_n"] as? Int ?? 0) >= 3, (m["prior_n"] as? Int ?? 0) >= 3 {
+            let cP = Int((cur * 100).rounded()), pP = Int((prior * 100).rounded())
+            let up = cP >= pP
+            let line = "\(up ? "▲" : "▼") \(cP)% this month · \(pP)% the prior 30 days"
+            col.addArrangedSubview(DS.text(line, 12, .medium, up ? DS.green : DS.amber))
+        }
+
+        // Supporting proof points — quiet one-liners.
+        let rule = DS.rounded(bg: DS.separator, radius: 0)
+        rule.translatesAutoresizingMaskIntoConstraints = false
+        rule.heightAnchor.constraint(equalToConstant: 0.5).isActive = true
+        rule.widthAnchor.constraint(equalToConstant: 240).isActive = true
+        col.addArrangedSubview(rule)
+        if let age = m["stamp_age_median_days"] as? Double {
+            col.addArrangedSubview(DS.text("Median answer drew on knowledge \(Int(age.rounded())) day\(Int(age.rounded()) == 1 ? "" : "s") old", 11.5, .regular, DS.label3, wrap: true))
+        }
+        if let fw = m["flywheel_close_rate"] as? Double {
+            col.addArrangedSubview(DS.text("\(Int((fw * 100).rounded()))% of topics the cloud taught you now resolve locally", 11.5, .regular, DS.label3, wrap: true))
+        }
+        col.addArrangedSubview(DS.text("Measured locally — no query text is ever stored.", 11, .regular, DS.label3, wrap: true))
+        return wrapCard(card, col)
+    }
+
+    /// Pin a content stack inside a card with standard insets.
+    private func wrapCard(_ card: NSView, _ col: NSView) -> NSView {
+        card.addSubview(col)
+        NSLayoutConstraint.activate([
+            col.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 16),
+            col.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -16),
+            col.topAnchor.constraint(equalTo: card.topAnchor, constant: 14),
+            col.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -14),
         ])
         return card
     }

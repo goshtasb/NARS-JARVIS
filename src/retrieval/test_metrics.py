@@ -93,3 +93,26 @@ def test_flywheel_close_within_window(tmp_path):
 def test_empty_summary(tmp_path):
     s = _m(tmp_path).summary()
     assert s["queries"] == 0 and s["fa_lgr"] is None and s["flywheel_close_rate"] is None
+
+
+def test_trend_period_over_period(tmp_path):
+    """ADR-056 §8: trend() reports FA-LGR over topics FIRST asked in the current vs prior 30 days, each
+    with its N for the cold-start gate. Compounding shows as a rising current rate."""
+    m = RecallMetrics(str(tmp_path / "m.db"))
+    now = 1_000_000.0
+    day = 86400.0
+    for i in range(5):                                   # prior 30d window: 2/5 grounded
+        m.record(m.topic_hash([f"old{i}"]), grounded=(i < 2), now=now - 45 * day)
+    for i in range(4):                                   # current 30d window: 3/4 grounded
+        m.record(m.topic_hash([f"new{i}"]), grounded=(i < 3), now=now - 5 * day)
+    t = m.trend(now)
+    assert t["prior_n"] == 5 and abs(t["prior_fa_lgr"] - 0.4) < 1e-9
+    assert t["current_n"] == 4 and abs(t["current_fa_lgr"] - 0.75) < 1e-9
+    m.close()
+
+
+def test_trend_empty_is_none(tmp_path):
+    m = RecallMetrics(str(tmp_path / "m.db"))
+    t = m.trend(1_000_000.0)
+    assert t == {"current_fa_lgr": None, "current_n": 0, "prior_fa_lgr": None, "prior_n": 0}
+    m.close()
