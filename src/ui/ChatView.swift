@@ -423,29 +423,28 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
     }
 
     // ── Dual-Brain: the toggle, the cloud send, and the answer footer ──
-    /// The [🔒 Private | ☁️ Cloud] segmented toggle. The active segment is filled (accent); tapping the
-    /// other switches. Rebuilt on each switch so the highlight follows the mode.
+    /// ONE toggle button that flips its symbol: 🔒 (Private) <-> ☁️ (Cloud). The mode is named on hover.
+    /// Private = subtle/bordered; Cloud = accent-filled (active, "leaving your Mac"). Rebuilt on switch.
     private func rebuildBrainToggle() {
         brainToggleHost.subviews.forEach { $0.removeFromSuperview() }
-        let priv = DSButton("Private", symbol: "lock.fill",
-                            variant: cloudMode ? .secondary : .primary, size: 11, radius: 13) { [weak self] in self?.selectPrivate() }
-        let cloud = DSButton(cloudProvider.display, symbol: "cloud.fill",
-                             variant: cloudMode ? .primary : .secondary, size: 11, radius: 13) { [weak self] in self?.selectCloud() }
-        priv.toolTip = "Private — runs on your Mac; nothing leaves."
-        cloud.toolTip = "Cloud (\(cloudProvider.display)) — this turn leaves your Mac."
-        let row = NSStackView(views: [priv, cloud]); row.spacing = 4; row.alignment = .centerY
-        row.translatesAutoresizingMaskIntoConstraints = false
-        brainToggleHost.addSubview(row)
+        let b = DSButton(nil, symbol: cloudMode ? "cloud.fill" : "lock.fill",
+                         variant: cloudMode ? .primary : .secondary, square: 32, radius: 8) { [weak self] in self?.toggleBrain() }
+        b.toolTip = cloudMode
+            ? "Cloud · \(cloudProvider.display) — this turn leaves your Mac. Click for Private."
+            : "Private · on-device — nothing leaves your Mac. Click for Cloud."
+        b.translatesAutoresizingMaskIntoConstraints = false
+        brainToggleHost.addSubview(b)
         NSLayoutConstraint.activate([
-            row.leadingAnchor.constraint(equalTo: brainToggleHost.leadingAnchor),
-            row.trailingAnchor.constraint(equalTo: brainToggleHost.trailingAnchor),
-            row.topAnchor.constraint(equalTo: brainToggleHost.topAnchor),
-            row.bottomAnchor.constraint(equalTo: brainToggleHost.bottomAnchor),
+            b.leadingAnchor.constraint(equalTo: brainToggleHost.leadingAnchor),
+            b.trailingAnchor.constraint(equalTo: brainToggleHost.trailingAnchor),
+            b.topAnchor.constraint(equalTo: brainToggleHost.topAnchor),
+            b.bottomAnchor.constraint(equalTo: brainToggleHost.bottomAnchor),
         ])
     }
 
-    private func selectPrivate() {
-        if cloudMode { setCloudMode(false) }                         // returning home is always one tap
+    private func toggleBrain() {
+        if cloudMode { setCloudMode(false) }                         // ☁️ -> 🔒 instantly
+        else { selectCloud() }                                       // 🔒 -> ☁️ via disclosure + key
     }
 
     private func selectCloud() {
