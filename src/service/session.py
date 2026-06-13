@@ -106,6 +106,17 @@ class Session:
         self._overnight = OvernightRunner(
             self._overnight_queue, self._held_ledger, self._actions, self._emit,
             on_summary=lambda path, text: self._summaries.add(os.path.basename(path), path, text))
+        # v1.24.0: Passive Context Ingestion — the FSEvents edge. Opt-in (only when NARS_JARVIS_WATCH_DIR is
+        # set, so tests/normal runs spawn nothing); a Swift helper crushes filesystem noise at the kernel
+        # callback and flushes bounded candidate batches we drain in handle_fd. CAPTURE only — the ingest is
+        # the overnight runner's deferred job.
+        self._ingest_watch = None
+        _watch_dir = os.environ.get("NARS_JARVIS_WATCH_DIR")
+        if _watch_dir:
+            from sentinel.ingest_watch import IngestWatcher
+            self._ingest_watch = IngestWatcher(db_path, _watch_dir)
+            if not self._ingest_watch.start():            # swiftc/source unavailable -> degrade silently
+                self._ingest_watch = None
         # Persona cognitive layer (ADR-036): an ISOLATED, resilient persona ONA learns the user's
         # style/focus from idle-gated batches; the system prompt is injected from SQLite. Separate brain
         # so persona concepts never crowd the conversational memory bag.
@@ -1201,6 +1212,8 @@ class Session:
         fds += list(self._file_jobs)            # on-device file eval: in-flight local summary -> chat
         fds.append(self._localbrain.fileno())   # ADR-057: the Tier-2 decode worker's completion pipe
         fds += self._overnight.extra_fds()      # ADR-052: the offloaded summary worker's stdout
+        if self._ingest_watch is not None and (ifd := self._ingest_watch.fileno()) is not None:
+            fds.append(ifd)                     # v1.24.0: the FSEvents edge's flushed candidate batches
         return fds
 
     def handle_fd(self, fd: int) -> None:
@@ -1214,6 +1227,8 @@ class Session:
             self._read_file_job(fd)
         elif fd == self._localbrain.fileno():    # ADR-057: a Tier-2 decode finished off-loop
             self._drain_converse()
+        elif self._ingest_watch is not None and fd == self._ingest_watch.fileno():
+            self._ingest_watch.read()            # v1.24.0: drain a flushed FSEvents candidate batch
         elif fd in self._overnight.extra_fds():  # ADR-052: drain the detached summary worker
             self._overnight.handle_fd(fd)
         elif fd == self._flow.fileno():
@@ -1259,6 +1274,8 @@ class Session:
             entry["job"].cleanup()
         self._file_jobs.clear()
         self._localbrain.close()          # ADR-057: close the Tier-2 decode self-pipe
+        if self._ingest_watch is not None:
+            self._ingest_watch.stop()     # v1.24.0: reap the FSEvents helper + close the ingest queue
         self._flow.close()
         self._brain.close()
         self._lexicon.close()             # ADR-056/Gate 2: the L2 namespace index
