@@ -21,7 +21,9 @@ safe_autonomous(resolve("empty_trash")) # False (argv + confirm)
 ```
 The daemon drives the runner from `session.tick()`; clients use the `overnight_*` / `briefing`
 socket commands (see `service/README.md`). The `OvernightRunner` itself lives in `service/` (Imperative
-Shell) since it orchestrates the `ActionRunner`.
+Shell) since it orchestrates the `ActionRunner`. ADR-058: it also takes an optional `on_summary(path,
+text)` hook, fired when a `summarize_file` task completes, which `session` wires to the durable
+[`summaries`](../summaries/) archive (the Canvas Summary tab) — the runner stays ignorant of the archive.
 
 ## Key Components
 - **`classify.py`** — pure `safe_autonomous(action)`: the single read-only safety boundary

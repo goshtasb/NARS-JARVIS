@@ -39,8 +39,9 @@ In the popover, type `learn …`, `ask …`, `tell …` (a bare line is treated 
   constraint + `[Active]`/`[Learning]` + a red Forget via `persona_forget`). Each Forget routes through
   the daemon so the SQLite row AND the live ONA belief are severed together. Fetch-on-open; no NARS math
   in the UI.
-- **`UnifiedCanvasView.swift`** (ADR-053) — the **Unified Canvas**: a standalone resizable **window**
-  (right-click → "🗂 Canvas…") with three tabs that replaced the old Batch Canvas + Morning Briefing.
+- **`ActivityView.swift`** (ADR-053; renamed from "Canvas") — the **Activity** tab: a task board / monitor
+  with four segments (Now · Scheduled · Log · Summary), P0→P3 triage-sorted so action-required items float
+  to the top. It replaced the old Batch Canvas + Morning Briefing.
   A shared left palette from `catalog_schema` (each chipped Autonomous/Held) feeds a center composer
   built by **click-to-add** (argument field + native file picker + remove). The tabs are state lenses
   over the same `overnight_status` rows:
@@ -54,6 +55,12 @@ In the popover, type `learn …`, `ask …`, `tell …` (a bare line is treated 
     (populated by `action_alternatives`) that re-queues the same arg under a sibling tool. **Clear
     completed** → `briefing_dismiss_done`. Strict projection — no business logic in Swift; the daemon
     pushes `overnight_progress` events and the view also polls `overnight_status` every 1 s.
+  - **Summary** (ADR-058) — the durable archive of briefed document summaries (`summary_list`). Each
+    row's **Open PDF** fetches the text (`summary_get`) and renders it once to a native PDF in
+    `~/Documents/JARVIS Summaries/` (`SummaryPDF.swift`), then opens it. Only Canvas/briefed summaries
+    are archived; interactive Chat summaries are not.
+- **`SummaryPDF.swift`** (ADR-058) — text → paginated PDF via CoreText, saved under `~/Documents/JARVIS
+  Summaries/<name>-<id>.pdf` (rendered once per summary, cached by id). No third-party dependency.
 - **`AudioRecorder.swift`** — push-to-talk mic capture (`AVAudioRecorder`) → 16 kHz WAV in `$TMPDIR`.
 - **`HotKey.swift`** — Carbon `RegisterEventHotKey` hold-to-talk (no TCC dialog). Available but not
   registered — voice is triggered by the menu-bar 🎙 toggle instead (⌥Space conflicted).

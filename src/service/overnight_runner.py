@@ -28,14 +28,18 @@ _OFFLOAD = {"summarize_file"}
 
 class OvernightRunner:
     def __init__(self, queue, ledger, action_runner, emit: Callable[[str, dict], None],
-                 make_job: Callable[..., object] = SummaryJob) -> None:
+                 make_job: Callable[..., object] = SummaryJob,
+                 on_summary: Callable[[str, str], None] | None = None) -> None:
         self._queue = queue
         self._ledger = ledger
         self._actions = action_runner          # ActionRunner: .perform(name, arg) -> str
         self._emit = emit
         self._make_job = make_job              # injectable for tests; default spawns the real worker
+        self._on_summary = on_summary          # ADR-058: (source_path, text) -> archive a briefed summary
         self._active = False
         self._job = None                       # the in-flight offloaded SummaryJob (None when idle)
+        self._job_arg = ""                     # the source path of the in-flight summary (for the archive)
+        self._job_terminal = False             # did the in-flight job report result/error before EOF?
 
     @property
     def active(self) -> bool:
@@ -95,6 +99,8 @@ class OvernightRunner:
     def _spawn_offload(self, tid: int, name: str, arg: str) -> None:
         try:
             self._job = self._make_job(arg, tid, action=name)
+            self._job_arg = arg                              # ADR-058: remember the source path to archive
+            self._job_terminal = False                       # reset: this job hasn't reported yet
         except Exception as exc:  # noqa: BLE001 — if the worker can't even start, fail the task loudly
             self._queue.mark(tid, "failed", result=f"[ERROR: could not start summary worker: {exc}]")
             self._emit("overnight_progress", {"id": tid, "action": name, "status": "failed"})
@@ -118,16 +124,30 @@ class OvernightRunner:
                            {"id": job.task_id, "action": job.action, "status": "running",
                             "detail": f"{i}/{n}"})
             elif tag == "result":
+                self._job_terminal = True
                 self._queue.mark(job.task_id, "done", result=str(payload))
+                if self._on_summary is not None:             # ADR-058: archive the briefed summary
+                    self._on_summary(self._job_arg, str(payload))
                 self._emit("overnight_progress",
                            {"id": job.task_id, "action": job.action, "status": "done"})
             elif tag == "error":
+                self._job_terminal = True
                 self._queue.mark(job.task_id, "failed", result=f"[ERROR: {payload}]")
                 self._emit("overnight_progress",
                            {"id": job.task_id, "action": job.action, "status": "failed"})
             elif tag == "eof":
+                # A SIGKILL (e.g. the macOS OOM killer) terminates the worker with NO `[error]` line. Without
+                # this, the task would freeze in "running" forever (a frozen 3 AM progress bar at 8 AM —
+                # worse than a loud failure). Mutate the silent death into a failed P0 so it surfaces in Log.
+                if not self._job_terminal:
+                    self._queue.mark(job.task_id, "failed",
+                                     result="[ERROR: summary worker was killed before it could report — "
+                                            "likely out of memory. Retry, or try a smaller document.]")
+                    self._emit("overnight_progress",
+                               {"id": job.task_id, "action": job.action, "status": "failed"})
                 job.cleanup()
                 self._job = None                            # next tick resumes draining the queue
+                self._job_terminal = False
 
     def _tally(self) -> dict:
         c = self._queue.counts()

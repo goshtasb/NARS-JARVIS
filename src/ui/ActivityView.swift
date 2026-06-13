@@ -1,18 +1,21 @@
-// Canvas — the task board / monitor (design handoff). NOT a composer: composing happens in Chat, so the
-// old click-to-build palette is gone. A segmented header (Now · Scheduled · Activity) over one Task Row
-// component rendered in all six states from the live overnight_status, with the result panel, the
-// failed-row recovery trio (Retry · Change tool · Edit target), and the scheduled sleep disclaimer.
+// Activity — the task board / monitor (renamed from "Canvas"). NOT a composer: composing happens in Chat.
+// A segmented header (Now · Scheduled · Log · Summary) over one Task Row component, rendered from the live
+// overnight_status and P0→P3 triage-sorted so action-required items (held/failed) float to the top of the
+// stack, ahead of active/pending/log — with the result panel, the failed-row recovery trio, and the
+// scheduled sleep disclaimer.
 import AppKit
 
-final class UnifiedCanvasViewController: NSViewController {
+final class ActivityViewController: NSViewController {
     weak var client: JarvisClient?
-    private let seg = NSSegmentedControl(labels: ["Now", "Scheduled", "Activity"],
+    private let seg = NSSegmentedControl(labels: ["Now", "Scheduled", "Log", "Summary"],
                                          trackingMode: .selectOne, target: nil, action: nil)
     private let list = NSStackView()
     private var listScroll: NSScrollView!
     private var clearBtn: DSButton!
     private var pollTimer: Timer?
-    private var sub = 0      // 0 Now · 1 Scheduled · 2 Activity
+    private var sub = 0      // 0 Now · 1 Scheduled · 2 Log · 3 Summary
+    private var activitySig: String?   // Activity rows are terminal; skip the 1 Hz teardown when unchanged
+    private var summarySig: String?    // ADR-058: same skip for the Summary tab's archived rows
 
     override func loadView() {
         let root = LayerView(); root.wantsLayer = true; root.bg = DS.contentBG; root.layer?.backgroundColor = DS.contentBG.cgColor
@@ -61,9 +64,20 @@ final class UnifiedCanvasViewController: NSViewController {
         pollTimer?.invalidate()
         pollTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in self?.refresh() }
     }
-    @objc private func subChanged() { sub = seg.selectedSegment; clearBtn.isHidden = (sub != 2); refresh() }
+    @objc private func subChanged() {
+        sub = seg.selectedSegment; clearBtn.isHidden = (sub != 2)
+        activitySig = nil; summarySig = nil      // a tab switch always rebuilds
+        refresh()
+    }
 
     func refresh() {
+        if sub == 3 {                            // ADR-058: the Summary tab reads its own archive
+            client?.call("summary_list") { [weak self] _, body in
+                let rows = (body["rows"] as? [[String: Any]]) ?? []
+                DispatchQueue.main.async { self?.renderSummaries(rows) }
+            }
+            return
+        }
         client?.call("overnight_status") { [weak self] _, body in
             let rows = (body["rows"] as? [[String: Any]]) ?? []
             DispatchQueue.main.async { self?.render(rows) }
@@ -91,7 +105,7 @@ final class UnifiedCanvasViewController: NSViewController {
     private func render(_ all: [[String: Any]]) {
         let now = Date().timeIntervalSince1970
         func runAt(_ r: [String: Any]) -> Double? { r["run_at"] as? Double }
-        let items: [[String: Any]]
+        var items: [[String: Any]]
         let empty: String
         switch sub {
         case 1:
@@ -99,17 +113,94 @@ final class UnifiedCanvasViewController: NSViewController {
                        .sorted { (runAt($0) ?? 0) < (runAt($1) ?? 0) }
             empty = "Nothing scheduled."
         case 2:
-            items = all.filter { ["done", "failed", "held"].contains($0["status"] as? String ?? "") }
+            items = all.filter { ["done", "failed", "held", "rejected"].contains($0["status"] as? String ?? "") }
             empty = "No finished tasks yet."
         default:
             items = all.filter { runAt($0) == nil && ["pending", "running"].contains($0["status"] as? String ?? "") }
             empty = "Nothing running.  Start a job from Chat and watch it here."
+        }
+        // Triage sort (Sprint 4): P0 action-required (held/failed) floats to the absolute top, then P1
+        // active, P2 pending, P3 log — breaking enqueue order to force attention. Scheduled keeps its
+        // soonest-first order (all one priority band there, sorted by time above). Within a band, newest
+        // first (higher queue id), so the Log reads newest-completed-at-top like terminal history.
+        if sub != 1 {
+            items = items.sorted {
+                let ra = Self.rank($0["status"] as? String ?? ""), rb = Self.rank($1["status"] as? String ?? "")
+                return ra != rb ? ra < rb : (($0["id"] as? Int) ?? 0) > (($1["id"] as? Int) ?? 0)
+            }
+        }
+        // The Activity tab's rows are terminal (done/failed/held) and carry interactive buttons. The
+        // 1 Hz poll otherwise tears the whole list down and rebuilds it under the cursor, killing clicks
+        // mid-press. Rebuild only when the data actually changed; Now/Scheduled still rebuild each tick.
+        if sub == 2 {
+            let sig = items.map { r in
+                "\(r["action"] as? String ?? "")|\(r["arg"] as? String ?? "")|\(r["status"] as? String ?? "")|\(r["result"] as? String ?? "")|\(r["id"] as? Int ?? -1)"
+            }.joined(separator: "¦")
+            if sig == activitySig { return }
+            activitySig = sig
+        } else {
+            activitySig = nil   // force a rebuild when returning to Activity
         }
         list.arrangedSubviews.forEach { $0.removeFromSuperview() }
         let rows: [NSView] = items.isEmpty ? [emptyRow(empty)] : items.map { taskRow($0, now: now) }
         for r in rows {
             list.addArrangedSubview(r)
             r.widthAnchor.constraint(equalTo: list.widthAnchor, constant: -48).isActive = true   // after add
+        }
+    }
+
+    // ── ADR-058: the Summary tab — archived briefed summaries, each openable as a PDF ──
+    private func renderSummaries(_ items: [[String: Any]]) {
+        let sig = items.map { "\($0["id"] as? Int ?? -1)" }.joined(separator: "·")
+        if sig == summarySig { return }                 // unchanged → don't tear down the Open-PDF buttons
+        summarySig = sig
+        list.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        let rows: [NSView] = items.isEmpty
+            ? [emptyRow("No summaries yet.  Brief a document from Chat and it's archived here.")]
+            : items.map { summaryRow($0) }
+        for r in rows {
+            list.addArrangedSubview(r)
+            r.widthAnchor.constraint(equalTo: list.widthAnchor, constant: -48).isActive = true
+        }
+    }
+
+    private func summaryRow(_ r: [String: Any]) -> NSView {
+        let id = r["id"] as? Int ?? -1
+        let name = r["source_name"] as? String ?? "summary"
+        let created = r["created_at"] as? Double
+        let chars = r["chars"] as? Int ?? 0
+
+        let card = DS.rounded(bg: DS.card, radius: 11, border: DS.separator)
+        card.translatesAutoresizingMaskIntoConstraints = false
+        let glyph = DS.symbol("doc.text", 17, .medium, DS.blue)
+        let titleCol = NSStackView(views: [DS.text(name, 13.5, .semibold, DS.label),
+                                           DS.text("\(fmtDate(created))   ·   \(chars) chars", 12, .regular, DS.label2)])
+        titleCol.orientation = .vertical; titleCol.alignment = .leading; titleCol.spacing = 2
+        let open = DSButton("Open PDF", symbol: "arrow.up.forward.app", variant: .secondary, size: 12) {
+            [weak self] in self?.openSummary(id: id, name: name)
+        }
+        let head = NSStackView(views: [glyph, titleCol, NSView(), open])
+        head.orientation = .horizontal; head.spacing = 10; head.alignment = .centerY
+        head.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(head)
+        NSLayoutConstraint.activate([
+            head.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 13),
+            head.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -13),
+            head.topAnchor.constraint(equalTo: card.topAnchor, constant: 11),
+            head.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -11),
+        ])
+        return card
+    }
+
+    private func openSummary(id: Int, name: String) {
+        client?.call("summary_get", ["id": id]) { _, body in
+            let text = (body["text"] as? String) ?? ""
+            let title = (body["source_name"] as? String) ?? name
+            DispatchQueue.main.async {
+                if let url = SummaryPDF.write(name: name, id: id, title: title, text: text) {
+                    NSWorkspace.shared.open(url)
+                }
+            }
         }
     }
 
@@ -125,7 +216,31 @@ final class UnifiedCanvasViewController: NSViewController {
         return wrap
     }
 
-    // ── the Task Row (all six states) ──
+    /// Triage priority (Sprint 4): P0 action-required → P1 active → P2 pending → P3 log. Drives the sort.
+    static func rank(_ status: String) -> Int {
+        switch status {
+        case "held", "failed":       return 0     // P0 — the system is blocked on a human decision
+        case "running", "working":   return 1     // P1 — actively executing compute
+        case "scheduled", "pending": return 2     // P2 — queued for the overnight tick
+        default:                     return 3     // P3 — the log: done / rejected
+        }
+    }
+
+    /// P3 density: a done row shows a single truncated result line + Copy — not the full panel — so the
+    /// Log stays terminal-dense (document summaries have their own Summary tab).
+    private func compactResult(_ text: String) -> NSView {
+        let oneLine = text.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
+        let truncated = oneLine.count > 90 ? String(oneLine.prefix(90)) + "…" : oneLine
+        let preview = DS.text(truncated, 12, .regular, DS.label3, mono: true)
+        let copy = DSButton("Copy", variant: .quiet, size: 11) {
+            NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
+        }
+        let row = NSStackView(views: [preview, NSView(), copy])
+        row.orientation = .horizontal; row.alignment = .centerY; row.spacing = 8
+        return row
+    }
+
+    // ── the Task Row ──
     private func taskRow(_ r: [String: Any], now: Double) -> NSView {
         let action = r["action"] as? String ?? "?"
         let arg = r["arg"] as? String ?? ""
@@ -136,7 +251,9 @@ final class UnifiedCanvasViewController: NSViewController {
         let chunk = parseChunk(result)
         if state == "running" && chunk != nil { state = "working" }
 
-        let card = DS.rounded(bg: DS.card, radius: 11, border: DS.separator)
+        let p0 = (state == "held" || state == "failed")     // P0 action-required: accent border + prominence
+        let card = DS.rounded(bg: DS.card, radius: 11, border: p0 ? DS.stateColor(state) : DS.separator,
+                              borderWidth: p0 ? 1.5 : 0.5)
         card.translatesAutoresizingMaskIntoConstraints = false
         let glyph = DS.symbol(DS.stateGlyph(state), 17, .medium, DS.stateColor(state))
         // title: "action — target" (target monospaced/secondary)
@@ -160,7 +277,7 @@ final class UnifiedCanvasViewController: NSViewController {
         case "running":
             col.addArrangedSubview(progressBar(nil))
         case "done":
-            if !result.isEmpty { col.addArrangedSubview(resultPanel(result)) }
+            if !result.isEmpty { col.addArrangedSubview(compactResult(result)) }   // P3: dense one-liner, not the panel
         case "failed":
             if !result.isEmpty { col.addArrangedSubview(DS.text(result, 12, .regular, DS.red, wrap: true, selectable: true)) }
             col.addArrangedSubview(recoveryBar(action: action, arg: arg))
@@ -302,6 +419,11 @@ final class UnifiedCanvasViewController: NSViewController {
     }
     private func fmtTime(_ epoch: Double) -> String {
         let f = DateFormatter(); f.dateFormat = "h:mm a"; return f.string(from: Date(timeIntervalSince1970: epoch))
+    }
+    private func fmtDate(_ epoch: Double?) -> String {
+        guard let epoch else { return "" }
+        let f = DateFormatter(); f.dateStyle = .medium; f.timeStyle = .short
+        return f.string(from: Date(timeIntervalSince1970: epoch))
     }
 }
 
