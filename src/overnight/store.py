@@ -146,6 +146,21 @@ class HeldLedger:
                          ("approved" if accepted else "denied", hid))
         self._db.commit()
 
+    def resolve_by_task(self, task_id: int, accepted: bool) -> dict | None:
+        """Resolve the still-held action by its overnight_queue `task_id` — the id the Canvas's
+        Activity tab actually holds (its rows come from the queue, not this ledger). Returns the
+        resolved row (action/arg) so the caller can run/record it, or None if nothing was held."""
+        row = self._db.execute(
+            "SELECT id,task_id,action,arg,reason FROM held_ledger WHERE task_id=? AND disposition='held'",
+            (task_id,)).fetchone()
+        if row is None:
+            return None
+        out = dict(zip(("id", "task_id", "action", "arg", "reason"), row))
+        self._db.execute("UPDATE held_ledger SET disposition=? WHERE id=?",
+                         ("approved" if accepted else "denied", out["id"]))
+        self._db.commit()
+        return out
+
     def list_all(self) -> list[dict]:
         rows = self._db.execute(
             "SELECT id,task_id,action,arg,reason,disposition FROM held_ledger ORDER BY id").fetchall()

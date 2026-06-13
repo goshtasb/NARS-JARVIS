@@ -62,11 +62,16 @@ def test_dispatch_briefing_approve_executes_held_action() -> None:
     ok, body = Session._briefing(stub, "")
     assert any(d["action"] == "find_file" for d in body["done"])
     assert len(body["held"]) == 1 and body["held"][0]["action"] == "empty_trash"
-    hid = body["held"][0]["id"]
-    ok, _ = Session._briefing_resolve(stub, {"id": hid, "accepted": True})
+    # The Canvas resolves by the QUEUE id (its Activity rows come from overnight_status, not the
+    # held-ledger). Here ledger id (1) != queue task_id (2) — the exact mismatch that broke Approve.
+    tid = body["held"][0]["task_id"]
+    assert tid != body["held"][0]["id"]                   # ids genuinely differ -> regression guard
+    ok, _ = Session._briefing_resolve(stub, {"id": tid, "accepted": True})
     assert ok and ("empty_trash", "") in ar.calls         # approval IS the consent gate -> it runs now
-    # denying a second time is a safe no-op (already resolved)
-    ok, body = Session._briefing_resolve(stub, {"id": hid, "accepted": False})
+    held_row = [r for r in q.list_all() if r["id"] == tid][0]
+    assert held_row["status"] == "done"                   # queue row left the held state -> leaves Activity
+    # resolving again is a safe no-op (already resolved)
+    ok, body = Session._briefing_resolve(stub, {"id": tid, "accepted": False})
     assert ok and "no held action" in body["text"]
 
 
@@ -125,3 +130,36 @@ def test_error_string_result_is_marked_failed_not_done() -> None:
     row = q.list_all()[0]
     assert row["status"] == "failed"                        # not silently "done"
     assert row["result"].startswith("[ERROR")              # the error is preserved + surfaced
+
+
+class _CrashedJob:
+    """A SummaryJob that gets SIGKILL'd mid-extraction (e.g. the macOS OOM killer): it reports NO
+    [result] and NO [error] — its pipe just hits EOF. The runner must turn that silent death into a
+    loud, reviewable failure, never leave the task frozen in 'running'."""
+    def __init__(self, arg, task_id, action="summarize_file"):
+        self.task_id = task_id
+        self.action = action
+    def fileno(self) -> int:
+        return 7                                     # any fd; the runner compares against its own _job
+    def read(self):
+        return [("eof", None)]                       # killed: straight to EOF, nothing reported
+    def cleanup(self) -> None:
+        pass
+
+
+def test_offload_worker_killed_without_report_is_marked_failed() -> None:
+    # The eof silent-crash gap: a SIGKILL'd worker (no [error]) must become a failed P0, not a frozen
+    # 'running' bar the user wakes up to at 8 AM.
+    q, led = OvernightQueue(), HeldLedger()
+    q.enqueue("summarize_file", "/tmp/huge.pdf")     # heavy -> offloaded to the (doomed) worker
+    events: list = []
+    runner = OvernightRunner(q, led, _Runner(), lambda k, b: events.append((k, b)), make_job=_CrashedJob)
+    runner.start()
+    runner.advance()                                 # spawns the worker -> task marked running
+    assert q.list_all()[0]["status"] == "running"
+    runner.handle_fd(7)                              # the worker's pipe hits EOF with nothing reported
+    row = q.list_all()[0]
+    assert row["status"] == "failed", row            # silent death -> loud failure (floats to P0), not stuck
+    assert "out of memory" in (row["result"] or "")
+    assert any(b.get("status") == "failed" for k, b in events if k == "overnight_progress")
+    assert runner._job is None                        # cleaned up; next tick resumes the queue

@@ -10,7 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var statusItem: NSStatusItem!
     private let chat = ChatViewController()
     private let habits = HabitsViewController()
-    private let unifiedCanvas = UnifiedCanvasViewController()  // ADR-053: Now / Scheduled / Activity
+    private let activity = ActivityViewController()  // the Activity tab: Now / Scheduled / Log / Summary
     // ADR-055/design: the three panes live in ONE workspace window with a unified toolbar.
     private var workspace: WorkspaceController!
     private var client: JarvisClient?
@@ -41,7 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])  // right-click -> quit menu
         workspace = WorkspaceController(panes: [
             .init(vc: chat, symbol: "message", label: "Chat"),
-            .init(vc: unifiedCanvas, symbol: "square.grid.2x2", label: "Canvas"),
+            .init(vc: activity, symbol: "square.grid.2x2", label: "Activity"),
             .init(vc: habits, symbol: "person.crop.circle", label: "Cognitive Identity"),
         ])
         workspace.onStop = { [weak self] in self?.emergencyStop() }
@@ -151,9 +151,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         client = c
         chat.client = c
         habits.client = c                                   // ADR-030: dashboard talks over the same socket
-        unifiedCanvas.client = c                            // ADR-053: canvas shares the same socket
+        activity.client = c                                 // the Activity tab shares the same socket
         // ADR-055/UX bridge: a fired job must NOT force-switch tabs (no hijack); the in-chat live chip
-        // is Phase 2. So chat.onOpenCanvas is intentionally left unwired here.
+        // is Phase 2. So chat.onOpenActivity is intentionally left unwired here.
         setConnected(true)        // connection now shows in the toolbar pill — no chat noise (keeps the empty state)
         _log("UI: \(reconnect ? "reconnected" : "connected") to daemon at \(sockPath)")
     }
@@ -276,8 +276,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             chat.fileResult(body)
         case "local_answer":                                 // ADR-057: off-loop Tier-2 local 7B reply
             chat.localAnswer(body)
-        case "overnight_progress", "overnight_started", "overnight_done":  // ADR-053: drive the Canvas, not chat
-            unifiedCanvas.onOvernightEvent()
+        case "overnight_progress", "overnight_started", "overnight_done":  // drive the Activity tab, not chat
+            activity.onOvernightEvent()
         default:                                             // "alert" (sentinel / system)
             let text = body["text"] as? String ?? ""
             chat.append(text)
