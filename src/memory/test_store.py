@@ -246,3 +246,97 @@ def test_migration_is_idempotent(tmp_path) -> None:
     assert s2.get("<a --> b>") is not None                  # data intact, no crash-loop
     assert s2._db.execute("SELECT count(*) FROM pragma_table_info('facts') WHERE name='source'").fetchone()[0] == 1
     s2.close()
+
+
+# ── v1.24.0 Step 3: the Value ranker + the passive decay sweep ──
+_DAY = 86400.0
+
+
+def _active_flag(store: MemoryStore, term: str):
+    return store._db.execute("SELECT active FROM facts WHERE narsese=?", (term,)).fetchone()[0]
+
+
+def test_ranker_orders_trusted_above_passive_and_excludes_tombstoned() -> None:
+    s = MemoryStore()
+    # Same confidence + recency: only source authority differs, so the trusted belief must outrank passive.
+    s.upsert("<trusted --> a>", 1.0, 0.5, now=100.0)                      # source NULL -> authority 1.0
+    s.upsert("<passive --> b>", 1.0, 0.5, now=100.0, source="passive")    # authority 0.4
+    s.upsert("<gone --> c>", 1.0, 0.9, now=100.0, source="passive")
+    s._db.execute("UPDATE facts SET active=0 WHERE narsese='<gone --> c>'")  # tombstoned
+    s._db.commit()
+    ranked = [f.narsese for f in s.facts_for_reload(now=100.0)]
+    assert ranked[0] == "<trusted --> a>", ranked            # higher authority wins the top slot
+    assert "<passive --> b>" in ranked
+    assert "<gone --> c>" not in ranked, "tombstoned belief must never be reloaded"
+    s.close()
+
+
+def test_ranker_pinned_outranks_everything() -> None:
+    s = MemoryStore()
+    s.upsert("<trusted --> a>", 1.0, 0.9, now=100.0)
+    s.upsert("<pinned --> b>", 1.0, 0.5, now=100.0, source="passive")     # low V, but pinned
+    s.pin("<pinned --> b>")
+    assert s.facts_for_reload(now=100.0)[0].narsese == "<pinned --> b>"
+    s.close()
+
+
+def test_sweep_tombstones_stale_unused_floor_passive() -> None:
+    s = MemoryStore()
+    s.upsert("<stale --> p>", 1.0, 0.5, now=0.0, source="passive")        # floor, unused, will age out
+    n = s.sweep_passive(now=31 * _DAY)                                    # 31 days later
+    assert n == 1
+    assert _active_flag(s, "<stale --> p>") == 0                          # tombstoned (soft)
+    assert s.get("<stale --> p>") is not None                            # but physically PRESENT (reversible)
+    s.close()
+
+
+def test_sweep_spares_recalled_corroborated_recent_pinned_and_trusted() -> None:
+    s = MemoryStore()
+    # (1) recalled/corroborated: a second upsert bumps use_count past 1 -> spared by the use_count gate.
+    s.upsert("<recalled --> p>", 1.0, 0.5, now=0.0, source="passive")
+    s.upsert("<recalled --> p>", 1.0, 0.5, now=0.0, source="passive")    # use_count=2, still aged (last_used=0)
+    # (2) high-confidence passive: V backstop spares it even unused (use_count=1).
+    s.upsert("<strong --> p>", 1.0, 0.95, now=0.0, source="passive")
+    # (3) recent passive: inside the 30-day grace window.
+    s.upsert("<recent --> p>", 1.0, 0.5, now=30 * _DAY, source="passive")
+    # (4) pinned passive at the floor.
+    s.upsert("<pinned --> p>", 1.0, 0.5, now=0.0, source="passive"); s.pin("<pinned --> p>")
+    # (5) trusted (source NULL) at the floor, unused — never a sweep target.
+    s.upsert("<trusted --> t>", 1.0, 0.5, now=0.0)
+
+    n = s.sweep_passive(now=31 * _DAY)
+    assert n == 0, "sweep struck a protected belief"
+    for term in ("<recalled --> p>", "<strong --> p>", "<recent --> p>", "<pinned --> p>", "<trusted --> t>"):
+        assert _active_flag(s, term) == 1, f"{term} was wrongly tombstoned"
+    s.close()
+
+
+def test_sweep_is_idempotent_and_skips_already_tombstoned() -> None:
+    s = MemoryStore()
+    s.upsert("<stale --> p>", 1.0, 0.5, now=0.0, source="passive")
+    assert s.sweep_passive(now=31 * _DAY) == 1
+    assert s.sweep_passive(now=40 * _DAY) == 0, "re-sweep must not re-tombstone (active=1 guard)"
+    s.close()
+
+
+def test_pre_step3_db_gains_active_column_with_existing_rows_live(tmp_path) -> None:
+    """A jarvis.db created AFTER Step 1 (has `source`) but BEFORE Step 3 (no `active`): opening it must add
+    `active` NOT NULL DEFAULT 1, so every existing row is live and immediately reloadable/recallable."""
+    import dbconn
+    path = str(tmp_path / "pre_step3.db")
+    db = dbconn.connect(path)
+    db.execute("""CREATE TABLE facts (
+        id INTEGER PRIMARY KEY, narsese TEXT NOT NULL UNIQUE, english TEXT, source TEXT,
+        frequency REAL NOT NULL, confidence REAL NOT NULL, embedding BLOB,
+        pinned INTEGER NOT NULL DEFAULT 0, priority_tier INTEGER NOT NULL DEFAULT 0,
+        use_count INTEGER NOT NULL DEFAULT 1, created_at REAL NOT NULL,
+        updated_at REAL NOT NULL, last_used REAL NOT NULL)""")
+    db.execute("INSERT INTO facts(narsese,english,frequency,confidence,created_at,updated_at,last_used) "
+               "VALUES ('<eth --> blockchain>','ETH is a blockchain',1.0,0.9,0,0,0)")
+    db.commit(); db.close()
+
+    s = MemoryStore(path)
+    assert _active_flag(s, "<eth --> blockchain>") == 1                   # existing row is live
+    assert {f.narsese for f in s.facts_for_reload()} >= {"<eth --> blockchain>"}   # reloadable
+    assert {f.narsese for f in s.facts_matching(["eth"])} >= {"<eth --> blockchain>"}  # recallable
+    s.close()

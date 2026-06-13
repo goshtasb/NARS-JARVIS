@@ -46,3 +46,35 @@ def test_empty_extraction_commits_nothing(tmp_path) -> None:
         assert not [b for k, b in events if k == "learned"]   # no event, no spurious beliefs
     finally:
         s.close()
+
+
+def test_distilled_claims_are_tagged_passive_and_bypass_l1(tmp_path) -> None:
+    # v1.24.0 Step 3 wiring: claims from the LearnJob (document-distilled, not user-asserted) commit as
+    # source='passive' at the corroboration floor — so they're recall-reachable (ask() reloads L2->L1) but
+    # are subject to the decay sweep, NOT trusted L1 residents.
+    s = Session(db_path=str(tmp_path / "j.db"), on_event=lambda k, b: None)
+    try:
+        fake = _FakeLearnJob(["<solana --> blockchain>."])
+        s._learn_jobs[fake.fileno()] = {"job": fake, "narsese": [], "source": "/notes/crypto.md"}
+        s._read_learn_job(fake.fileno())
+        row = s._store._db.execute(
+            "SELECT source, confidence FROM facts WHERE narsese='<solana --> blockchain>'").fetchone()
+        assert row == ("passive", 0.5), row                   # tagged passive, stored at the floor
+        assert s._jarvis.ask("<solana --> blockchain>?") is not None   # still recallable via L2->L1 reload
+    finally:
+        s.close()
+
+
+def test_sweep_l2_hook_invokes_the_sweep_and_emits_count(tmp_path) -> None:
+    events: list = []
+    s = Session(db_path=str(tmp_path / "j.db"), on_event=lambda k, b: events.append((k, b)))
+    try:
+        # a stale, unused, floor-confidence passive belief (created 40 days before "now")
+        import time
+        s._store.upsert("<stale --> p>", 1.0, 0.5, now=time.time() - 40 * 86400, source="passive")
+        s._sweep_l2()
+        assert s._store._db.execute(
+            "SELECT active FROM facts WHERE narsese='<stale --> p>'").fetchone()[0] == 0  # tombstoned
+        assert [b for k, b in events if k == "l2_swept"] == [{"tombstoned": 1}]
+    finally:
+        s.close()

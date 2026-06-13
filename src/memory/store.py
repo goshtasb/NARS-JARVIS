@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS facts (
   pinned        INTEGER NOT NULL DEFAULT 0,
   priority_tier INTEGER NOT NULL DEFAULT 0,
   use_count     INTEGER NOT NULL DEFAULT 1,
+  active        INTEGER NOT NULL DEFAULT 1,   -- v1.24.0 Step 3: 0 = tombstoned by the passive decay sweep
   created_at    REAL    NOT NULL,
   updated_at    REAL    NOT NULL,
   last_used     REAL    NOT NULL
@@ -83,12 +84,37 @@ _MEMORIES_ADDED_COLUMNS = (
     ("superseded_at", "REAL"),
 )
 
-# v1.24.0 (provenance upgrade): the `facts.source` tier added after first release. Nullable, no default ->
-# an O(1) metadata-only ADD COLUMN (no table rewrite); existing rows read NULL = legacy/trusted, which the
-# belief-decay sweep is structurally forbidden to prune (it targets source='passive' only).
+# v1.24.0 facts columns added after first release. Each is an O(1) metadata-only ADD COLUMN (no table
+# rewrite); re-runs are no-ops. `source` (Step 1): provenance tier, NULL = legacy/trusted. `active` (Step 3):
+# soft-delete flag for the passive decay sweep — NOT NULL DEFAULT 1, so every existing row upgrades to
+# active (a constant default is still O(1) and never rewrites rows).
 _FACTS_ADDED_COLUMNS = (
     ("source", "TEXT"),
+    ("active", "INTEGER NOT NULL DEFAULT 1"),
 )
+
+# ── v1.24.0 Step 3: Value-rank + decay (the L2 tuning surface — change constants HERE, nowhere else) ──
+# V(b) = s(b)·(α·c(b) + β·u(b)); pinned beliefs always rank above the unpinned (handled separately).
+#   s(b) source authority: a passive observation is low-authority; every other tier (told / NULL legacy /
+#         cloud) is trusted (1.0). c(b) = the NAL confidence. u(b) = recency in (0,1], 1/(1+age_days/τ).
+# Ratified (Phase 1 floor + Step 3 "Moderate" predicate, Synapse 2026-06-13).
+_AUTH_PASSIVE = 0.4          # authority of source='passive'; all trusted tiers = 1.0
+_RANK_ALPHA = 0.5            # confidence weight
+_RANK_BETA = 0.5            # recency weight
+_RECENCY_TAU_DAYS = 15.0     # recency scale: u = 1/(1 + age_days/τ)  (u=1 fresh, ->0 as it ages)
+# Decay sweep (Moderate): tombstone a passive belief ONLY when ALL hold — source='passive' AND not pinned
+# AND never recalled (use_count<=1, so any corroboration/use spares it) AND unused > AGE days AND V < θ.
+_SWEEP_AGE_DAYS = 30.0
+_SWEEP_V_THETA = 0.18
+
+
+def _value_sql(now_param: str = "?") -> str:
+    """V(b) as a SQL expression over a `facts` row; `now_param` is the bind placeholder for epoch-seconds
+    'now'. Built from module constants only (never user input), so f-string interpolation is safe."""
+    age_days = f"(({now_param} - last_used) / 86400.0)"
+    recency = f"(1.0 / (1.0 + {age_days} / {_RECENCY_TAU_DAYS}))"
+    authority = f"(CASE WHEN source='passive' THEN {_AUTH_PASSIVE} ELSE 1.0 END)"
+    return f"({authority} * ({_RANK_ALPHA} * confidence + {_RANK_BETA} * {recency}))"
 
 _COLS = (
     "narsese, english, frequency, confidence, embedding, pinned, "
@@ -145,6 +171,9 @@ class MemoryStore:
         for name, decl in _FACTS_ADDED_COLUMNS:
             if name not in have_facts:
                 self._db.execute(f"ALTER TABLE facts ADD COLUMN {name} {decl}")
+        # Index created AFTER the column exists (a pre-Step-3 DB runs the CREATE script before `active` is
+        # added), mirroring idx_memories_active. Speeds the sweep's active=1/source filter on a large L2.
+        self._db.execute("CREATE INDEX IF NOT EXISTS idx_facts_active ON facts(active)")
         # ADR-056/Gate 2: the FTS5 term index + sync triggers (idempotent). One-time backfill if the index
         # is empty but facts already exist (a fresh index over a pre-existing DB); thereafter the triggers
         # keep it current, so no rebuild on subsequent opens.
@@ -344,11 +373,16 @@ class MemoryStore:
     def count(self) -> int:
         return self._db.execute("SELECT COUNT(*) FROM facts").fetchone()[0]
 
-    def facts_for_reload(self, limit: int = 40) -> list[Fact]:
-        """Cache-miss repopulation order: pinned first, then most protected/recent."""
+    def facts_for_reload(self, limit: int = 40, now: float | None = None) -> list[Fact]:
+        """Cache-miss repopulation order (v1.24.0 Step 3): the highest-VALUE beliefs win the top_k slots
+        that get loaded into the ONA L1 bag. Pinned beliefs rank above all (they are protected and never
+        decay); among the rest, ORDER BY V(b) — so a corroborated, recently-used belief outranks a stale,
+        floor-confidence passive observation. Tombstoned rows (active=0) are excluded entirely."""
+        now = time.time() if now is None else now
         rows = self._db.execute(
-            f"SELECT {_COLS} FROM facts ORDER BY pinned DESC, priority_tier DESC, last_used DESC LIMIT ?",
-            (limit,)).fetchall()
+            f"SELECT {_COLS} FROM facts WHERE active=1 "
+            f"ORDER BY pinned DESC, priority_tier DESC, {_value_sql()} DESC, last_used DESC LIMIT ?",
+            (now, limit)).fetchall()
         return [_row_to_fact(r) for r in rows]
 
     def facts_matching(self, atoms: list[str]) -> list[Fact]:
@@ -361,9 +395,35 @@ class MemoryStore:
             return []
         match = " OR ".join(f'"{t}"' for t in terms)
         rows = self._db.execute(
-            f"SELECT {_COLS} FROM facts WHERE id IN (SELECT rowid FROM facts_fts WHERE facts_fts MATCH ?)",
+            f"SELECT {_COLS} FROM facts WHERE active=1 "
+            "AND id IN (SELECT rowid FROM facts_fts WHERE facts_fts MATCH ?)",
             (match,)).fetchall()
         return [_row_to_fact(r) for r in rows]
+
+    def sweep_passive(self, now: float | None = None) -> int:
+        """The v1.24.0 Step 3 decay sweep — reversibly TOMBSTONE (active=0) stale passive noise so the L2
+        store doesn't become a graveyard for transient, never-recalled observations. Targets a row ONLY
+        when EVERY guard holds (the 'Moderate' predicate, ratified 2026-06-13):
+
+          source='passive'    — never touches a told / NULL-trusted / cloud belief
+          active=1            — don't re-tombstone
+          pinned=0            — pinned beliefs are protected
+          use_count <= 1      — never recalled or corroborated (any re-observation bumps use_count -> spared)
+          unused > 30 days    — a full month's grace to query/corroborate the document it came from
+          V(b) < 0.18         — value backstop (a floor-confidence passive belief; corroboration raises V)
+
+        Soft-delete, not DROP: a false positive is fully recoverable. Returns the count tombstoned. This is
+        a single set-based UPDATE — cheap even on a large L2 — but it is the daemon's job to call it OFF the
+        select() loop (the overnight runner's idle-maintenance hook), never on the hot path."""
+        now = time.time() if now is None else now
+        cur = self._db.execute(
+            f"""UPDATE facts SET active=0, updated_at=?
+                WHERE active=1 AND pinned=0 AND source='passive' AND use_count<=1
+                  AND ((? - last_used) / 86400.0) > {_SWEEP_AGE_DAYS}
+                  AND {_value_sql()} < {_SWEEP_V_THETA}""",
+            (now, now, now))
+        self._db.commit()
+        return cur.rowcount
 
     def prune(self, max_rows: int) -> int:
         """Evict least-useful UNPINNED rows when over capacity. Pinned rows are immune."""
