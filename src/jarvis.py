@@ -60,6 +60,14 @@ class InvalidNarseseError(ValueError):
     """A `tell` statement is not a well-formed Narsese belief, or ONA rejected it on parse."""
 
 
+# v1.24.0 (Step 2, Write-Path Isolation): the corroboration FLOOR confidence for a single passive
+# observation. NAL confidence c = w/(w+k) with w=1 (one piece of evidence) and k=1 (ONA's evidential
+# horizon) -> 0.5. Each later corroboration raises it by NAL revision (0.50, 0.67, 0.75, 0.80, 0.83,
+# 0.857…), so a passively-ingested belief earns trust only by repetition — it enters at the lowest
+# authority tier, never at the 0.9 told/learn default. Frequency is left as observed (positive sightings).
+_PASSIVE_CONFIDENCE = 0.5
+
+
 @dataclass(frozen=True)
 class GateItem:
     """One claim's gate outcome, in UX-renderable form (decoupled from console I/O)."""
@@ -421,7 +429,7 @@ class Jarvis:
             return echo.term, *statement_truth(statement)
         return statement_term(statement), *statement_truth(statement)
 
-    def tell(self, statement: str) -> bool:
+    def tell(self, statement: str, *, source: str | None = None) -> bool:
         """Ingest a raw Narsese belief directly (no LLM), durable like `learn` but desync-proof.
 
         Ingress order matters: (1) reject malformed syntax BEFORE any side effect; (2) C2 guard;
@@ -429,6 +437,9 @@ class Jarvis:
         write through to L2 (english=""). So a parse-rejected string never reaches the L2 system of
         record, and L1/L2 cannot desync. Returns True if committed, False if deferred by the guard.
         Raises InvalidNarseseError on malformed syntax or an ONA parse rejection.
+
+        `source='passive'` selects the L2-ONLY write path (v1.24.0): the belief lands in SQLite at the
+        floor corroboration truth and NEVER touches ONA L1 — see `_tell_passive`.
         """
         statement = statement.strip()
         if not is_valid_belief(statement):
@@ -436,6 +447,8 @@ class Jarvis:
                 f"not a well-formed Narsese belief: {statement!r} "
                 "(expected a term + '.'  e.g.  <a --> b>.  or  <cpu --> [pegged]>. {0.0 0.9})"
             )
+        if source == "passive":
+            return self._tell_passive(statement)
         if self._guard is not None and self._guard.check(statement) is not None:
             return False  # contradiction flagged to human; defer commit, keep L1/L2 protected
         output = self._brain.add_belief(statement)  # feed L1 FIRST
@@ -446,6 +459,23 @@ class Jarvis:
         term, frequency, confidence = self._canonical(output, statement)
         self._store.upsert(term, frequency, confidence, english="")  # commit L2 only after L1 OK
         observe(self._store, output)  # persist any truths ONA revised/derived this step
+        self._fire_lexicon(term)
+        return True
+
+    def _tell_passive(self, statement: str) -> bool:
+        """The L2-only ingress for the passive firehose (v1.24.0 Write-Path Isolation).
+
+        Deliberately BYPASSES ONA L1 — no C2 guard, no `add_belief`, no `observe`. Low-authority
+        observations must never enter the 4096-concept bag, or the firehose would thrash L1's working set;
+        they live solely in the SQLite L2 until the rank/promote engine (Step 3) judges them worth recall.
+        The belief is stored at the corroboration FLOOR (`_PASSIVE_CONFIDENCE`) and tagged source='passive'
+        so the decay sweep can rank and prune it. Frequency is honored as observed (positive sighting ->
+        1.0); only the confidence is floored, so a passive belief enters at the lowest authority tier and
+        earns trust only by repeated corroboration. Already syntax-validated by the caller.
+        """
+        term = statement_term(statement)
+        frequency, _ = statement_truth(statement)   # keep the observed polarity; FORCE the confidence floor
+        self._store.upsert(term, frequency, _PASSIVE_CONFIDENCE, english="", source="passive")
         self._fire_lexicon(term)
         return True
 
