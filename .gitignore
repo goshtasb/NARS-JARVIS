@@ -18,8 +18,9 @@ src/jarvis.db
 # local LLM weights (multi-GB, not version-controlled)
 models/
 
-# compiled macOS sensor helper (built on demand)
+# compiled macOS sensor helpers (built on demand)
 src/sentinel/.sensor.bin
+src/sentinel/.fswatch.bin
 
 # compiled menu-bar app bundle (built on demand via ui/build.sh)
 src/ui/build/
