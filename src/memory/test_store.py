@@ -203,3 +203,46 @@ if __name__ == "__main__":
     # (pytest-only: test_migration_* take a tmp_path fixture)
     test_supersedence_chain_one_hop_semantics()
     print("memory/test_store: OK")
+
+
+# ── v1.24.0 Step 1: the provenance (`source`) column migration ──
+def test_fresh_db_has_source_column_defaulting_null() -> None:
+    s = MemoryStore()
+    s.upsert("<tim --> duck>", 1.0, 0.9, english="Tim is a duck")
+    row = s._db.execute("SELECT source FROM facts WHERE narsese='<tim --> duck>'").fetchone()
+    assert row == (None,)                                  # column exists; not yet written (Step 2 does that)
+    s.close()
+
+
+def test_pre_migration_db_upgrades_without_data_loss(tmp_path) -> None:
+    """A jarvis.db created BEFORE the source column: opening it must add the column (O(1)), keep every
+    existing row, leave them source=NULL (legacy/trusted), and not break the FTS index."""
+    import dbconn
+    path = str(tmp_path / "legacy.db")
+    db = dbconn.connect(path)                               # build an OLD facts table — no `source`, no FTS
+    db.execute("""CREATE TABLE facts (
+        id INTEGER PRIMARY KEY, narsese TEXT NOT NULL UNIQUE, english TEXT,
+        frequency REAL NOT NULL, confidence REAL NOT NULL, embedding BLOB,
+        pinned INTEGER NOT NULL DEFAULT 0, priority_tier INTEGER NOT NULL DEFAULT 0,
+        use_count INTEGER NOT NULL DEFAULT 1, created_at REAL NOT NULL,
+        updated_at REAL NOT NULL, last_used REAL NOT NULL)""")
+    db.execute("INSERT INTO facts(narsese,english,frequency,confidence,created_at,updated_at,last_used) "
+               "VALUES ('<solana --> blockchain>','Solana is a blockchain',1.0,0.9,0,0,0)")
+    db.commit(); db.close()
+
+    s = MemoryStore(path)                                  # _migrate adds source + builds/backfills FTS
+    row = s._db.execute("SELECT english, source FROM facts WHERE narsese='<solana --> blockchain>'").fetchone()
+    assert row == ("Solana is a blockchain", None)         # legacy row survives, source = NULL (trusted)
+    s.upsert("<bitcoin --> crypto>", 1.0, 0.9, english="Bitcoin is crypto")   # new write under new schema
+    assert {f.narsese for f in s.facts_matching(["solana"])} >= {"<solana --> blockchain>"}   # FTS over legacy
+    assert {f.narsese for f in s.facts_matching(["bitcoin"])} >= {"<bitcoin --> crypto>"}      # FTS over new
+    s.close()
+
+
+def test_migration_is_idempotent(tmp_path) -> None:
+    path = str(tmp_path / "j.db")
+    s1 = MemoryStore(path); s1.upsert("<a --> b>", 1.0, 0.9); s1.close()
+    s2 = MemoryStore(path)                                  # re-open: _migrate re-runs, source already there -> no-op
+    assert s2.get("<a --> b>") is not None                  # data intact, no crash-loop
+    assert s2._db.execute("SELECT count(*) FROM pragma_table_info('facts') WHERE name='source'").fetchone()[0] == 1
+    s2.close()
