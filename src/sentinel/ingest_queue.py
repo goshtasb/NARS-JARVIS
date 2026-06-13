@@ -7,6 +7,7 @@ micro-ingest budget verdict: 'pending' = eligible now, 'deferred' = heavy payloa
 """
 from __future__ import annotations
 
+import sys
 import time
 
 import dbconn
@@ -37,8 +38,9 @@ class IngestQueue:
                 "status=excluded.status",
                 (path, int(num_bytes), time.time() if now is None else now, status))
             self._db.commit()
-        except Exception:  # noqa: BLE001 — fire-and-forget
-            pass
+        except Exception as exc:  # noqa: BLE001 — log for observability (CodeRabbit PR#4), but stay
+            # non-fatal: a per-row DB hiccup must not abort a whole capture batch or wake-stall the loop.
+            sys.stderr.write(f"[ingest_queue] enqueue failed for {path}: {exc}\n")
 
     def pending(self) -> list[dict]:
         rows = self._db.execute(

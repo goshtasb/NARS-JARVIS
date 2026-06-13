@@ -60,10 +60,19 @@ func scheduleFlush() {   // runs on q; re-arm the debounce on every event burst
     q.asyncAfter(deadline: .now() + DEBOUNCE, execute: item)
 }
 
-let callback: FSEventStreamCallback = { _, _, count, eventPaths, _, _ in
+// The kernel's own "you missed events" signals: it coalesced/dropped, or wants us to rescan a subtree.
+// Treat any of these like a Set overflow -> emit the coarse rescan marker so we never silently lose files.
+let DROP_FLAGS = FSEventStreamEventFlags(kFSEventStreamEventFlagKernelDropped
+                                         | kFSEventStreamEventFlagUserDropped
+                                         | kFSEventStreamEventFlagMustScanSubDirs)
+
+let callback: FSEventStreamCallback = { _, _, count, eventPaths, eventFlags, _ in
     // kFSEventStreamCreateFlagUseCFTypes -> eventPaths is a CFArray of CFString.
     let paths = unsafeBitCast(eventPaths, to: NSArray.self) as? [String] ?? []
-    for p in paths {
+    for i in 0..<count {
+        if (eventFlags[i] & DROP_FLAGS) != 0 { overflow = true; break }   // kernel dropped -> rescan
+        guard i < paths.count else { break }
+        let p = paths[i]
         guard keep(p) else { continue }                  // noise dies here, before any allocation
         if dirty.count >= MAX_SET { overflow = true; break }   // collapse to a coarse rescan marker
         dirty.insert(p)
@@ -83,5 +92,9 @@ guard let stream = FSEventStreamCreate(nil, callback, nil, [watchDir] as CFArray
 // which is why the edge DENY substring filter is the real guarantee).
 FSEventStreamSetExclusionPaths(stream, [watchDir + "/node_modules", watchDir + "/.git"] as CFArray)
 FSEventStreamSetDispatchQueue(stream, q)
-FSEventStreamStart(stream)
+guard FSEventStreamStart(stream) else {                  // fail fast — never run silently with no events
+    FileHandle.standardError.write("fswatch: FSEventStreamStart failed for \(watchDir)\n".data(using: .utf8)!)
+    FSEventStreamInvalidate(stream); FSEventStreamRelease(stream)
+    exit(1)
+}
 dispatchMain()
