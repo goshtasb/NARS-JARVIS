@@ -39,8 +39,9 @@ In the popover, type `learn …`, `ask …`, `tell …` (a bare line is treated 
   constraint + `[Active]`/`[Learning]` + a red Forget via `persona_forget`). Each Forget routes through
   the daemon so the SQLite row AND the live ONA belief are severed together. Fetch-on-open; no NARS math
   in the UI.
-- **`UnifiedCanvasView.swift`** (ADR-053) — the **Unified Canvas**: a standalone resizable **window**
-  (right-click → "🗂 Canvas…") with four tabs that replaced the old Batch Canvas + Morning Briefing.
+- **`ActivityView.swift`** (ADR-053; renamed from "Canvas") — the **Activity** tab: a task board / monitor
+  with four segments (Now · Scheduled · Log · Summary), P0→P3 triage-sorted so action-required items float
+  to the top. It replaced the old Batch Canvas + Morning Briefing.
   A shared left palette from `catalog_schema` (each chipped Autonomous/Held) feeds a center composer
   built by **click-to-add** (argument field + native file picker + remove). The tabs are state lenses
   over the same `overnight_status` rows:

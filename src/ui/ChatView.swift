@@ -9,7 +9,7 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
     var onQuit: (() -> Void)?
     var onStop: (() -> Void)?
     var onToggleVoice: (() -> Void)?
-    var onOpenCanvas: (() -> Void)?
+    var onOpenActivity: (() -> Void)?
     var onConsent: ((Int, Bool) -> Void)?
 
     private let transcript = NSStackView()
@@ -862,7 +862,7 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
         let glyph = DS.symbol(DS.stateGlyph(state), 14, .medium, DS.stateColor(state))
         let t = DS.text(title, 13, .semibold, DS.label)
         let body = DS.text(state == "scheduled" ? "scheduled" : "running…", 12, .regular, DS.stateColor(state))
-        let view = DSButton("View on Canvas ›", variant: .quiet, size: 12) { [weak self] in self?.onOpenCanvas?() }
+        let view = DSButton("View in Activity ›", variant: .quiet, size: 12) { [weak self] in self?.onOpenActivity?() }
         let st = NSStackView(views: [glyph, t, body, NSView(), view])
         st.orientation = .horizontal; st.spacing = 9; st.alignment = .centerY
         st.translatesAutoresizingMaskIntoConstraints = false

@@ -50,9 +50,9 @@ _NAV_TIMEOUT = 8.0   # ADR-023: seconds to wait for an opened surface's controls
 _MAX_HOPS = 2        # ADR-024 P2: max navigations in one agent loop (circuit breaker)
 _MAX_STEPS = 3       # ADR-024 P2: max re-prompt steps in one loop (bounds LLM cost)
 _AGENT_TTL = 12.0    # ADR-024 P2: seconds an agent loop may run before giving up
-# ADR-033: kinds offered in the Batch Canvas palette — overnight-appropriate (excludes ax/agent/habit,
+# ADR-033: kinds offered in the Activity tab's task palette — overnight-appropriate (excludes ax/agent/habit,
 # which need live GUI context or aren't tasks). work/query/diag -> Autonomous; argv/nav -> Held.
-_CANVAS_KINDS = ("work", "query", "diag", "argv", "nav")
+_ACTIVITY_KINDS = ("work", "query", "diag", "argv", "nav")
 
 
 class Session:
@@ -538,7 +538,7 @@ class Session:
         tag. The autonomy call lives here (session imports both actions + overnight), keeping the catalog
         ignorant of overnight semantics and the Swift UI free of business logic."""
         actions = [{**a, "autonomous": safe_autonomous(resolve_action(a["name"]))}
-                   for a in catalog_schema() if a["kind"] in _CANVAS_KINDS]
+                   for a in catalog_schema() if a["kind"] in _ACTIVITY_KINDS]
         return True, {"actions": actions}
 
     def _enqueue_items(self, items: object, run_at: float | None) -> tuple[list[int], list[str]]:
@@ -599,7 +599,7 @@ class Session:
             return True, {"ok": False, "clarify": "The local language model isn't loaded, so I can't parse that."}
         text = str(arg["text"]).strip()
         pinned = str(arg.get("action", "")).strip()
-        acts = [a for a in catalog_schema() if a["kind"] in _CANVAS_KINDS]
+        acts = [a for a in catalog_schema() if a["kind"] in _ACTIVITY_KINDS]
         names = [a["name"] for a in acts]
         valid, arg_req = set(names), {a["name"] for a in acts if a.get("takes_arg")}
         # The / override pins the verb: FORCE the grammar to that action with NO `none` option, so the

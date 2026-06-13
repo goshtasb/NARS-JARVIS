@@ -14,6 +14,7 @@ struct Render {
         dump(makeChatCloud(), 960, 620, "\(outDir)/chat_cloud.png")         // Cloud engaged + answer + footer
         dump(makeChatRecall(), 960, 640, "\(outDir)/chat_recall.png")       // grounded "Why" panel + Ask-Cloud
         dump(makeHabits(), 960, 700, "\(outDir)/identity_receipts.png")     // Privacy Receipts section
+        dump(makeActivityLog(), 1000, 560, "\(outDir)/activity_log.png")    // Sprint 4: P0→P3 triage in the Log
         print("RENDER-OK \(outDir)")
     }
 
@@ -42,6 +43,11 @@ struct Render {
         let vc = HabitsViewController(); _ = vc.view
         vc.previewSeed()
         let v = host(vc, 960, 700); v.layoutSubtreeIfNeeded(); return v
+    }
+    static func makeActivityLog() -> NSView {
+        let vc = ActivityViewController(); _ = vc.view
+        vc.previewSeed(2)   // the Log segment: held + failed (P0, accent) float above done (P3, compact)
+        let v = host(vc, 1000, 560); v.layoutSubtreeIfNeeded(); return v
     }
 
     static func dump(_ view: NSView, _ w: CGFloat, _ h: CGFloat, _ path: String) {

@@ -170,13 +170,13 @@ final class WorkspaceController: NSObject, NSWindowDelegate {
         onTabChanged?(i)
     }
 
-    // ── connection pill + Canvas badge ──
+    // ── connection pill + Activity badge ──
     func setConnected(_ up: Bool) {
         connected = up
         connDot?.bg = up ? DS.green : DS.amber          // LayerView.updateLayer recolors
         connLabel?.stringValue = up ? "Connected" : "Reconnecting…"
     }
-    func setActiveTaskCount(_ n: Int) { tabSwitcher?.setBadge(n, at: 1) }   // the red badge on the Canvas tab
+    func setActiveTaskCount(_ n: Int) { tabSwitcher?.setBadge(n, at: 1) }   // the red badge on the Activity tab
 
     // ── Stop everything (confirmation sheet) ──
     @objc private func stopPressed() {
