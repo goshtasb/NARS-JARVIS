@@ -513,16 +513,8 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
         addRow(note, align: .leading)
     }
 
-    // ── Hybrid retrieval (recall) ──
-    // Explicit per-message states so the local path never sits in an ambiguous wait. (Cloud states live
-    // in the existing cloud flow — thinking row -> cloud_answer -> egress footer — intentionally not
-    // merged here: it already works, and unifying would refactor working code for no user benefit.)
-    private enum RecallState {
-        case reasoning
-        case grounded(answer: String, conf: String, sources: [[String: Any]])
-        case abstained(query: String)
-    }
-
+    // ── On-device 3-tier cascade: Tier 1 vault (recall) -> Tier 2 local 7B (converse) -> Tier 3 Cloud
+    // (manual ☁️ toggle). Tier 1 grounds with provenance; on abstain we fall to the private local model. ──
     private var recallPending: [Int: (NSView, String)] = [:]            // token -> (reasoning row, query)
 
     private func sendToRecall(_ text: String) {
@@ -531,21 +523,20 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
         client.call("recall", text) { [weak self] _, body in
             DispatchQueue.main.async {
                 guard let self else { return }
-                // Stages 0-3 ran on the daemon thread; Stage 4 is OFF-LOOP. A grounded plan returns a fast
-                // ack and the answer arrives later as a `recall_result` event; an immediate abstain (no
-                // local subgraph) comes back right here.
+                // Tier 1 (deterministic vault). A grounded plan returns a fast ack and the answer arrives
+                // later as a `recall_result` event; an immediate abstain (no local subgraph) comes here.
                 if (body["status"] as? String) == "reasoning", let token = body["token"] as? Int {
                     self.recallPending[token] = (reasoning, text)        // await the off-loop result
                 } else {
                     reasoning.removeFromSuperview()
-                    self.renderRecall(.abstained(query: text))          // honest abstention -> the flywheel
+                    self.tryLocal(text)                                 // Tier 1 abstained -> Tier 2 (local 7B)
                 }
             }
         }
     }
 
-    /// Called by AppDelegate on a `recall_result` event — the off-loop Stage-4 outcome (grounded, or an
-    /// abstention from no-answer / a timeout SIGKILL). Replaces this turn's reasoning row.
+    /// Called by AppDelegate on a `recall_result` event — the off-loop Stage-4 outcome. Tier 1 grounded ->
+    /// the "Why" panel; Tier 1 abstained (no-answer / timeout) -> fall through to Tier 2 (the local 7B).
     func recallResult(_ body: [String: Any]) {
         loadViewIfNeeded()
         let token = body["token"] as? Int ?? -1
@@ -554,22 +545,47 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
         if (body["grounded"] as? Bool) == true {
             let conf = ((body["truth"] as? [String: Any])?["confidence"] as? Double)
                 .map { String(format: "%.0f%%", $0 * 100) } ?? ""
-            renderRecall(.grounded(answer: body["answer"] as? String ?? "", conf: conf,
-                                   sources: body["provenance"] as? [[String: Any]] ?? []))
+            addRow(groundedView(answer: body["answer"] as? String ?? "", conf: conf,
+                                provenance: body["provenance"] as? [[String: Any]] ?? []), align: .leading)
         } else {
-            renderRecall(.abstained(query: pending?.1 ?? ""))           // no-answer / timeout -> Ask Cloud
+            tryLocal(pending?.1 ?? "")                                  // Tier 2: the private local model
         }
     }
 
-    private func renderRecall(_ state: RecallState) {
-        switch state {
-        case .reasoning: break                                          // shown by reasoningRow() at call time
-        case let .grounded(answer, conf, sources):
-            addRow(groundedView(answer: answer, conf: conf, provenance: sources), align: .leading)
-        case let .abstained(query):
-            renderAskCloud(query)
+    // ── Tier 2: the private local 7B (converse), reached when the vault can't ground the question ──
+    private func tryLocal(_ query: String) {
+        guard let client = client, !query.isEmpty else { return }
+        let thinking = localThinkingRow()
+        client.call("ask", query) { [weak self] _, body in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                thinking.removeFromSuperview()
+                let text = (body["text"] as? String) ?? ""
+                if text.isEmpty {
+                    self.addAssistant("The local model couldn't answer that. Toggle ☁️ for the cloud brain.", error: false)
+                } else {
+                    self.addRow(self.localAnswerView(text), align: .leading)
+                }
+            }
         }
     }
+
+    private func localThinkingRow() -> NSView {
+        let v = bubble("🧠 Thinking locally…", bg: DS.fill(0.05), fg: DS.label3)
+        addRow(v, align: .leading)
+        return v.superview ?? v
+    }
+
+    /// Tier-2 footer: a private local-model answer is a *guess*, not a vault *fact* — so it's clearly
+    /// labelled and (unlike the Tier-1 "Why" panel) carries no expandable sources.
+    private func localAnswerView(_ text: String) -> NSView {
+        let col = NSStackView(); col.orientation = .vertical; col.alignment = .leading; col.spacing = 4
+        col.translatesAutoresizingMaskIntoConstraints = false
+        col.addArrangedSubview(bubble(text, bg: DS.fill(0.07), fg: DS.label))
+        col.addArrangedSubview(DS.text("🧠 Answered privately (Local Model)", 11, .regular, DS.label3))
+        return col
+    }
+
 
     private func reasoningRow() -> NSView {
         let v = bubble("🔒 Reasoning over your Vault…", bg: DS.fill(0.05), fg: DS.label3)
@@ -637,47 +653,7 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
         return "learned " + f.string(from: Date(timeIntervalSince1970: ts))
     }
 
-    /// Honest abstention: the local vault doesn't know -> offer to escalate THIS question to Cloud. On
-    /// the way back, the cloud extractor harvests the alias, so next time it resolves locally (the flywheel).
-    private func renderAskCloud(_ text: String) {
-        let card = DS.rounded(bg: DS.fill(0.05), radius: 12, border: DS.separator)
-        let msg = DS.text("I don't have enough local context to answer this.", 13, .regular, DS.label2, wrap: true)
-        let btn = DSButton("Use Cloud for this", symbol: "cloud.fill", variant: .pillAccent, size: 12) { [weak self] in
-            self?.escalateToCloud(text)
-        }
-        let st = NSStackView(views: [msg, NSView(), btn]); st.orientation = .horizontal; st.spacing = 10; st.alignment = .centerY
-        st.translatesAutoresizingMaskIntoConstraints = false
-        card.addSubview(st)
-        NSLayoutConstraint.activate([
-            st.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
-            st.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -10),
-            st.topAnchor.constraint(equalTo: card.topAnchor, constant: 9),
-            st.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -9),
-        ])
-        addRow(card, align: .leading)
-    }
-
-    private func escalateToCloud(_ text: String) {
-        let go = { [weak self] in self?.setCloudMode(true); self?.sendToCloud(text) }
-        if (CloudKeychain.load(cloudProvider) ?? "").isEmpty || !CloudPrefs.disclosureShown {
-            // first-time: one-time disclosure (if needed) then key entry, then escalate
-            let afterDisclosure = { [weak self] in
-                guard let self else { return }
-                if (CloudKeychain.load(self.cloudProvider) ?? "").isEmpty {
-                    CloudUI.presentKeyEntry(on: self.view.window, provider: self.cloudProvider) { saved in if saved { go() } }
-                } else { go() }
-            }
-            if CloudPrefs.disclosureShown { afterDisclosure() }
-            else {
-                CloudUI.presentDisclosure(on: view.window, provider: cloudProvider) { accepted in
-                    guard accepted else { return }
-                    CloudPrefs.disclosureShown = true; afterDisclosure()
-                }
-            }
-        } else { go() }
-    }
-
-    /// Headless preview of the recall surfaces (grounded "Why" panel + the Ask-Cloud abstention).
+    /// Headless preview of the recall surfaces (Tier-1 grounded "Why" panel + a Tier-2 local answer).
     func previewRecall() {
         loadViewIfNeeded()
         addUser("Why did Solana cause dropped_tx?")
@@ -687,8 +663,8 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
             ["narsese": "<timeout --> dropped_tx>", "english": "a timeout drops the transaction",
              "confidence": 0.9, "learned_at": Date().timeIntervalSince1970 - 86400 * 2]]
         addRow(groundedView(answer: "<solana --> dropped_tx>", conf: "81% confident", provenance: prov, expanded: true), align: .leading)
-        addUser("Why is my MAC dropping packets?")
-        renderAskCloud("Why is my MAC dropping packets?")
+        addUser("write a python script to sort these hashes")
+        addRow(localAnswerView("Here's a short script:\n\n    hashes.sort()\n\nThat sorts them in place; use sorted(hashes) for a copy."), align: .leading)
     }
 
     private func cloudThinkingRow() -> NSView {
