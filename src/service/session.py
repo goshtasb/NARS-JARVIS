@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
+import tempfile
 import time
 import uuid
 from datetime import datetime
@@ -53,6 +55,13 @@ _AGENT_TTL = 12.0    # ADR-024 P2: seconds an agent loop may run before giving u
 # ADR-033: kinds offered in the Activity tab's task palette — overnight-appropriate (excludes ax/agent/habit,
 # which need live GUI context or aren't tasks). work/query/diag -> Autonomous; argv/nav -> Held.
 _ACTIVITY_KINDS = ("work", "query", "diag", "argv", "nav")
+# Sprint 5 (context envelope): a pasted document too long for the on-device window is chunked through the
+# SummaryJob pipeline instead of overflowing the model. ~4 chars/token (English) is a coarse gate, not an
+# exact count — the precise overflow is still caught from the model's own error. _CTX_RESERVE leaves room
+# for the system prompt + injected memory + the response budget below n_ctx.
+_CTX_RESERVE = 2048
+_SUMMARY_INTENT = re.compile(r"\b(summar(?:y|ise|ize|ies)|brief|tl;?dr|sum (?:it|this) up|recap|digest|gist)\b", re.I)
+_OVERFLOW_RE = re.compile(r"Requested tokens \((\d+)\) exceed context window")
 
 
 class Session:
@@ -218,6 +227,11 @@ class Session:
         """Assemble the prompt on the main thread (ONA/SQLite), then hand the 512-token decode to the
         LocalBrain worker. Returns a fast ack; the answer arrives later as a `local_answer` event. With no
         model wired, `converse_begin` returns None and we answer synchronously from the grounded path."""
+        # Sprint 5: a paste too long for the on-device window + a summarize/brief intent -> chunk it via
+        # the SummaryJob pipeline (same path as an attached doc) instead of overflowing the model.
+        n_ctx = int(getattr(self._localbrain, "n_ctx", 8192) or 8192)
+        if self._est_tokens(text) > (n_ctx - _CTX_RESERVE) and self._wants_summary(text):
+            return self._autoroute_long_summary(text)
         state = self._jarvis.converse_begin(text)
         if state is None:
             return True, {"text": self._jarvis.converse_fallback(text)}
@@ -227,6 +241,37 @@ class Session:
         self._loop_gap_max = 0.0                          # start the loop-liveness meter for this decode
         self._localbrain.submit(token, state["system"], state["user"], 512)
         return True, {"status": "thinking_local", "token": token}
+
+    @staticmethod
+    def _est_tokens(text: str) -> int:
+        return len(text) // 4                            # ~4 chars/token (English) — a coarse over-length gate
+
+    @staticmethod
+    def _wants_summary(text: str) -> bool:
+        # The instruction lives at the ends ("brief this: <paste>" / "<paste> … summarize"), not buried in
+        # the body — so a legal case mentioning "summary judgment" mid-text doesn't false-trigger.
+        probe = (text[:200] + " " + text[-200:]).lower()
+        return bool(_SUMMARY_INTENT.search(probe))
+
+    def _autoroute_long_summary(self, text: str) -> tuple[bool, object]:
+        """Sprint 5: stage an over-length summarize-paste to a temp .txt and run it through the chunked
+        SummaryJob pipeline (same as an attached doc), so the user needn't save their clipboard by hand.
+        Starting the runner emits `overnight_started` -> the Activity tab refreshes and shows the task."""
+        approx_k = max(1, round(self._est_tokens(text) / 1000))
+        try:
+            d = os.path.join(tempfile.gettempdir(), "jarvis-pastes")
+            os.makedirs(d, exist_ok=True)
+            fd, path = tempfile.mkstemp(suffix=".txt", prefix="pasted-", dir=d)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(text)
+        except Exception as exc:  # noqa: BLE001 — can't stage the file -> fall back to the honest message
+            sys.stderr.write(f"[autoroute] could not stage long paste: {exc}\n")
+            return True, {"text": f"That's ~{approx_k}k tokens — too long for the on-device model. "
+                                  "Attach it as a file to summarize it, or switch to ☁️ Cloud."}
+        self._overnight_queue.enqueue("summarize_file", path)
+        self._overnight.start()
+        return True, {"text": f"📋 That's ~{approx_k}k tokens — too long to read in one pass, so I chunked it "
+                              "and sent it to the Activity tab to summarize. Watch it there."}
 
     def _drain_converse(self) -> None:
         """select() flagged the LocalBrain's self-pipe: one or more decodes finished. Post-process each on
@@ -239,7 +284,13 @@ class Session:
                 final = self._jarvis.converse_resume(entry["state"], raw)
             else:
                 sys.stderr.write(f"[localbrain] decode failed: {raw}\n")
-                final = self._jarvis.converse_fallback(entry["question"])
+                m = _OVERFLOW_RE.search(str(raw))         # Sprint 5: an honest overflow message, not the
+                if m:                                     # misleading grounded "couldn't read that" fallback
+                    approx_k = max(1, round(int(m.group(1)) / 1000))
+                    final = (f"That's ~{approx_k}k tokens — too long for the on-device model. "
+                             "Attach it as a file to summarize it, or switch to ☁️ Cloud.")
+                else:
+                    final = self._jarvis.converse_fallback(entry["question"])
             gap_ms = round(self._loop_gap_max * 1000, 1)   # ADR-057 liveness reading for this decode
             sys.stderr.write(f"[tier2] local decode done; worst select()-loop gap while in flight: {gap_ms} ms\n")
             self._persona_loop.observe(final, "assistant")
