@@ -21,7 +21,16 @@ _GRAMMAR_PATH = Path(__file__).resolve().parent / "grammar.gbnf"
 class LocalLLM:
     """Wraps a local GGUF chat model; generates schema-valid claims via the GBNF grammar."""
 
-    def __init__(self, model_path: str | None = None, n_ctx: int = 4096) -> None:
+    def __init__(self, model_path: str | None = None, n_ctx: int | None = None) -> None:
+        # Context window (Sprint 5): default 8192 — qwen2.5-7b trained for 32k, and the KV-cache tax at 8k
+        # is only ~+224 MiB over the old 4096 (GQA: 4 KV heads). Override with NARS_JARVIS_LLM_NCTX to dial
+        # back on an 8 GB base Mac under memory pressure (or up, toward the 32k ceiling, on a roomy host).
+        if n_ctx is None:
+            try:
+                n_ctx = int(os.environ.get("NARS_JARVIS_LLM_NCTX", "8192"))
+            except ValueError:
+                n_ctx = 8192
+        self.n_ctx = n_ctx
         path = model_path or os.environ.get("NARS_JARVIS_LLM_GGUF")
         if not path or not Path(path).exists():
             raise FileNotFoundError(
