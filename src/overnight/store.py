@@ -156,7 +156,10 @@ class HeldLedger:
         if row is None:
             return None
         out = dict(zip(("id", "task_id", "action", "arg", "reason"), row))
-        self._db.execute("UPDATE held_ledger SET disposition=? WHERE id=?",
+        # Keep the disposition='held' guard on the UPDATE too, so the check-and-set is atomic and
+        # idempotent (CodeRabbit PR#1). The daemon is single-threaded so a true race can't occur today,
+        # but this makes a double-resolve a no-op regardless of caller concurrency.
+        self._db.execute("UPDATE held_ledger SET disposition=? WHERE id=? AND disposition='held'",
                          ("approved" if accepted else "denied", out["id"]))
         self._db.commit()
         return out

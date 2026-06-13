@@ -11,7 +11,9 @@ from __future__ import annotations
 import os
 import select
 import socket
+import sys
 import time
+import traceback
 
 from . import protocol
 from .paths import socket_path
@@ -56,12 +58,7 @@ class Daemon:
                     timeout = max(0.0, min(timeout, deadline - time.monotonic()))
                 ready, _, _ = select.select(watch, [], [], timeout)
                 for obj in ready:
-                    if obj is self._srv:
-                        self._accept()
-                    elif isinstance(obj, int):          # a session-owned fd (sensor / whisper stdout)
-                        self._session.handle_fd(obj)
-                    else:
-                        self._handle(obj)
+                    self._dispatch(obj)
                 # Tick on a STEADY cadence regardless of activity — not only when select times out fully
                 # idle. Before this, continuous client activity (e.g. the Canvas polling overnight_status,
                 # or a busy sensor) starved tick(), so the overnight runner / habit / consent loops never
@@ -86,6 +83,25 @@ class Daemon:
             self._srv.close()
             if os.path.exists(self._path):
                 os.unlink(self._path)
+
+    def _dispatch(self, obj) -> None:
+        """Handle one ready fd — listener, a session-owned pipe (sensor / worker stdout), or a client.
+
+        Wrapped in a catch-all by DESIGN (CodeRabbit PR#1 / glass-jaw hardening): the entire blast-radius
+        architecture (off-loop inference, subprocess parsing) exists so a fault can't take down the vault —
+        but that guarantee is void if a single unhandled exception in any pipe reader escapes this loop and
+        kills the daemon. So a fault in one fd handler is logged (never swallowed silently — we need the
+        local telemetry) and contained; the select() loop keeps serving every other fd."""
+        try:
+            if obj is self._srv:
+                self._accept()
+            elif isinstance(obj, int):              # a session-owned fd (sensor / whisper / worker stdout)
+                self._session.handle_fd(obj)
+            else:
+                self._handle(obj)
+        except Exception:  # noqa: BLE001 — contain + log + keep the loop alive; never crash the daemon
+            sys.stderr.write(f"[server] fd handler crashed (obj={obj!r}); loop continues:\n"
+                             + traceback.format_exc())
 
     def _accept(self) -> None:
         sock, _ = self._srv.accept()

@@ -1212,6 +1212,7 @@ class Session:
         self._brain.close()
         self._lexicon.close()             # ADR-056/Gate 2: the L2 namespace index
         self._recall_metrics.close()      # ADR-056 §8: compounding telemetry
+        self._summaries.close()           # ADR-058: the Summary archive (CodeRabbit PR#1: was leaking its SQLite conn)
         self._sentinel_store.close()
         self._habit_store.close()
         self._persona_brain.close()      # ADR-036: tear down the isolated persona ONA
