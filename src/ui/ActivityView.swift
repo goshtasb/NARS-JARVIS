@@ -199,6 +199,12 @@ final class ActivityViewController: NSViewController {
             DispatchQueue.main.async {
                 if let url = SummaryPDF.write(name: name, id: id, title: title, text: text) {
                     NSWorkspace.shared.open(url)
+                } else {                                   // CodeRabbit PR#1: don't fail silently on a nil write
+                    let a = NSAlert()
+                    a.messageText = "Couldn't open the summary"
+                    a.informativeText = "JARVIS couldn't create the PDF for \(name) (the disk may be full or not writable)."
+                    a.alertStyle = .warning
+                    a.runModal()
                 }
             }
         }

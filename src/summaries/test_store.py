@@ -1,5 +1,6 @@
 """ADR-058 durable summary archive: add/list/get, newest-first ordering, the `has` idempotency guard
 the backfill relies on, and SURVIVING a simulated daemon restart (the reason it's on-disk, not memory)."""
+import os
 import tempfile
 
 from summaries import SummaryArchive
@@ -29,7 +30,7 @@ def test_has_guards_backfill_idempotency() -> None:
 
 
 def test_archive_survives_a_restart() -> None:
-    path = tempfile.mktemp(suffix=".db")
+    path = os.path.join(tempfile.mkdtemp(), "s.db")   # mkdtemp is secure; mktemp is deprecated (CodeRabbit PR#1)
     a = SummaryArchive(path)
     sid = a.add("report.pdf", "/r/report.pdf", "the durable summary", now=1.0)
     a.close()                                                   # simulate the daemon recycling
