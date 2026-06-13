@@ -76,6 +76,10 @@ class IngestWatcher:
     def queue(self) -> IngestQueue:
         return self._queue
 
+    @property
+    def watch_root(self) -> str:
+        return self._watch_real
+
     def start(self) -> bool:
         binary = build_fswatch()
         if binary is None:
