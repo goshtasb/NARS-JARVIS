@@ -64,10 +64,11 @@ def _drain(sock, buf, deadline):
 def test_live_daemon_offloop_cloud_does_not_block_the_select_loop(tmp_path, monkeypatch):
     CALL_SECONDS = 1.5
 
-    def slow_openai(req, *, api_key, model="", now=None, transport=None):
+    def slow_openai(req, *, api_key="", **kw):          # tolerates both single-shot + tool-loop signatures
         time.sleep(CALL_SECONDS)                    # simulate a heavy cloud inference (releases the GIL)
         return CloudResult(ok=True, text="The cloud considered: " + req.user)
     monkeypatch.setattr(cloud_egress, "openai_complete", slow_openai)
+    monkeypatch.setattr(cloud_egress, "cloud_complete_with_tools", slow_openai)   # Phase 2: cloud_ask uses the loop
 
     sock_path = os.path.join(tempfile.mkdtemp(prefix="jx", dir="/tmp"), "j.sock")  # AF_UNIX <= ~104 chars
     db_path = str(tmp_path / "jarvis.db")
@@ -134,9 +135,10 @@ def test_live_daemon_offloop_cloud_does_not_block_the_select_loop(tmp_path, monk
 
 
 def test_live_cloud_failure_becomes_recovery_event_not_a_crash(tmp_path, monkeypatch):
-    def failing_openai(req, *, api_key, model="", now=None, transport=None):
+    def failing_openai(req, *, api_key="", **kw):
         return CloudResult(ok=False, kind="rate_limit", error="Rate-limited — wait and retry.")
     monkeypatch.setattr(cloud_egress, "openai_complete", failing_openai)
+    monkeypatch.setattr(cloud_egress, "cloud_complete_with_tools", failing_openai)
 
     sock_path = os.path.join(tempfile.mkdtemp(prefix="jx", dir="/tmp"), "j.sock")
     db_path = str(tmp_path / "j.db")
@@ -309,13 +311,14 @@ def test_cloud_answer_feeds_the_local_vault(tmp_path, monkeypatch):
     """The Dual-Brain thesis: a cloud insight becomes PERMANENT local symbolic memory. One fake serves
     both legs of the pipeline — prose for the answer (no schema), claims JSON for the extraction (schema
     set) — and we assert the extracted belief is queryable from the LOCAL ONA afterward."""
-    def fake(req, *, api_key, model="", now=None, transport=None):
-        if req.json_schema is not None:                         # phase 2: extraction leg (firewalled)
+    def fake(req, *, api_key="", **kw):
+        if req.json_schema is not None:                         # extraction leg (firewalled, single-shot)
             return CloudResult(ok=True, text=json.dumps({
                 "claims": [{"type": "RelationClaim", "subject": "Solana", "verb": "IsA", "object": "blockchain"}],
                 "aliases": [{"surface": "SOL", "canonical": "solana"}]}))   # extractor yields the alias it used
-        return CloudResult(ok=True, text="Solana is a blockchain.")   # phase 1: the answer leg
-    monkeypatch.setattr(cloud_egress, "openai_complete", fake)
+        return CloudResult(ok=True, text="Solana is a blockchain.")   # the answer leg (tool loop)
+    monkeypatch.setattr(cloud_egress, "openai_complete", fake)          # extraction (json_schema -> single-shot)
+    monkeypatch.setattr(cloud_egress, "cloud_complete_with_tools", fake)   # answer (tools -> the loop)
 
     sock_path = os.path.join(tempfile.mkdtemp(prefix="jx", dir="/tmp"), "j.sock")
     db_path = str(tmp_path / "j.db")
