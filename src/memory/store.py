@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS facts (
   id            INTEGER PRIMARY KEY,
   narsese       TEXT    NOT NULL UNIQUE,
   english       TEXT,
+  source        TEXT,                       -- v1.24.0: provenance tier (NULL/told/cloud/passive); NULL = legacy/trusted
   frequency     REAL    NOT NULL,
   confidence    REAL    NOT NULL,
   embedding     BLOB,
@@ -80,6 +81,13 @@ _MEMORIES_ADDED_COLUMNS = (
     ("active", "INTEGER NOT NULL DEFAULT 1"),
     ("superseded_by", "INTEGER"),
     ("superseded_at", "REAL"),
+)
+
+# v1.24.0 (provenance upgrade): the `facts.source` tier added after first release. Nullable, no default ->
+# an O(1) metadata-only ADD COLUMN (no table rewrite); existing rows read NULL = legacy/trusted, which the
+# belief-decay sweep is structurally forbidden to prune (it targets source='passive' only).
+_FACTS_ADDED_COLUMNS = (
+    ("source", "TEXT"),
 )
 
 _COLS = (
@@ -131,12 +139,22 @@ class MemoryStore:
             if name not in have:
                 self._db.execute(f"ALTER TABLE memories ADD COLUMN {name} {decl}")
         self._db.execute("CREATE INDEX IF NOT EXISTS idx_memories_active ON memories(active)")
+        # v1.24.0: same additive, idempotent pattern for facts.source (O(1) metadata-only ADD COLUMN;
+        # re-runs are no-ops; legacy rows read NULL).
+        have_facts = {row[1] for row in self._db.execute("PRAGMA table_info(facts)")}
+        for name, decl in _FACTS_ADDED_COLUMNS:
+            if name not in have_facts:
+                self._db.execute(f"ALTER TABLE facts ADD COLUMN {name} {decl}")
         # ADR-056/Gate 2: the FTS5 term index + sync triggers (idempotent). One-time backfill if the index
         # is empty but facts already exist (a fresh index over a pre-existing DB); thereafter the triggers
         # keep it current, so no rebuild on subsequent opens.
         self._db.executescript(_FTS_SCHEMA)
-        if (self._db.execute("SELECT count(*) FROM facts_fts").fetchone()[0] == 0
-                and self._db.execute("SELECT count(*) FROM facts").fetchone()[0] > 0):
+        # `count(*) FROM facts_fts` reflects the EXTERNAL CONTENT (facts), not the index, so it's never 0
+        # while facts exist — the old guard meant the one-time backfill never fired and legacy facts (those
+        # inserted before facts_fts existed) were silently never indexed -> recall missed them. The real
+        # index-population signal is the FTS5 `_docsize` shadow table (one row per INDEXED document).
+        indexed = self._db.execute("SELECT count(*) FROM facts_fts_docsize").fetchone()[0]
+        if indexed == 0 and self._db.execute("SELECT count(*) FROM facts").fetchone()[0] > 0:
             self._db.execute("INSERT INTO facts_fts(facts_fts) VALUES('rebuild')")
 
     def upsert(self, narsese: str, frequency: float, confidence: float,
