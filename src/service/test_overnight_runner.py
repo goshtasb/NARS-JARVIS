@@ -22,6 +22,37 @@ def _drain(runner):
             break
 
 
+def _boom() -> None:
+    raise RuntimeError("sweep failed")
+
+
+def test_idle_maintenance_fires_only_when_queue_drains() -> None:
+    # v1.24.0 Step 3: the L2 decay sweep runs as the runner's idle-maintenance hook — exactly once, when
+    # the queue empties (off-loop, on idle), never mid-run.
+    q, led, ar = OvernightQueue(), HeldLedger(), _Runner()
+    swept = []
+    runner = OvernightRunner(q, led, ar, lambda k, b: None,
+                             on_idle_maintenance=lambda: swept.append(1))
+    q.enqueue("find_file", "spec")
+    runner.start()
+    runner.advance()                                     # runs the one task; queue not yet drained
+    assert swept == [], "maintenance fired mid-run"
+    runner.advance()                                     # queue now empty -> drained -> hook fires once
+    assert swept == [1]
+    assert not runner.active
+
+
+def test_idle_maintenance_failure_never_aborts_run_completion() -> None:
+    q, led, ar = OvernightQueue(), HeldLedger(), _Runner()
+    events = []
+    runner = OvernightRunner(q, led, ar, lambda k, b: events.append(k), on_idle_maintenance=_boom)
+    q.enqueue("find_file", "spec")
+    runner.start()
+    _drain(runner)
+    assert "overnight_done" in events, "a failing sweep must not block run completion"
+    assert not runner.active
+
+
 def test_runner_runs_safe_holds_rest_and_completes() -> None:
     q, led, ar = OvernightQueue(), HeldLedger(), _Runner()
     q.enqueue("find_file", "spec")     # safe (query)

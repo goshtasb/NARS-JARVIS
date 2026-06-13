@@ -117,7 +117,7 @@ class Session:
         self._backfill_summaries()
         self._overnight = OvernightRunner(
             self._overnight_queue, self._held_ledger, self._actions, self._emit,
-            on_summary=self._on_summary)
+            on_summary=self._on_summary, on_idle_maintenance=self._sweep_l2)
         # v1.24.0: Passive Context Ingestion — the FSEvents edge. Opt-in (only when NARS_JARVIS_WATCH_DIR is
         # set, so tests/normal runs spawn nothing); a Swift helper crushes filesystem noise at the kernel
         # callback and flushes bounded candidate batches we drain in handle_fd. CAPTURE only — the ingest is
@@ -1220,6 +1220,19 @@ class Session:
         if not self._overnight.active:
             self._overnight.start()
 
+    def _sweep_l2(self) -> None:
+        """v1.24.0 Step 3 idle-maintenance hook: the overnight runner calls this when its queue drains
+        (off the select() loop, on idle/AC). Reversibly tombstones stale, never-recalled passive beliefs
+        so L2 stays lean. A single set-based UPDATE; failure is logged, never crashes the night."""
+        try:
+            n = self._store.sweep_passive()
+        except Exception as exc:  # noqa: BLE001 — L2 hygiene must never kill the overnight run
+            sys.stderr.write(f"[sweep] passive L2 sweep failed: {exc}\n")
+            return
+        if n:
+            sys.stderr.write(f"[sweep] tombstoned {n} stale passive belief(s)\n")
+            self._emit("l2_swept", {"tombstoned": n})   # content-free count only
+
     @staticmethod
     def _on_ac_power() -> bool:
         """Drives the deferred-payload budget: True = run heavy candidates. No battery sensor (desktop) ->
@@ -1270,7 +1283,10 @@ class Session:
                 learned: list[str] = []
                 for narsese in entry["narsese"]:
                     try:
-                        if self._jarvis.tell(str(narsese)):
+                        # v1.24.0 Step 3: distilled claims are DOCUMENT-derived (FSEvents ingest + file
+                        # summaries), never user-asserted -> source='passive'. They land in L2 only at the
+                        # corroboration floor, bypassing ONA L1, and are subject to the decay sweep.
+                        if self._jarvis.tell(str(narsese), source="passive"):
                             learned.append(str(narsese))
                     except Exception:  # noqa: BLE001 — one malformed/rejected claim never aborts the batch
                         continue
