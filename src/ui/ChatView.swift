@@ -582,7 +582,8 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
         let col = NSStackView(); col.orientation = .vertical; col.alignment = .leading; col.spacing = 4
         col.translatesAutoresizingMaskIntoConstraints = false
         col.addArrangedSubview(bubble(text, bg: DS.fill(0.07), fg: DS.label))
-        col.addArrangedSubview(DS.text("🧠 Answered privately (Local Model)", 11, .regular, DS.label3))
+        col.addArrangedSubview(DS.text("🧠 Local model · private · no internet — toggle ☁️ for live data",
+                                       11, .regular, DS.label3))
         return col
     }
 
