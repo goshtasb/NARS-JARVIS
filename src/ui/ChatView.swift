@@ -301,12 +301,63 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
         pickerHost.arrangedSubviews.forEach { $0.removeFromSuperview() }
     }
 
+    private var attachedFilePath: String?
+
     private func attach() {
-        let p = NSOpenPanel(); p.canChooseFiles = true; p.canChooseDirectories = false; p.allowsMultipleSelection = false
-        if p.runModal() == .OK, let url = p.url {
-            let cur = input.stringValue
-            input.stringValue = cur.isEmpty ? url.path : cur + " " + url.path
-            view.window?.makeFirstResponder(input)
+        let p = NSOpenPanel()
+        p.canChooseFiles = true; p.canChooseDirectories = false; p.allowsMultipleSelection = false
+        p.message = "Choose a document to evaluate (text or PDF)"
+        p.prompt = "Attach"
+        if #available(macOS 11.0, *) { p.allowedContentTypes = [.plainText, .text, .pdf, .sourceCode, .json] }
+        NSApp.activate(ignoringOtherApps: true)               // accessory apps need this or the panel lags/hides
+        guard p.runModal() == .OK, let url = p.url else { return }
+        attachFile(url.path)
+    }
+
+    private func attachFile(_ path: String) {
+        attachedFilePath = path
+        pickerHost.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        let chip = DS.rounded(bg: DS.accent.withAlphaComponent(0.12), radius: 7)
+        let name = DS.text("📎 " + (path as NSString).lastPathComponent, 12, .semibold, DS.accent)
+        let x = DSButton(nil, symbol: "xmark", variant: .icon) { [weak self] in self?.clearAttachment() }
+        let st = NSStackView(views: [name, x]); st.spacing = 2; st.alignment = .centerY
+        st.translatesAutoresizingMaskIntoConstraints = false
+        chip.addSubview(st)
+        NSLayoutConstraint.activate([
+            chip.heightAnchor.constraint(equalToConstant: 24),
+            st.leadingAnchor.constraint(equalTo: chip.leadingAnchor, constant: 8),
+            st.trailingAnchor.constraint(equalTo: chip.trailingAnchor, constant: -2),
+            st.centerYAnchor.constraint(equalTo: chip.centerYAnchor),
+        ])
+        pickerHost.addArrangedSubview(chip)
+        input.placeholderString = "Ask about this file… (or just send to evaluate it)"
+        view.window?.makeFirstResponder(input)
+    }
+
+    private func clearAttachment() {
+        attachedFilePath = nil
+        pickerHost.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        input.placeholderString = cloudMode ? "Ask \(cloudProvider.display)… (this turn leaves your Mac)"
+                                            : "Ask, or type / to run a job…"
+    }
+
+    private func sendFileToCloud(_ path: String, _ question: String) {
+        guard let client = client else { return }
+        let key = CloudKeychain.load(cloudProvider) ?? ""
+        if key.isEmpty { setCloudMode(false); ensureKeyThenEngage(); return }
+        armCloudIdleRevert()
+        let row = cloudThinkingRow()
+        client.call("cloud_ask", ["text": question, "file": path,
+                                  "key": key, "provider": cloudProvider.rawValue]) { [weak self] ok, body in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if !ok || (body["status"] as? String) != "thinking" {
+                    self.replaceThinking(row, token: nil)
+                    self.addAssistant(body["text"] as? String ?? "Couldn't read or send the file.", error: true)
+                    return
+                }
+                if let token = body["token"] as? Int { self.cloudThinkingRows[token] = row }
+            }
         }
     }
 
@@ -315,6 +366,19 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
         let line = input.stringValue.trimmingCharacters(in: .whitespaces)
         guard let client = client else { return }
         hidePicker()
+        if let file = attachedFilePath {                        // a "+"-attached document to evaluate
+            let name = (file as NSString).lastPathComponent
+            addUser(line.isEmpty ? "📎 Evaluate \(name)" : "\(line)  📎 \(name)")
+            input.stringValue = ""; clearAttachment()
+            if cloudMode {
+                sendFileToCloud(file, line)                     // read + send to the cloud brain -> chat answer
+            } else {
+                addAssistant("📎 Evaluating a document uses the Cloud brain (the file leaves your Mac). "
+                             + "Switch to ☁️ to evaluate \(name), or type /summarize_file for a local summary.",
+                             error: false)
+            }
+            return
+        }
         if let v = pinnedVerb {                                  // a pinned-verb job
             guard !line.isEmpty else { return }
             addUser("/\(v.label)  \(line)")

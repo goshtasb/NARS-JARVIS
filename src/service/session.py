@@ -767,11 +767,23 @@ class Session:
         and is gone when the job completes. Returns an immediate ack; the answer arrives as a
         `cloud_answer` event so chat / sensing / the Mirror keep flowing while the cloud is thinking."""
         if not isinstance(arg, dict):
-            return False, {"text": "cloud_ask expects {text, key, provider?, model?}"}
+            return False, {"text": "cloud_ask expects {text, key, provider?, model?, file?}"}
         text = str(arg.get("text", "")).strip()
         key = str(arg.get("key", ""))
         provider = str(arg.get("provider", "openai")) or "openai"
         model = str(arg.get("model", ""))
+        # Optional attached document (the "+" button): the daemon reads the file (text/PDF) and folds its
+        # content into the prompt. In Cloud mode this content LEAVES the machine — consistent with the
+        # cloud toggle the user chose; the egress footer/receipt still apply.
+        file_path = str(arg.get("file", "")).strip()
+        if file_path:
+            import os
+            from actions.documents import read_file_text
+            content = read_file_text(file_path)               # text/PDF; never raises; '⚠ ...' on problems
+            if content.startswith("⚠"):
+                return False, {"text": content}
+            question = text or "Evaluate this document and summarize its key points, flagging anything notable."
+            text = f"{question}\n\n[Attached file: {os.path.basename(file_path)}]\n\n{content[:24000]}"
         if not text:
             return False, {"text": "cloud_ask expects a non-empty 'text'"}
         if not key:
