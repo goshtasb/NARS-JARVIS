@@ -217,3 +217,103 @@ def _error_result(status: int, err: dict) -> CloudResult:
     if status == 429 or "rate_limit" in etype or "overloaded" in etype:
         return CloudResult(ok=False, kind="rate_limit", error="Rate-limited by the provider — wait a moment and retry.")
     return CloudResult(ok=False, kind="bad_response", error=f"Cloud error: {msg[:120]}")
+
+
+# ── Phase 2 (table-stakes): the agentic tool-call loop ──────────────────────────────────────────────
+# The cloud brain may request a tool (search_web), the daemon executes it, the result is fed back, and the
+# brain synthesizes a final answer. `tool_executor(name, args)->str` runs the actual tool — it is invoked
+# in the off-loop CloudJob thread, so a multi-second web fetch never touches the select() loop. Bounded
+# rounds; the last round drops the tools to FORCE a text answer. Never raises.
+_MAX_TOOL_ROUNDS = 4
+
+
+def _run_tool(tool_executor, name: str, args: dict) -> str:
+    try:
+        out = tool_executor(name, args)
+        return out if isinstance(out, str) and out.strip() else "[ERROR: tool returned nothing]"
+    except Exception as exc:  # noqa: BLE001 — a tool failure becomes a result the model can react to, not a crash
+        return f"[ERROR: tool '{name}' failed: {exc}]"
+
+
+def cloud_complete_with_tools(req: CloudRequest, *, api_key: str, provider: str, model: str,
+                              tool_executor, now: Optional[float] = None,
+                              transport: HTTPTransport = _urllib_post) -> CloudResult:
+    if not api_key:
+        return CloudResult(ok=False, kind="auth",
+                           error="No API key set — add one in Settings to use Cloud mode (or switch to Private).")
+    if provider == "anthropic":
+        return _anthropic_tool_loop(req, api_key, model or "claude-3-5-sonnet-latest", tool_executor, now, transport)
+    return _openai_tool_loop(req, api_key, model or "gpt-4o-mini", tool_executor, now, transport)
+
+
+def _openai_tool_loop(req, api_key, model, tool_executor, now, transport) -> CloudResult:
+    headers = {"Authorization": "Bearer " + api_key, "Content-Type": "application/json"}
+    tools = [{"type": "function", "function": {"name": t.name, "description": t.description,
+                                               "parameters": t.parameters}} for t in req.tools]
+    messages = [{"role": "system", "content": req.system}, {"role": "user", "content": req.user}]
+    for round_i in range(_MAX_TOOL_ROUNDS):
+        payload: dict = {"model": model, "messages": messages, "max_tokens": req.max_tokens, "temperature": 0}
+        if round_i < _MAX_TOOL_ROUNDS - 1:                 # last round: no tools -> the model MUST answer
+            payload["tools"] = tools
+        _record("openai", "/v1/chat/completions", payload, req, time.time() if now is None else now)
+        try:
+            status, raw = transport("https://api.openai.com/v1/chat/completions", headers, payload, EGRESS_TIMEOUT)
+        except Exception as exc:  # noqa: BLE001
+            return _transport_error("openai", exc)
+        try:
+            body = json.loads(raw or b"{}")
+        except Exception:  # noqa: BLE001
+            return CloudResult(ok=False, kind="bad_response", error="The cloud returned an unreadable response.")
+        if status != 200:
+            return _error_result(status, body.get("error") or {})
+        try:
+            msg = body["choices"][0]["message"]
+        except Exception:  # noqa: BLE001
+            return CloudResult(ok=False, kind="bad_response", error="The cloud response was missing content.")
+        calls = msg.get("tool_calls") or []
+        if not calls:
+            return CloudResult(ok=True, text=(msg.get("content") or ""))
+        messages.append(msg)                               # the assistant's tool-call turn
+        for tc in calls:
+            fn = tc.get("function", {})
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+            except ValueError:
+                args = {}
+            messages.append({"role": "tool", "tool_call_id": tc.get("id", ""),
+                             "content": _run_tool(tool_executor, fn.get("name", ""), args)})
+    return CloudResult(ok=False, kind="bad_response",
+                       error="The cloud kept requesting tools without answering. Try rephrasing.")
+
+
+def _anthropic_tool_loop(req, api_key, model, tool_executor, now, transport) -> CloudResult:
+    headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"}
+    tools = [{"name": t.name, "description": t.description, "input_schema": t.parameters} for t in req.tools]
+    messages: list = [{"role": "user", "content": req.user}]
+    for round_i in range(_MAX_TOOL_ROUNDS):
+        payload: dict = {"model": model, "max_tokens": req.max_tokens, "system": req.system, "messages": messages}
+        if round_i < _MAX_TOOL_ROUNDS - 1:
+            payload["tools"] = tools
+        _record("anthropic", "/v1/messages", payload, req, time.time() if now is None else now)
+        try:
+            status, raw = transport("https://api.anthropic.com/v1/messages", headers, payload, EGRESS_TIMEOUT)
+        except Exception as exc:  # noqa: BLE001
+            return _transport_error("anthropic", exc)
+        try:
+            body = json.loads(raw or b"{}")
+        except Exception:  # noqa: BLE001
+            return CloudResult(ok=False, kind="bad_response", error="The cloud returned an unreadable response.")
+        if status != 200:
+            return _error_result(status, body.get("error") or {})
+        content = body.get("content", [])
+        tool_uses = [b for b in content if b.get("type") == "tool_use"]
+        if not tool_uses:
+            text = "".join(b.get("text", "") for b in content if b.get("type") == "text")
+            return CloudResult(ok=True, text=text)
+        messages.append({"role": "assistant", "content": content})
+        messages.append({"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": tu.get("id", ""),
+             "content": _run_tool(tool_executor, tu.get("name", ""), tu.get("input", {}))}
+            for tu in tool_uses]})
+    return CloudResult(ok=False, kind="bad_response",
+                       error="The cloud kept requesting tools without answering. Try rephrasing.")
