@@ -1,0 +1,13 @@
+# Slice 2 parameter-extraction grammar. Forces the model to DECOMPOSE each operative parameter into
+# {raw_quote, role, value, unit, is_qualitative} — never a fused string. `kind` is NOT emitted (the
+# normalizer derives it from `unit` deterministically). `value` may be empty (qualitative). Structure is
+# grammar-guaranteed; faithfulness (raw_quote is verbatim, value traceable) is the verify_gate's job.
+root   ::= ws "[" ws ( param ( ws "," ws param )* )? ws "]" ws
+param  ::= "{" ws "\"raw_quote\"" ws ":" ws ev ws "," ws "\"role\"" ws ":" ws role ws "," ws "\"value\"" ws ":" ws numstr ws "," ws "\"unit\"" ws ":" ws unit ws "," ws "\"is_qualitative\"" ws ":" ws bool ws "}"
+role   ::= "\"notification_deadline\"" | "\"cure_period\"" | "\"term_duration\"" | "\"renewal_period\"" | "\"audit_frequency\"" | "\"liability_cap\"" | "\"liability_lookback\"" | "\"service_credit\"" | "\"payment_term\"" | "\"other\""
+unit   ::= "\"hours\"" | "\"days\"" | "\"business_days\"" | "\"weeks\"" | "\"months\"" | "\"years\"" | "\"usd\"" | "\"eur\"" | "\"gbp\"" | "\"percent\"" | "\"count\"" | "\"months_fees\"" | "\"none\""
+bool   ::= "true" | "false"
+numstr ::= "\"" [0-9]* ("." [0-9]+)? "\""
+ev     ::= "\"" ec* "\""
+ec     ::= [a-zA-Z0-9] | " " | "-" | "." | "%" | "," | "(" | ")" | "/" | ";" | ":" | "'"
+ws     ::= [ \t\n]*
