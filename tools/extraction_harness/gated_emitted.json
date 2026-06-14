@@ -1,0 +1,568 @@
+{
+  "breach-notify-01": {
+    "text": "Vendor shall notify Customer in writing within seventy-two (72) hours of discovering any data breach affecting Customer Personal Data.",
+    "claims": [
+      {
+        "key": "breach-notify-01#0",
+        "proposed": {
+          "type": "TemporalClaim",
+          "deontic": "shall",
+          "subject": "Vendor",
+          "action": "notify",
+          "object": "Customer in writing",
+          "within_value": "72",
+          "within_unit": "hours",
+          "evidence": "Vendor shall notify Customer in writing within seventy-two (72) hours of discovering any data breach affecting Customer Personal Data."
+        },
+        "admit": true,
+        "degraded": false,
+        "reasons": [
+          "ok"
+        ],
+        "kept": {
+          "type": "TemporalClaim",
+          "deontic": "shall",
+          "subject": "Vendor",
+          "action": "notify",
+          "object": "Customer in writing",
+          "within_value": "72",
+          "within_unit": "hours",
+          "evidence": "Vendor shall notify Customer in writing within seventy-two (72) hours of discovering any data breach affecting Customer Personal Data."
+        }
+      }
+    ]
+  },
+  "sla-uptime-02": {
+    "text": "If monthly availability falls below 99.9%, Customer shall be entitled to a service credit equal to 10% of the monthly fee for each full hour of downtime.",
+    "claims": [
+      {
+        "key": "sla-uptime-02#0",
+        "proposed": {
+          "type": "ConditionalClaim",
+          "deontic": "shall",
+          "if": "monthly availability falls below 99.9%",
+          "then": "Customer shall be entitled to a service credit",
+          "evidence": "If monthly availability falls below 99.9%, Customer shall be entitled to a service credit equal to 10% of the monthly fee for each full hour of downtime."
+        },
+        "admit": true,
+        "degraded": false,
+        "reasons": [
+          "ok"
+        ],
+        "kept": {
+          "type": "ConditionalClaim",
+          "deontic": "shall",
+          "if": "monthly availability falls below 99.9%",
+          "then": "Customer shall be entitled to a service credit",
+          "evidence": "If monthly availability falls below 99.9%, Customer shall be entitled to a service credit equal to 10% of the monthly fee for each full hour of downtime."
+        }
+      },
+      {
+        "key": "sla-uptime-02#1",
+        "proposed": {
+          "type": "QuantitativeClaim",
+          "deontic": "shall",
+          "subject": "service credit",
+          "metric": "amount",
+          "amount": "10% of the monthly fee",
+          "evidence": "If monthly availability falls below 99.9%, Customer shall be entitled to a service credit equal to 10% of the monthly fee for each full hour of downtime."
+        },
+        "admit": false,
+        "degraded": false,
+        "reasons": [
+          "L2:ungrounded_values=['amount']"
+        ],
+        "kept": null
+      },
+      {
+        "key": "sla-uptime-02#2",
+        "proposed": {
+          "type": "QuantitativeClaim",
+          "deontic": "shall",
+          "subject": "downtime",
+          "metric": "duration",
+          "amount": "each full hour",
+          "evidence": "If monthly availability falls below 99.9%, Customer shall be entitled to a service credit equal to 10% of the monthly fee for each full hour of downtime."
+        },
+        "admit": false,
+        "degraded": false,
+        "reasons": [
+          "L2:ungrounded_values=['duration']"
+        ],
+        "kept": null
+      }
+    ]
+  },
+  "nda-confid-03": {
+    "text": "The Receiving Party shall hold all Confidential Information in strict confidence for a period of five (5) years from the date of disclosure and shall not disclose it to any third party.",
+    "claims": [
+      {
+        "key": "nda-confid-03#0",
+        "proposed": {
+          "type": "TemporalClaim",
+          "deontic": "shall",
+          "subject": "The Receiving Party",
+          "action": "hold",
+          "object": "Confidential Information",
+          "within_value": "5",
+          "within_unit": "years",
+          "evidence": "The Receiving Party shall hold all Confidential Information in strict confidence for a period of five (5) years from the date of disclosure"
+        },
+        "admit": true,
+        "degraded": true,
+        "reasons": [
+          "L3:temporal_stripped(role=duration;[])"
+        ],
+        "kept": {
+          "type": "RelationClaim",
+          "deontic": "shall",
+          "subject": "The Receiving Party",
+          "verb": "hold",
+          "object": "Confidential Information",
+          "evidence": "The Receiving Party shall hold all Confidential Information in strict confidence for a period of five (5) years from the date of disclosure"
+        }
+      },
+      {
+        "key": "nda-confid-03#1",
+        "proposed": {
+          "type": "TemporalClaim",
+          "deontic": "shall_not",
+          "subject": "The Receiving Party",
+          "action": "disclose",
+          "object": "Confidential Information",
+          "within_value": "5",
+          "within_unit": "years",
+          "evidence": "The Receiving Party shall hold all Confidential Information in strict confidence for a period of five (5) years from the date of disclosure and shall not disclose it to any third party."
+        },
+        "admit": true,
+        "degraded": true,
+        "reasons": [
+          "L3:temporal_stripped(role=duration;[])"
+        ],
+        "kept": {
+          "type": "RelationClaim",
+          "deontic": "shall_not",
+          "subject": "The Receiving Party",
+          "verb": "disclose",
+          "object": "Confidential Information",
+          "evidence": "The Receiving Party shall hold all Confidential Information in strict confidence for a period of five (5) years from the date of disclosure and shall not disclose it to any third party."
+        }
+      }
+    ]
+  },
+  "indemnify-04": {
+    "text": "Supplier shall indemnify and hold harmless the Buyer against any third-party claims arising from Supplier's gross negligence or willful misconduct.",
+    "claims": [
+      {
+        "key": "indemnify-04#0",
+        "proposed": {
+          "type": "RelationClaim",
+          "deontic": "shall",
+          "subject": "Supplier",
+          "verb": "indemnify and hold harmless",
+          "object": "the Buyer",
+          "evidence": "Supplier shall indemnify and hold harmless the Buyer against any third-party claims arising from Supplier's gross negligence or willful misconduct."
+        },
+        "admit": true,
+        "degraded": false,
+        "reasons": [
+          "ok"
+        ],
+        "kept": {
+          "type": "RelationClaim",
+          "deontic": "shall",
+          "subject": "Supplier",
+          "verb": "indemnify and hold harmless",
+          "object": "the Buyer",
+          "evidence": "Supplier shall indemnify and hold harmless the Buyer against any third-party claims arising from Supplier's gross negligence or willful misconduct."
+        }
+      },
+      {
+        "key": "indemnify-04#1",
+        "proposed": {
+          "type": "RelationClaim",
+          "deontic": "shall",
+          "subject": "the Buyer",
+          "verb": "be protected against",
+          "object": "third-party claims arising from Supplier",
+          "evidence": "Supplier shall indemnify and hold harmless the Buyer against any third-party claims arising from Supplier's gross negligence or willful misconduct."
+        },
+        "admit": false,
+        "degraded": false,
+        "reasons": [
+          "L2:ungrounded_values=['protected']"
+        ],
+        "kept": null
+      },
+      {
+        "key": "indemnify-04#2",
+        "proposed": {
+          "type": "RelationClaim",
+          "deontic": "shall",
+          "subject": "third-party claims",
+          "verb": "arise from",
+          "object": "Supplier",
+          "evidence": "Supplier shall indemnify and hold harmless the Buyer against any third-party claims arising from Supplier's gross negligence or willful misconduct."
+        },
+        "admit": true,
+        "degraded": false,
+        "reasons": [
+          "ok"
+        ],
+        "kept": {
+          "type": "RelationClaim",
+          "deontic": "shall",
+          "subject": "third-party claims",
+          "verb": "arise from",
+          "object": "Supplier",
+          "evidence": "Supplier shall indemnify and hold harmless the Buyer against any third-party claims arising from Supplier's gross negligence or willful misconduct."
+        }
+      },
+      {
+        "key": "indemnify-04#3",
+        "proposed": {
+          "type": "RelationClaim",
+          "deontic": "shall",
+          "subject": "Supplier",
+          "verb": "be subject to",
+          "object": "gross negligence or willful misconduct",
+          "evidence": "Supplier shall indemnify and hold harmless the Buyer against any third-party claims arising from Supplier's gross negligence or willful misconduct."
+        },
+        "admit": false,
+        "degraded": false,
+        "reasons": [
+          "L2:ungrounded_values=['subject']"
+        ],
+        "kept": null
+      }
+    ]
+  },
+  "payment-net-05": {
+    "text": "Buyer shall pay all undisputed invoices within thirty (30) days of receipt; overdue amounts shall accrue interest at 1.5% per month.",
+    "claims": [
+      {
+        "key": "payment-net-05#0",
+        "proposed": {
+          "type": "TemporalClaim",
+          "deontic": "shall",
+          "subject": "Buyer",
+          "action": "pay",
+          "object": "undisputed invoices",
+          "within_value": "30",
+          "within_unit": "days",
+          "evidence": "Buyer shall pay all undisputed invoices within thirty (30) days of receipt"
+        },
+        "admit": true,
+        "degraded": false,
+        "reasons": [
+          "ok"
+        ],
+        "kept": {
+          "type": "TemporalClaim",
+          "deontic": "shall",
+          "subject": "Buyer",
+          "action": "pay",
+          "object": "undisputed invoices",
+          "within_value": "30",
+          "within_unit": "days",
+          "evidence": "Buyer shall pay all undisputed invoices within thirty (30) days of receipt"
+        }
+      },
+      {
+        "key": "payment-net-05#1",
+        "proposed": {
+          "type": "QuantitativeClaim",
+          "deontic": "shall",
+          "subject": "overdue amounts",
+          "metric": "accrue interest",
+          "amount": "1.5% per month",
+          "evidence": "overdue amounts shall accrue interest at 1.5% per month"
+        },
+        "admit": true,
+        "degraded": false,
+        "reasons": [
+          "ok"
+        ],
+        "kept": {
+          "type": "QuantitativeClaim",
+          "deontic": "shall",
+          "subject": "overdue amounts",
+          "metric": "accrue interest",
+          "amount": "1.5% per month",
+          "evidence": "overdue amounts shall accrue interest at 1.5% per month"
+        }
+      }
+    ]
+  },
+  "termination-06": {
+    "text": "Either party may terminate this Agreement upon thirty (30) days' written notice if the other party materially breaches and fails to cure such breach within the notice period.",
+    "claims": [
+      {
+        "key": "termination-06#0",
+        "proposed": {
+          "type": "RelationClaim",
+          "deontic": "may",
+          "subject": "Either party",
+          "verb": "may terminate",
+          "object": "this Agreement",
+          "evidence": "Either party may terminate this Agreement upon thirty (30) days' written notice if the other party materially breaches and fails to cure such breach within the notice period."
+        },
+        "admit": true,
+        "degraded": false,
+        "reasons": [
+          "ok"
+        ],
+        "kept": {
+          "type": "RelationClaim",
+          "deontic": "may",
+          "subject": "Either party",
+          "verb": "may terminate",
+          "object": "this Agreement",
+          "evidence": "Either party may terminate this Agreement upon thirty (30) days' written notice if the other party materially breaches and fails to cure such breach within the notice period."
+        }
+      },
+      {
+        "key": "termination-06#1",
+        "proposed": {
+          "type": "TemporalClaim",
+          "deontic": "shall_not",
+          "subject": "the other party",
+          "action": "cure",
+          "object": "such breach",
+          "within_value": "30",
+          "within_unit": "days",
+          "evidence": "Either party may terminate this Agreement upon thirty (30) days' written notice if the other party materially breaches and fails to cure such breach within the notice period."
+        },
+        "admit": true,
+        "degraded": false,
+        "reasons": [
+          "ok"
+        ],
+        "kept": {
+          "type": "TemporalClaim",
+          "deontic": "shall_not",
+          "subject": "the other party",
+          "action": "cure",
+          "object": "such breach",
+          "within_value": "30",
+          "within_unit": "days",
+          "evidence": "Either party may terminate this Agreement upon thirty (30) days' written notice if the other party materially breaches and fails to cure such breach within the notice period."
+        }
+      }
+    ]
+  },
+  "liability-cap-07": {
+    "text": "In no event shall either party's aggregate liability exceed the total fees paid by Customer in the twelve (12) months preceding the claim.",
+    "claims": [
+      {
+        "key": "liability-cap-07#0",
+        "proposed": {
+          "type": "QuantitativeClaim",
+          "deontic": "shall",
+          "subject": "either party",
+          "metric": "aggregate liability",
+          "amount": "the total fees paid by Customer in the twelve months preceding the claim",
+          "evidence": "In no event shall either party's aggregate liability exceed the total fees paid by Customer in the twelve (12) months preceding the claim."
+        },
+        "admit": true,
+        "degraded": false,
+        "reasons": [
+          "ok"
+        ],
+        "kept": {
+          "type": "QuantitativeClaim",
+          "deontic": "shall",
+          "subject": "either party",
+          "metric": "aggregate liability",
+          "amount": "the total fees paid by Customer in the twelve months preceding the claim",
+          "evidence": "In no event shall either party's aggregate liability exceed the total fees paid by Customer in the twelve (12) months preceding the claim."
+        }
+      }
+    ]
+  },
+  "data-residency-08": {
+    "text": "Provider shall store and process all Customer Data exclusively within the European Economic Area and shall not transfer such data outside the EEA without Customer's prior written consent.",
+    "claims": [
+      {
+        "key": "data-residency-08#0",
+        "proposed": {
+          "type": "ConditionalClaim",
+          "deontic": "shall",
+          "if": "Provider stores and processes Customer Data exclusively within the European Economic Area",
+          "then": "Provider shall not transfer such data outside the EEA without Customer prior written consent",
+          "evidence": "Provider shall store and process all Customer Data exclusively within the European Economic Area and shall not transfer such data outside the EEA without Customer's prior written consent."
+        },
+        "admit": false,
+        "degraded": false,
+        "reasons": [
+          "L3:conditional_without_cue"
+        ],
+        "kept": null
+      }
+    ]
+  },
+  "audit-rights-09": {
+    "text": "Customer may audit Vendor's compliance with this Agreement no more than once per calendar year upon at least fourteen (14) days' prior written notice.",
+    "claims": [
+      {
+        "key": "audit-rights-09#0",
+        "proposed": {
+          "type": "RelationClaim",
+          "deontic": "may",
+          "subject": "Customer",
+          "verb": "audit",
+          "object": "Vendor",
+          "evidence": "Customer may audit Vendor's compliance with this Agreement no more than once per calendar year upon at least fourteen (14) days' prior written notice."
+        },
+        "admit": true,
+        "degraded": false,
+        "reasons": [
+          "ok"
+        ],
+        "kept": {
+          "type": "RelationClaim",
+          "deontic": "may",
+          "subject": "Customer",
+          "verb": "audit",
+          "object": "Vendor",
+          "evidence": "Customer may audit Vendor's compliance with this Agreement no more than once per calendar year upon at least fourteen (14) days' prior written notice."
+        }
+      },
+      {
+        "key": "audit-rights-09#1",
+        "proposed": {
+          "type": "TemporalClaim",
+          "deontic": "shall",
+          "subject": "Customer",
+          "action": "notify",
+          "object": "Vendor",
+          "within_value": "14",
+          "within_unit": "days",
+          "evidence": "Customer may audit Vendor's compliance with this Agreement no more than once per calendar year upon at least fourteen (14) days' prior written notice."
+        },
+        "admit": true,
+        "degraded": true,
+        "reasons": [
+          "L3:temporal_stripped(role=rate;[])"
+        ],
+        "kept": {
+          "type": "RelationClaim",
+          "deontic": "shall",
+          "subject": "Customer",
+          "verb": "notify",
+          "object": "Vendor",
+          "evidence": "Customer may audit Vendor's compliance with this Agreement no more than once per calendar year upon at least fourteen (14) days' prior written notice."
+        }
+      }
+    ]
+  },
+  "warranty-10": {
+    "text": "Manufacturer warrants that the Goods will be free from defects in materials and workmanship for ninety (90) days following delivery.",
+    "claims": [
+      {
+        "key": "warranty-10#0",
+        "proposed": {
+          "type": "TemporalClaim",
+          "deontic": "shall",
+          "subject": "Manufacturer",
+          "action": "warrants",
+          "object": "Goods",
+          "within_value": "90",
+          "within_unit": "days",
+          "evidence": "Manufacturer warrants that the Goods will be free from defects in materials and workmanship for ninety (90) days following delivery."
+        },
+        "admit": true,
+        "degraded": true,
+        "reasons": [
+          "L3:temporal_stripped(role=duration;[])"
+        ],
+        "kept": {
+          "type": "RelationClaim",
+          "deontic": "shall",
+          "subject": "Manufacturer",
+          "verb": "warrants",
+          "object": "Goods",
+          "evidence": "Manufacturer warrants that the Goods will be free from defects in materials and workmanship for ninety (90) days following delivery."
+        }
+      }
+    ]
+  },
+  "subprocessor-11": {
+    "text": "Processor shall not engage any subprocessor without the Controller's prior written authorization, and shall remain fully liable for the acts and omissions of any approved subprocessor.",
+    "claims": [
+      {
+        "key": "subprocessor-11#0",
+        "proposed": {
+          "type": "ConditionalClaim",
+          "deontic": "shall_not",
+          "if": "Processor engages any subprocessor",
+          "then": "without the Controller prior written authorization",
+          "evidence": "Processor shall not engage any subprocessor without the Controller's prior written authorization, and shall remain fully liable for the acts and omissions of any approved subprocessor."
+        },
+        "admit": false,
+        "degraded": false,
+        "reasons": [
+          "L3:conditional_without_cue"
+        ],
+        "kept": null
+      },
+      {
+        "key": "subprocessor-11#1",
+        "proposed": {
+          "type": "RelationClaim",
+          "deontic": "shall",
+          "subject": "Processor",
+          "verb": "remain fully liable for",
+          "object": "the acts and omissions of any approved subprocessor",
+          "evidence": "Processor shall not engage any subprocessor without the Controller's prior written authorization, and shall remain fully liable for the acts and omissions of any approved subprocessor."
+        },
+        "admit": false,
+        "degraded": false,
+        "reasons": [
+          "L5:negation_inversion"
+        ],
+        "kept": null
+      }
+    ]
+  },
+  "force-majeure-12": {
+    "text": "Neither party shall be liable for any failure to perform due to events beyond its reasonable control, provided that the affected party notifies the other within five (5) business days of the event.",
+    "claims": [
+      {
+        "key": "force-majeure-12#0",
+        "proposed": {
+          "type": "ConditionalClaim",
+          "deontic": "shall",
+          "if": "Neither party",
+          "then": "shall be liable for any failure to perform due to events beyond its reasonable control",
+          "evidence": "Neither party shall be liable for any failure to perform due to events beyond its reasonable control, provided that the affected party notifies the other within five (5) business days of the event."
+        },
+        "admit": false,
+        "degraded": false,
+        "reasons": [
+          "L5:negation_inversion"
+        ],
+        "kept": null
+      },
+      {
+        "key": "force-majeure-12#1",
+        "proposed": {
+          "type": "TemporalClaim",
+          "deontic": "shall",
+          "subject": "the affected party",
+          "action": "notifies",
+          "object": "the other",
+          "within_value": "5",
+          "within_unit": "business days",
+          "evidence": "Neither party shall be liable for any failure to perform due to events beyond its reasonable control, provided that the affected party notifies the other within five (5) business days of the event."
+        },
+        "admit": false,
+        "degraded": false,
+        "reasons": [
+          "L5:negation_inversion"
+        ],
+        "kept": null
+      }
+    ]
+  }
+}

@@ -1,0 +1,59 @@
+{
+  "TP": 9,
+  "FP": 0,
+  "TN": 6,
+  "FN": 8,
+  "precision": 1.0,
+  "recall": 0.529,
+  "leaks": [],
+  "dropped_by_consensus": [
+    [
+      "sla-uptime-02",
+      "faithful->FN"
+    ],
+    [
+      "sla-uptime-02",
+      "faithful->FN"
+    ],
+    [
+      "sla-uptime-02",
+      "unfaithful->TN"
+    ],
+    [
+      "indemnify-04",
+      "faithful->FN"
+    ],
+    [
+      "indemnify-04",
+      "faithful->FN"
+    ],
+    [
+      "indemnify-04",
+      "faithful->FN"
+    ],
+    [
+      "indemnify-04",
+      "unfaithful->TN"
+    ],
+    [
+      "termination-06",
+      "faithful->FN"
+    ],
+    [
+      "termination-06",
+      "unfaithful->TN"
+    ],
+    [
+      "subprocessor-11",
+      "faithful->FN"
+    ],
+    [
+      "force-majeure-12",
+      "unfaithful->TN"
+    ],
+    [
+      "force-majeure-12",
+      "faithful->FN"
+    ]
+  ]
+}
