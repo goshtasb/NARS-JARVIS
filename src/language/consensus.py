@@ -40,19 +40,23 @@ def _consensus_key(claim: dict) -> tuple:
     return (t, polarity) + core
 
 
+def stable_across(passes: list[list[dict]], key_fn) -> list[dict]:
+    """Generic perturbation-consensus filter (reused by claims AND parameters): keep the FIRST pass's items
+    whose `key_fn` appears in EVERY pass, de-duped by key. An item that flutters across passes is dropped."""
+    if not passes or not passes[0]:
+        return []
+    stable = set.intersection(*[{key_fn(x) for x in p} for p in passes])
+    seen: set = set()
+    out = []
+    for x in passes[0]:                          # emit the canonical (temp-0) form, de-duped
+        k = key_fn(x)
+        if k in stable and k not in seen:
+            seen.add(k)
+            out.append(x)
+    return out
+
+
 def extract_consensus(llm, text: str, temps: tuple = _DEFAULT_TEMPS) -> list[dict]:
     """Run guarded extraction once per temperature; return the temp-0 (canonical) claims whose binding key
     appeared in EVERY pass. A claim whose bindings or polarity flutter across passes is dropped."""
-    passes = [extract_guarded(llm, text, temperature=t) for t in temps]
-    if not passes or not passes[0]:
-        return []
-    keysets = [{_consensus_key(c) for c in p} for p in passes]
-    stable = set.intersection(*keysets)
-    seen: set = set()
-    out = []
-    for c in passes[0]:                          # emit the canonical (temp-0) form, de-duped
-        k = _consensus_key(c)
-        if k in stable and k not in seen:
-            seen.add(k)
-            out.append(c)
-    return out
+    return stable_across([extract_guarded(llm, text, temperature=t) for t in temps], _consensus_key)
