@@ -84,8 +84,10 @@ def test_pipeline_runs_with_no_llm_env() -> None:
 def test_triage_modules_import_no_llm() -> None:
     """AST guard: the triage package must not import any model/LLM/AGPL dependency (CI-enforced determinism)."""
     forbidden = {"language.llm", "language", "llama_cpp", "fitz", "pymupdf"}
+    # extract.py is the SINGLE sanctioned model boundary (Slice 2); make_fixtures is dev-only.
+    allowed = {"test_", "make_fixtures.py", "extract.py"}
     for fn in os.listdir(_DIR):
-        if not fn.endswith(".py") or fn.startswith("test_") or fn == "make_fixtures.py":
+        if not fn.endswith(".py") or any(fn.startswith(a) or fn == a for a in allowed):
             continue
         tree = ast.parse(open(os.path.join(_DIR, fn)).read())
         for node in ast.walk(tree):
