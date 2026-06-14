@@ -1,0 +1,22 @@
+# GUARDED extraction grammar (v1.24.0 extraction redesign). Adds, over the 4-shape base grammar:
+#   - a MANDATORY `deontic` enum on every claim (shall / may / shall_not / must / must_not / none),
+#   - a MANDATORY `evidence` field — a verbatim quote of the source the verification gate grounds against,
+#   - OPTIONAL richer shapes (TemporalClaim / ConditionalClaim / QuantitativeClaim) the model uses only
+#     when the text warrants — the grammar never FORCES a deadline/condition slot to be filled.
+# Structure is grammar-guaranteed; SEMANTICS (is the binding faithful?) is the deterministic gate's job.
+
+root        ::= ws "[" ws ( claim ( ws "," ws claim )* )? ws "]" ws
+claim       ::= relation | property | temporal | conditional | quantitative
+
+relation    ::= "{" ws "\"type\"" ws ":" ws "\"RelationClaim\"" ws "," ws deontic ws "," ws "\"subject\"" ws ":" ws str ws "," ws "\"verb\"" ws ":" ws str ws "," ws "\"object\"" ws ":" ws str ws "," ws "\"evidence\"" ws ":" ws ev ws "}"
+property    ::= "{" ws "\"type\"" ws ":" ws "\"PropertyClaim\"" ws "," ws deontic ws "," ws "\"subject\"" ws ":" ws str ws "," ws "\"value\"" ws ":" ws str ws "," ws "\"evidence\"" ws ":" ws ev ws "}"
+temporal    ::= "{" ws "\"type\"" ws ":" ws "\"TemporalClaim\"" ws "," ws deontic ws "," ws "\"subject\"" ws ":" ws str ws "," ws "\"action\"" ws ":" ws str ws "," ws "\"object\"" ws ":" ws str ws "," ws "\"within_value\"" ws ":" ws str ws "," ws "\"within_unit\"" ws ":" ws str ws "," ws "\"evidence\"" ws ":" ws ev ws "}"
+conditional ::= "{" ws "\"type\"" ws ":" ws "\"ConditionalClaim\"" ws "," ws deontic ws "," ws "\"if\"" ws ":" ws str ws "," ws "\"then\"" ws ":" ws str ws "," ws "\"evidence\"" ws ":" ws ev ws "}"
+quantitative ::= "{" ws "\"type\"" ws ":" ws "\"QuantitativeClaim\"" ws "," ws deontic ws "," ws "\"subject\"" ws ":" ws str ws "," ws "\"metric\"" ws ":" ws str ws "," ws "\"amount\"" ws ":" ws str ws "," ws "\"evidence\"" ws ":" ws ev ws "}"
+
+deontic     ::= "\"deontic\"" ws ":" ws ( "\"shall\"" | "\"may\"" | "\"shall_not\"" | "\"must\"" | "\"must_not\"" | "\"none\"" )
+str         ::= "\"" sc* "\""
+sc          ::= [a-zA-Z0-9] | " " | "-" | "." | "%" | "_"
+ev          ::= "\"" ec* "\""
+ec          ::= [a-zA-Z0-9] | " " | "-" | "." | "%" | "," | "(" | ")" | "/" | ";" | ":" | "'"
+ws          ::= [ \t\n]*
