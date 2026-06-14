@@ -14,6 +14,7 @@ exactly like a voice transcription. Light tasks (reports, file reads, web egress
 """
 from __future__ import annotations
 
+import sys
 import time
 from typing import Callable
 
@@ -29,13 +30,15 @@ _OFFLOAD = {"summarize_file"}
 class OvernightRunner:
     def __init__(self, queue, ledger, action_runner, emit: Callable[[str, dict], None],
                  make_job: Callable[..., object] = SummaryJob,
-                 on_summary: Callable[[str, str], None] | None = None) -> None:
+                 on_summary: Callable[[str, str], None] | None = None,
+                 on_idle_maintenance: Callable[[], None] | None = None) -> None:
         self._queue = queue
         self._ledger = ledger
         self._actions = action_runner          # ActionRunner: .perform(name, arg) -> str
         self._emit = emit
         self._make_job = make_job              # injectable for tests; default spawns the real worker
         self._on_summary = on_summary          # ADR-058: (source_path, text) -> archive a briefed summary
+        self._on_idle_maintenance = on_idle_maintenance  # v1.24.0 Step 3: L2 decay sweep when the queue drains
         self._active = False
         self._job = None                       # the in-flight offloaded SummaryJob (None when idle)
         self._job_arg = ""                     # the source path of the in-flight summary (for the archive)
@@ -66,6 +69,11 @@ class OvernightRunner:
         task = self._queue.next_pending(now)
         if task is None:                                    # queue drained -> done
             self._active = False
+            if self._on_idle_maintenance is not None:       # v1.24.0 Step 3: L2 decay sweep on idle
+                try:
+                    self._on_idle_maintenance()
+                except Exception as exc:  # noqa: BLE001 — maintenance must never abort the run's completion
+                    sys.stderr.write(f"[overnight] idle maintenance failed: {exc}\n")
             self._emit("overnight_done", self._tally())
             return
         tid, name, arg = task["id"], task["action"], task["arg"]
