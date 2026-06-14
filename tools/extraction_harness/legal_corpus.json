@@ -1,0 +1,157 @@
+{
+  "_meta": {
+    "artifact": "NARS-JARVIS — Legal Extraction Validation Corpus (v1.24.0 extraction-pipeline audit)",
+    "purpose": "Hand-labeled dense legal clauses for measuring (A) summarize-then-extract vs (B) direct-extract content recall, and (C) the structural expressiveness ceiling of the 4-shape GBNF grammar. Ground truth is the IDEAL logical extraction even where it EXCEEDS the current grammar.",
+    "constraint_kinds": {
+      "relational": "binary S-verb-O — EXPRESSIBLE as RelationClaim",
+      "property":   "subject has property/attribute — EXPRESSIBLE as PropertyClaim",
+      "temporal":   "deadline / duration / sequence — NOT expressible (needs NAL-7 + bound quantity)",
+      "conditional":"if-trigger-then-consequence — NOT expressible (needs NAL implication =/> )",
+      "modal":      "shall / must / may — obligation/permission — NOT expressible (no deontic operator)",
+      "quantitative":"amount / percentage / cap bound to a thing — NOT expressible as a bound quantity",
+      "nary":       "≥3 arguments bound together — NOT expressible (binary copula only)"
+    },
+    "expressible_kinds": ["relational", "property"]
+  },
+  "cases": [
+    {
+      "id": "breach-notify-01",
+      "category": "breach notification (SLA/DPA)",
+      "text": "Vendor shall notify Customer in writing within seventy-two (72) hours of discovering any data breach affecting Customer Personal Data.",
+      "critical_constraints": [
+        {"id": "actor-action", "kind": "relational", "key_tokens": [["vendor", "notify"], ["vendor", "notif"]], "note": "Vendor is the obligated party performing notification"},
+        {"id": "recipient", "kind": "relational", "key_tokens": [["customer"]], "note": "notification goes to Customer"},
+        {"id": "manner", "kind": "property", "key_tokens": [["writing"]], "note": "in writing"},
+        {"id": "deadline", "kind": "temporal", "key_tokens": [["72", "hour"], ["seventy-two", "hour"], ["seventy", "hour"]], "note": "within 72 hours — must bind to the notification action"},
+        {"id": "trigger", "kind": "conditional", "key_tokens": [["breach"]], "note": "triggered by discovering a data breach — antecedent of an implication"},
+        {"id": "modality", "kind": "modal", "key_tokens": [["shall"], ["obligat"], ["must"], ["requir"]], "note": "shall = obligation; loss of this strips legal liability"}
+      ]
+    },
+    {
+      "id": "sla-uptime-02",
+      "category": "SLA uptime + remedy",
+      "text": "If monthly availability falls below 99.9%, Customer shall be entitled to a service credit equal to 10% of the monthly fee for each full hour of downtime.",
+      "critical_constraints": [
+        {"id": "condition", "kind": "conditional", "key_tokens": [["availability"], ["below"], ["99.9"]], "note": "antecedent: availability < 99.9%"},
+        {"id": "threshold-qty", "kind": "quantitative", "key_tokens": [["99.9"]], "note": "99.9% threshold — bound quantity"},
+        {"id": "consequence", "kind": "relational", "key_tokens": [["customer", "credit"], ["service credit"]], "note": "consequent: Customer entitled to a service credit"},
+        {"id": "credit-qty", "kind": "quantitative", "key_tokens": [["10%"], ["10 %"], ["ten percent"]], "note": "credit = 10% of monthly fee — bound quantity"},
+        {"id": "rate-binding", "kind": "nary", "key_tokens": [["each", "hour"], ["per hour"], ["full hour"]], "note": "per full hour of downtime — ties credit to a rate"},
+        {"id": "modality", "kind": "modal", "key_tokens": [["shall"], ["entitl"]], "note": "entitlement"}
+      ]
+    },
+    {
+      "id": "nda-confid-03",
+      "category": "NDA confidentiality scope + duration",
+      "text": "The Receiving Party shall hold all Confidential Information in strict confidence for a period of five (5) years from the date of disclosure and shall not disclose it to any third party.",
+      "critical_constraints": [
+        {"id": "actor-duty", "kind": "relational", "key_tokens": [["receiving party", "confidence"], ["receiving", "confiden"]], "note": "Receiving Party holds Confidential Information in confidence"},
+        {"id": "duration", "kind": "temporal", "key_tokens": [["5", "year"], ["five", "year"]], "note": "for 5 years from disclosure"},
+        {"id": "duration-anchor", "kind": "temporal", "key_tokens": [["disclosure"]], "note": "clock starts at date of disclosure"},
+        {"id": "prohibition", "kind": "relational", "key_tokens": [["not", "disclose"], ["third party"]], "note": "shall NOT disclose to third party — negated relation"},
+        {"id": "modality", "kind": "modal", "key_tokens": [["shall"]], "note": "obligation"}
+      ]
+    },
+    {
+      "id": "indemnify-04",
+      "category": "indemnification",
+      "text": "Supplier shall indemnify and hold harmless the Buyer against any third-party claims arising from Supplier's gross negligence or willful misconduct.",
+      "critical_constraints": [
+        {"id": "actor-action", "kind": "relational", "key_tokens": [["supplier", "indemnif"]], "note": "Supplier indemnifies Buyer"},
+        {"id": "beneficiary", "kind": "relational", "key_tokens": [["buyer"]], "note": "Buyer is the indemnified party"},
+        {"id": "scope", "kind": "relational", "key_tokens": [["third-party claim"], ["third party claim"], ["claim"]], "note": "covers third-party claims"},
+        {"id": "trigger", "kind": "conditional", "key_tokens": [["negligence"], ["willful misconduct"], ["misconduct"]], "note": "only claims ARISING FROM gross negligence/willful misconduct — scoping condition"}
+      ]
+    },
+    {
+      "id": "payment-net-05",
+      "category": "payment terms + late interest",
+      "text": "Buyer shall pay all undisputed invoices within thirty (30) days of receipt; overdue amounts shall accrue interest at 1.5% per month.",
+      "critical_constraints": [
+        {"id": "actor-action", "kind": "relational", "key_tokens": [["buyer", "pay"]], "note": "Buyer pays invoices"},
+        {"id": "deadline", "kind": "temporal", "key_tokens": [["30", "day"], ["thirty", "day"]], "note": "within 30 days of receipt"},
+        {"id": "scope", "kind": "property", "key_tokens": [["undisputed"]], "note": "only undisputed invoices"},
+        {"id": "penalty-cond", "kind": "conditional", "key_tokens": [["overdue"], ["interest"]], "note": "if overdue then interest accrues"},
+        {"id": "penalty-qty", "kind": "quantitative", "key_tokens": [["1.5%"], ["1.5 %"], ["1.5"]], "note": "1.5% per month — bound rate"}
+      ]
+    },
+    {
+      "id": "termination-06",
+      "category": "termination for cause + cure period",
+      "text": "Either party may terminate this Agreement upon thirty (30) days' written notice if the other party materially breaches and fails to cure such breach within the notice period.",
+      "critical_constraints": [
+        {"id": "right", "kind": "modal", "key_tokens": [["may", "terminat"], ["terminat"]], "note": "may = permission/right to terminate"},
+        {"id": "notice-temporal", "kind": "temporal", "key_tokens": [["30", "day"], ["thirty", "day"]], "note": "30 days written notice"},
+        {"id": "notice-manner", "kind": "property", "key_tokens": [["written"], ["writing"]], "note": "written notice"},
+        {"id": "condition", "kind": "conditional", "key_tokens": [["material", "breach"], ["materially breach"], ["breach"]], "note": "if material breach AND fails to cure"},
+        {"id": "cure-temporal", "kind": "temporal", "key_tokens": [["cure"]], "note": "fails to cure within the notice period — nested temporal condition"}
+      ]
+    },
+    {
+      "id": "liability-cap-07",
+      "category": "limitation of liability",
+      "text": "In no event shall either party's aggregate liability exceed the total fees paid by Customer in the twelve (12) months preceding the claim.",
+      "critical_constraints": [
+        {"id": "cap-relation", "kind": "relational", "key_tokens": [["liability"], ["aggregate liability"]], "note": "liability is capped"},
+        {"id": "cap-qty", "kind": "quantitative", "key_tokens": [["total fees"], ["fees paid"]], "note": "cap = total fees paid in prior 12 months — bound quantity"},
+        {"id": "cap-window", "kind": "temporal", "key_tokens": [["12", "month"], ["twelve", "month"]], "note": "12-month look-back window"},
+        {"id": "modality", "kind": "modal", "key_tokens": [["shall", "not"], ["no event"], ["exceed"]], "note": "shall not exceed — hard prohibition"}
+      ]
+    },
+    {
+      "id": "data-residency-08",
+      "category": "data residency",
+      "text": "Provider shall store and process all Customer Data exclusively within the European Economic Area and shall not transfer such data outside the EEA without Customer's prior written consent.",
+      "critical_constraints": [
+        {"id": "actor-action", "kind": "relational", "key_tokens": [["provider", "store"], ["provider", "process"]], "note": "Provider stores/processes Customer Data"},
+        {"id": "location", "kind": "property", "key_tokens": [["european economic area"], ["eea"]], "note": "within the EEA"},
+        {"id": "prohibition", "kind": "relational", "key_tokens": [["not", "transfer"], ["outside"]], "note": "shall not transfer outside EEA"},
+        {"id": "exception-cond", "kind": "conditional", "key_tokens": [["consent"], ["prior written consent"]], "note": "UNLESS prior written consent — exception condition"}
+      ]
+    },
+    {
+      "id": "audit-rights-09",
+      "category": "audit rights + frequency",
+      "text": "Customer may audit Vendor's compliance with this Agreement no more than once per calendar year upon at least fourteen (14) days' prior written notice.",
+      "critical_constraints": [
+        {"id": "right", "kind": "modal", "key_tokens": [["may", "audit"], ["audit"]], "note": "may = audit right"},
+        {"id": "object", "kind": "relational", "key_tokens": [["vendor", "complian"], ["complian"]], "note": "audits Vendor's compliance"},
+        {"id": "frequency-cap", "kind": "quantitative", "key_tokens": [["once"], ["per", "year"], ["calendar year"]], "note": "max once per calendar year — frequency bound"},
+        {"id": "notice-temporal", "kind": "temporal", "key_tokens": [["14", "day"], ["fourteen", "day"]], "note": "≥14 days prior notice"}
+      ]
+    },
+    {
+      "id": "warranty-10",
+      "category": "warranty period",
+      "text": "Manufacturer warrants that the Goods will be free from defects in materials and workmanship for ninety (90) days following delivery.",
+      "critical_constraints": [
+        {"id": "warranty-relation", "kind": "relational", "key_tokens": [["manufacturer", "warrant"], ["goods", "defect"]], "note": "Manufacturer warrants Goods free from defects"},
+        {"id": "scope", "kind": "property", "key_tokens": [["materials"], ["workmanship"], ["defect"]], "note": "defects in materials and workmanship"},
+        {"id": "warranty-period", "kind": "temporal", "key_tokens": [["90", "day"], ["ninety", "day"]], "note": "for 90 days following delivery"},
+        {"id": "period-anchor", "kind": "temporal", "key_tokens": [["delivery"]], "note": "clock starts at delivery"}
+      ]
+    },
+    {
+      "id": "subprocessor-11",
+      "category": "subprocessor approval (DPA)",
+      "text": "Processor shall not engage any subprocessor without the Controller's prior written authorization, and shall remain fully liable for the acts and omissions of any approved subprocessor.",
+      "critical_constraints": [
+        {"id": "prohibition", "kind": "relational", "key_tokens": [["not", "engage"], ["subprocessor"]], "note": "shall not engage a subprocessor"},
+        {"id": "exception-cond", "kind": "conditional", "key_tokens": [["authoriz"], ["prior written"]], "note": "unless prior written authorization"},
+        {"id": "residual-liability", "kind": "relational", "key_tokens": [["processor", "liable"], ["remain", "liable"]], "note": "Processor remains liable for subprocessor acts"},
+        {"id": "modality", "kind": "modal", "key_tokens": [["shall"]], "note": "obligation"}
+      ]
+    },
+    {
+      "id": "force-majeure-12",
+      "category": "force majeure + notice",
+      "text": "Neither party shall be liable for any failure to perform due to events beyond its reasonable control, provided that the affected party notifies the other within five (5) business days of the event.",
+      "critical_constraints": [
+        {"id": "excuse", "kind": "conditional", "key_tokens": [["beyond", "control"], ["reasonable control"]], "note": "non-liability IF event beyond reasonable control"},
+        {"id": "excuse-relation", "kind": "relational", "key_tokens": [["not", "liable"], ["failure", "perform"]], "note": "party not liable for failure to perform"},
+        {"id": "proviso-cond", "kind": "conditional", "key_tokens": [["provided"], ["notif"]], "note": "PROVIDED THAT the affected party gives notice — proviso condition"},
+        {"id": "notice-temporal", "kind": "temporal", "key_tokens": [["5", "business day"], ["five", "business day"], ["5", "day"]], "note": "within 5 business days of the event"}
+      ]
+    }
+  ]
+}

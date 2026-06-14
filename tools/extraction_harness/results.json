@@ -1,0 +1,885 @@
+{
+  "meta": {
+    "artifact": "NARS-JARVIS \u2014 Legal Extraction Validation Corpus (v1.24.0 extraction-pipeline audit)",
+    "purpose": "Hand-labeled dense legal clauses for measuring (A) summarize-then-extract vs (B) direct-extract content recall, and (C) the structural expressiveness ceiling of the 4-shape GBNF grammar. Ground truth is the IDEAL logical extraction even where it EXCEEDS the current grammar.",
+    "constraint_kinds": {
+      "relational": "binary S-verb-O \u2014 EXPRESSIBLE as RelationClaim",
+      "property": "subject has property/attribute \u2014 EXPRESSIBLE as PropertyClaim",
+      "temporal": "deadline / duration / sequence \u2014 NOT expressible (needs NAL-7 + bound quantity)",
+      "conditional": "if-trigger-then-consequence \u2014 NOT expressible (needs NAL implication =/> )",
+      "modal": "shall / must / may \u2014 obligation/permission \u2014 NOT expressible (no deontic operator)",
+      "quantitative": "amount / percentage / cap bound to a thing \u2014 NOT expressible as a bound quantity",
+      "nary": "\u22653 arguments bound together \u2014 NOT expressible (binary copula only)"
+    },
+    "expressible_kinds": [
+      "relational",
+      "property"
+    ]
+  },
+  "aggregate": {
+    "n_cases": 12,
+    "elapsed_sec": 212.2,
+    "avg_recall_pathB_direct": 0.888,
+    "avg_recall_pathA_summary": 0.71,
+    "avg_structural_omission_rate": 0.59,
+    "total_constraints": 55,
+    "total_inexpressible": 33,
+    "pathC_valid_json_rate": 1.0,
+    "pathC_deadline_bound": 8,
+    "pathC_condition_bound": 4,
+    "pathC_total_degenerate_fields": 0,
+    "docA": {
+      "summary_chars": 380,
+      "narsese": [
+        "<(vendor * notification_requirements_for_data_breaches) --> has>.",
+        "<(customer * service_credit_for_downtime) --> entitled_to>.",
+        "<(parties * confidentiality_obligations) --> obey>.",
+        "<(vendor * indemnification_clauses) --> agrees_to>.",
+        "<(parties * payment_terms) --> agree_on>.",
+        "<(parties * termination_conditions) --> agree_on>.",
+        "<(parties * liability_caps) --> agree_on>.",
+        "<(parties * data_storage_restrictions) --> agree_on>.",
+        "<(parties * audit_rights) --> grant>.",
+        "<(parties * warranties) --> make>.",
+        "<(parties * force_majeure_provisions) --> agree_on>."
+      ],
+      "captured": 11,
+      "total_constraints": 55,
+      "recall": 0.2
+    }
+  },
+  "cases": [
+    {
+      "id": "breach-notify-01",
+      "category": "breach notification (SLA/DPA)",
+      "text": "Vendor shall notify Customer in writing within seventy-two (72) hours of discovering any data breach affecting Customer Personal Data.",
+      "expressibility": {
+        "n_total": 6,
+        "n_inexpressible": 3,
+        "inexpressible_kinds": [
+          "conditional",
+          "modal",
+          "temporal"
+        ],
+        "structural_omission_rate": 0.5
+      },
+      "pathB_direct": {
+        "raw": "[{\"type\": \"RelationClaim\", \"subject\": \"Vendor\", \"verb\": \"shall notify\", \"object\": \"Customer in writing\"} , {\"type\": \"RelationClaim\", \"subject\": \"Vendor\", \"verb\": \"notify within\", \"object\": \"seventy-two hours\"} , {\"type\": \"RelationClaim\", \"subject\": \"data breach\", \"verb\": \"affecting\", \"object\": \"Customer Personal Data\"}]",
+        "narsese": [
+          "<(vendor * customer_in_writing) --> shall_notify>.",
+          "<(vendor * seventytwo_hours) --> notify_within>.",
+          "<(data_breach * customer_personal_data) --> affecting>."
+        ],
+        "recall": {
+          "captured": [
+            "actor-action",
+            "recipient",
+            "manner",
+            "deadline",
+            "trigger",
+            "modality"
+          ],
+          "n_captured": 6,
+          "n_total": 6,
+          "recall": 1.0
+        },
+        "fabrication": []
+      },
+      "pathA_summary": {
+        "summary": "The vendor must notify the customer in writing within 72 hours of discovering any data breach that affects customer personal data.",
+        "raw": "[{\"type\": \"RelationClaim\", \"subject\": \"vendor\", \"verb\": \"must notify\", \"object\": \"customer in writing\"} , {\"type\": \"RelationClaim\", \"subject\": \"data breach\", \"verb\": \"must be notified within\", \"object\": \"72 hours\"} , {\"type\": \"PropertyClaim\", \"subject\": \"data breach\", \"value\": \"affects customer personal data\"}]",
+        "narsese": [
+          "<(vendor * customer_in_writing) --> must_notify>.",
+          "<(data_breach * 72_hours) --> must_be_notified_within>.",
+          "<data_breach --> [affects_customer_personal_data]>."
+        ],
+        "recall": {
+          "captured": [
+            "actor-action",
+            "recipient",
+            "manner",
+            "deadline",
+            "trigger",
+            "modality"
+          ],
+          "n_captured": 6,
+          "n_total": 6,
+          "recall": 1.0
+        },
+        "fabrication": [
+          "notified",
+          "affects"
+        ]
+      },
+      "pathC_expanded": {
+        "raw": "[\n  {\n    \"type\": \"TemporalClaim\",\n    \"subject\": \"Vendor\",\n    \"action\": \"notify\",\n    \"object\": \"Customer in writing\",\n    \"within_value\": \"72\",\n    \"within_unit\": \"hours\"\n  },\n    {\n    \"type\": \"RelationClaim\",\n    \"subject\": \"Vendor\",\n    \"verb\": \"shall notify\",\n    \"object\": \"Customer in writing\"\n  },\n    {\n    \"type\": \"ConditionalClaim\",\n    \"if\": \"discovering any data breach affecting Customer Personal Data\",\n    \"then\": \"Vendor shall notify Customer in writing within seventy-two hours\"\n  }\n]",
+        "score": {
+          "valid_json": true,
+          "n_claims": 3,
+          "conditional": 1,
+          "temporal": 1,
+          "degenerate_fields": 0,
+          "deadline_bound": true,
+          "condition_bound": true
+        }
+      }
+    },
+    {
+      "id": "sla-uptime-02",
+      "category": "SLA uptime + remedy",
+      "text": "If monthly availability falls below 99.9%, Customer shall be entitled to a service credit equal to 10% of the monthly fee for each full hour of downtime.",
+      "expressibility": {
+        "n_total": 6,
+        "n_inexpressible": 5,
+        "inexpressible_kinds": [
+          "conditional",
+          "modal",
+          "nary",
+          "quantitative"
+        ],
+        "structural_omission_rate": 0.833
+      },
+      "pathB_direct": {
+        "raw": "[{\"type\": \"RelationClaim\", \"subject\": \"Customer\", \"verb\": \"entitled to\", \"object\": \"service credit\"}, {\"type\": \"PropertyClaim\", \"subject\": \"service credit\", \"value\": \"10 percent of the monthly fee for each full hour of downtime\"}]",
+        "narsese": [
+          "<(customer * service_credit) --> entitled_to>.",
+          "<service_credit --> [10_percent_of_the_monthly_fee_for_each_full_hour_of_downtime]>."
+        ],
+        "recall": {
+          "captured": [
+            "consequence",
+            "rate-binding",
+            "modality"
+          ],
+          "n_captured": 3,
+          "n_total": 6,
+          "recall": 0.5
+        },
+        "fabrication": [
+          "percent"
+        ]
+      },
+      "pathA_summary": {
+        "summary": "If monthly availability drops below 99.9%, the customer is entitled to a service credit of 10% of the monthly fee for each full hour of downtime.",
+        "raw": "[{\"type\": \"RelationClaim\", \"subject\": \"customer\", \"verb\": \"is entitled to\", \"object\": \"service credit of 10 percent of the monthly fee for each full hour of downtime\"}, {\"type\": \"PropertyClaim\", \"subject\": \"monthly availability\", \"value\": \"drops below 99 point 9 percent\"}]",
+        "narsese": [
+          "<(customer * service_credit_of_10_percent_of_the_monthly_fee_for_each_full_hour_of_downtime) --> is_entitled_to>.",
+          "<monthly_availability --> [drops_below_99_point_9_percent]>."
+        ],
+        "recall": {
+          "captured": [
+            "condition",
+            "consequence",
+            "rate-binding",
+            "modality"
+          ],
+          "n_captured": 4,
+          "n_total": 6,
+          "recall": 0.667
+        },
+        "fabrication": [
+          "percent",
+          "drops",
+          "point"
+        ]
+      },
+      "pathC_expanded": {
+        "raw": "[\n  {\n    \"type\": \"ConditionalClaim\",\n    \"if\": \"monthly availability falls below 99.9\",\n    \"then\": \"Customer shall be entitled to a service credit\"\n  },\n  {\n    \"type\": \"PropertyClaim\",\n    \"subject\": \"service credit\",\n    \"value\": \"equal to 10 percent of the monthly fee for each full hour of downtime\"\n  }\n]",
+        "score": {
+          "valid_json": true,
+          "n_claims": 2,
+          "conditional": 1,
+          "temporal": 0,
+          "degenerate_fields": 0,
+          "deadline_bound": false,
+          "condition_bound": true
+        }
+      }
+    },
+    {
+      "id": "nda-confid-03",
+      "category": "NDA confidentiality scope + duration",
+      "text": "The Receiving Party shall hold all Confidential Information in strict confidence for a period of five (5) years from the date of disclosure and shall not disclose it to any third party.",
+      "expressibility": {
+        "n_total": 5,
+        "n_inexpressible": 3,
+        "inexpressible_kinds": [
+          "modal",
+          "temporal"
+        ],
+        "structural_omission_rate": 0.6
+      },
+      "pathB_direct": {
+        "raw": "[{\"type\": \"RelationClaim\", \"subject\": \"Receiving Party\", \"verb\": \"shall hold\", \"object\": \"Confidential Information in strict confidence\"}, {\"type\": \"RelationClaim\", \"subject\": \"Confidential Information\", \"verb\": \"shall be held\", \"object\": \"for a period of five years from the date of disclosure\"}, {\"type\": \"RelationClaim\", \"subject\": \"Receiving Party\", \"verb\": \"shall not disclose\", \"object\": \"Confidential Information to any third party\"}]",
+        "narsese": [
+          "<(receiving_party * confidential_information_in_strict_confidence) --> shall_hold>.",
+          "<(confidential_information * for_a_period_of_five_years_from_the_date_of_disclosure) --> shall_be_held>.",
+          "<(receiving_party * confidential_information_to_any_third_party) --> shall_not_disclose>."
+        ],
+        "recall": {
+          "captured": [
+            "actor-duty",
+            "duration",
+            "duration-anchor",
+            "prohibition",
+            "modality"
+          ],
+          "n_captured": 5,
+          "n_total": 5,
+          "recall": 1.0
+        },
+        "fabrication": [
+          "held"
+        ]
+      },
+      "pathA_summary": {
+        "summary": "The Receiving Party must keep all Confidential Information confidential for five years from the disclosure date and may not share it with any third parties.",
+        "raw": "[{\"type\": \"RelationClaim\", \"subject\": \"Receiving Party\", \"verb\": \"must keep\", \"object\": \"Confidential Information confidential for five years from the disclosure date\"}, {\"type\": \"RelationClaim\", \"subject\": \"Receiving Party\", \"verb\": \"may not share\", \"object\": \"Confidential Information with any third parties\"}]",
+        "narsese": [
+          "<(receiving_party * confidential_information_confidential_for_five_years_from_the_disclosure_date) --> must_keep>.",
+          "<(receiving_party * confidential_information_with_any_third_parties) --> may_not_share>."
+        ],
+        "recall": {
+          "captured": [
+            "actor-duty",
+            "duration",
+            "duration-anchor"
+          ],
+          "n_captured": 3,
+          "n_total": 5,
+          "recall": 0.6
+        },
+        "fabrication": [
+          "keep",
+          "share"
+        ]
+      },
+      "pathC_expanded": {
+        "raw": "[\n  {\n    \"type\": \"TemporalClaim\",\n    \"subject\": \"Confidential Information\",\n    \"action\": \"hold in strict confidence\",\n    \"object\": \"Receiving Party\",\n    \"within_value\": \"5\",\n    \"within_unit\": \"years\"\n  },\n  {\n    \"type\": \"RelationClaim\",\n    \"subject\": \"Receiving Party\",\n    \"verb\": \"shall not disclose\",\n    \"object\": \"Confidential Information to any third party\"\n  }\n]",
+        "score": {
+          "valid_json": true,
+          "n_claims": 2,
+          "conditional": 0,
+          "temporal": 1,
+          "degenerate_fields": 0,
+          "deadline_bound": true,
+          "condition_bound": false
+        }
+      }
+    },
+    {
+      "id": "indemnify-04",
+      "category": "indemnification",
+      "text": "Supplier shall indemnify and hold harmless the Buyer against any third-party claims arising from Supplier's gross negligence or willful misconduct.",
+      "expressibility": {
+        "n_total": 4,
+        "n_inexpressible": 1,
+        "inexpressible_kinds": [
+          "conditional"
+        ],
+        "structural_omission_rate": 0.25
+      },
+      "pathB_direct": {
+        "raw": "[{\"type\": \"RelationClaim\", \"subject\": \"Supplier\", \"verb\": \"indemnify and hold harmless\", \"object\": \"Buyer\"}, {\"type\": \"RelationClaim\", \"subject\": \"third-party claims\", \"verb\": \"arise from\", \"object\": \"Supplier gross negligence or willful misconduct\"}]",
+        "narsese": [
+          "<(supplier * buyer) --> indemnify_and_hold_harmless>.",
+          "<(thirdparty_claims * supplier_gross_negligence_or_willful_misconduct) --> arise_from>."
+        ],
+        "recall": {
+          "captured": [
+            "actor-action",
+            "beneficiary",
+            "scope",
+            "trigger"
+          ],
+          "n_captured": 4,
+          "n_total": 4,
+          "recall": 1.0
+        },
+        "fabrication": [
+          "arise"
+        ]
+      },
+      "pathA_summary": {
+        "summary": "The supplier must protect and shield the buyer from any external claims that arise due to the supplier's extreme carelessness or intentional misconduct.",
+        "raw": "[{\"type\": \"RelationClaim\", \"subject\": \"supplier\", \"verb\": \"must protect and shield\", \"object\": \"buyer\"}]",
+        "narsese": [
+          "<(supplier * buyer) --> must_protect_and_shield>."
+        ],
+        "recall": {
+          "captured": [
+            "beneficiary"
+          ],
+          "n_captured": 1,
+          "n_total": 4,
+          "recall": 0.25
+        },
+        "fabrication": [
+          "protect",
+          "shield"
+        ]
+      },
+      "pathC_expanded": {
+        "raw": "[\n  {\n    \"type\": \"RelationClaim\",\n    \"subject\": \"Supplier\",\n    \"verb\": \"shall indemnify and hold harmless\",\n    \"object\": \"Buyer\"\n  },\n  {\n    \"type\": \"PropertyClaim\",\n    \"subject\": \"third-party claims\",\n    \"value\": \"arising from Supplier gross negligence or willful misconduct\"\n  }\n]",
+        "score": {
+          "valid_json": true,
+          "n_claims": 2,
+          "conditional": 0,
+          "temporal": 0,
+          "degenerate_fields": 0,
+          "deadline_bound": false,
+          "condition_bound": false
+        }
+      }
+    },
+    {
+      "id": "payment-net-05",
+      "category": "payment terms + late interest",
+      "text": "Buyer shall pay all undisputed invoices within thirty (30) days of receipt; overdue amounts shall accrue interest at 1.5% per month.",
+      "expressibility": {
+        "n_total": 5,
+        "n_inexpressible": 3,
+        "inexpressible_kinds": [
+          "conditional",
+          "quantitative",
+          "temporal"
+        ],
+        "structural_omission_rate": 0.6
+      },
+      "pathB_direct": {
+        "raw": "[{\"type\": \"RelationClaim\", \"subject\": \"Buyer\", \"verb\": \"shall pay\", \"object\": \"undisputed invoices\"}, {\"type\": \"RelationClaim\", \"subject\": \"undisputed invoices\", \"verb\": \"shall be paid within\", \"object\": \"thirty days of receipt\"}, {\"type\": \"RelationClaim\", \"subject\": \"overdue amounts\", \"verb\": \"shall accrue interest\", \"object\": \"at 1 point 5 percent per month\"}]",
+        "narsese": [
+          "<(buyer * undisputed_invoices) --> shall_pay>.",
+          "<(undisputed_invoices * thirty_days_of_receipt) --> shall_be_paid_within>.",
+          "<(overdue_amounts * at_1_point_5_percent_per_month) --> shall_accrue_interest>."
+        ],
+        "recall": {
+          "captured": [
+            "actor-action",
+            "deadline",
+            "scope",
+            "penalty-cond"
+          ],
+          "n_captured": 4,
+          "n_total": 5,
+          "recall": 0.8
+        },
+        "fabrication": [
+          "paid",
+          "point",
+          "percent"
+        ]
+      },
+      "pathA_summary": {
+        "summary": "The buyer must pay all undisputed invoices within 30 days of receipt. Overdue payments will accrue interest at a rate of 1.5% per month.",
+        "raw": "[{\"type\": \"RelationClaim\", \"subject\": \"buyer\", \"verb\": \"must pay\", \"object\": \"undisputed invoices\"}, {\"type\": \"RelationClaim\", \"subject\": \"undisputed invoices\", \"verb\": \"be paid within\", \"object\": \"30 days of receipt\"}, {\"type\": \"RelationClaim\", \"subject\": \"overdue payments\", \"verb\": \"accrue interest\", \"object\": \"1500 basis points per month\"}]",
+        "narsese": [
+          "<(buyer * undisputed_invoices) --> must_pay>.",
+          "<(undisputed_invoices * 30_days_of_receipt) --> be_paid_within>.",
+          "<(overdue_payments * 1500_basis_points_per_month) --> accrue_interest>."
+        ],
+        "recall": {
+          "captured": [
+            "actor-action",
+            "deadline",
+            "scope",
+            "penalty-cond"
+          ],
+          "n_captured": 4,
+          "n_total": 5,
+          "recall": 0.8
+        },
+        "fabrication": [
+          "paid",
+          "payments",
+          "1500",
+          "basis",
+          "points"
+        ]
+      },
+      "pathC_expanded": {
+        "raw": "[\n  {\n    \"type\": \"TemporalClaim\",\n    \"subject\": \"Buyer\",\n    \"action\": \"pay\",\n    \"object\": \"undisputed invoices\",\n    \"within_value\": \"30\",\n    \"within_unit\": \"days\"\n  },\n  {\n    \"type\": \"RelationClaim\",\n    \"subject\": \"overdue amounts\",\n    \"verb\": \"shall accrue interest\",\n    \"object\": \"at 1.5 percent per month\"\n  }\n]",
+        "score": {
+          "valid_json": true,
+          "n_claims": 2,
+          "conditional": 0,
+          "temporal": 1,
+          "degenerate_fields": 0,
+          "deadline_bound": true,
+          "condition_bound": false
+        }
+      }
+    },
+    {
+      "id": "termination-06",
+      "category": "termination for cause + cure period",
+      "text": "Either party may terminate this Agreement upon thirty (30) days' written notice if the other party materially breaches and fails to cure such breach within the notice period.",
+      "expressibility": {
+        "n_total": 5,
+        "n_inexpressible": 4,
+        "inexpressible_kinds": [
+          "conditional",
+          "modal",
+          "temporal"
+        ],
+        "structural_omission_rate": 0.8
+      },
+      "pathB_direct": {
+        "raw": "[{\"type\": \"RelationClaim\", \"subject\": \"party\", \"verb\": \"may terminate\", \"object\": \"Agreement\"}, {\"type\": \"PropertyClaim\", \"subject\": \"notice\", \"value\": \"thirty days written\"}]",
+        "narsese": [
+          "<(party * agreement) --> may_terminate>.",
+          "<notice --> [thirty_days_written]>."
+        ],
+        "recall": {
+          "captured": [
+            "right",
+            "notice-temporal",
+            "notice-manner"
+          ],
+          "n_captured": 3,
+          "n_total": 5,
+          "recall": 0.6
+        },
+        "fabrication": []
+      },
+      "pathA_summary": {
+        "summary": "Either party can terminate the Agreement after 30 days of written notice if the other party breaches the Agreement materially and does not fix the breach within that period.",
+        "raw": "[{\"type\": \"RelationClaim\", \"subject\": \"party\", \"verb\": \"can terminate\", \"object\": \"Agreement\"}]",
+        "narsese": [
+          "<(party * agreement) --> can_terminate>."
+        ],
+        "recall": {
+          "captured": [
+            "right"
+          ],
+          "n_captured": 1,
+          "n_total": 5,
+          "recall": 0.2
+        },
+        "fabrication": []
+      },
+      "pathC_expanded": {
+        "raw": "[\n  {\n    \"type\": \"ConditionalClaim\",\n    \"if\": \"the other party materially breaches and fails to cure such breach within the notice period\",\n    \"then\": \"either party may terminate this Agreement\"\n  },\n  {\n    \"type\": \"TemporalClaim\",\n    \"subject\": \"the other party\",\n    \"action\": \"cure such breach\",\n    \"object\": \"within the notice period\",\n    \"within_value\": \"30\",\n    \"within_unit\": \"days\"\n  }\n]",
+        "score": {
+          "valid_json": true,
+          "n_claims": 2,
+          "conditional": 1,
+          "temporal": 1,
+          "degenerate_fields": 0,
+          "deadline_bound": true,
+          "condition_bound": true
+        }
+      }
+    },
+    {
+      "id": "liability-cap-07",
+      "category": "limitation of liability",
+      "text": "In no event shall either party's aggregate liability exceed the total fees paid by Customer in the twelve (12) months preceding the claim.",
+      "expressibility": {
+        "n_total": 4,
+        "n_inexpressible": 3,
+        "inexpressible_kinds": [
+          "modal",
+          "quantitative",
+          "temporal"
+        ],
+        "structural_omission_rate": 0.75
+      },
+      "pathB_direct": {
+        "raw": "[{\"type\": \"RelationClaim\", \"subject\": \"either party\", \"verb\": \"shall not exceed\", \"object\": \"aggregate liability\"}, {\"type\": \"PropertyClaim\", \"subject\": \"aggregate liability\", \"value\": \"total fees paid by Customer in the twelve months preceding the claim\"}]",
+        "narsese": [
+          "<(either_party * aggregate_liability) --> shall_not_exceed>.",
+          "<aggregate_liability --> [total_fees_paid_by_customer_in_the_twelve_months_preceding_the_claim]>."
+        ],
+        "recall": {
+          "captured": [
+            "cap-relation",
+            "cap-qty",
+            "cap-window",
+            "modality"
+          ],
+          "n_captured": 4,
+          "n_total": 4,
+          "recall": 1.0
+        },
+        "fabrication": []
+      },
+      "pathA_summary": {
+        "summary": "The aggregate liability of either party shall not exceed the total fees paid by the Customer in the preceding twelve months prior to the claim.",
+        "raw": "[{\"type\": \"RelationClaim\", \"subject\": \"aggregate liability\", \"verb\": \"shall not exceed\", \"object\": \"total fees paid by the Customer in the preceding twelve months prior to the claim\"}]",
+        "narsese": [
+          "<(aggregate_liability * total_fees_paid_by_the_customer_in_the_preceding_twelve_months_prior_to_the_claim) --> shall_not_exceed>."
+        ],
+        "recall": {
+          "captured": [
+            "cap-relation",
+            "cap-qty",
+            "cap-window",
+            "modality"
+          ],
+          "n_captured": 4,
+          "n_total": 4,
+          "recall": 1.0
+        },
+        "fabrication": [
+          "prior"
+        ]
+      },
+      "pathC_expanded": {
+        "raw": "[\n  {\n    \"type\": \"TemporalClaim\",\n    \"subject\": \"either party\",\n    \"action\": \"be liable\",\n    \"object\": \"aggregate liability\",\n    \"within_value\": \"12\",\n    \"within_unit\": \"months\"\n  },\n  {\n    \"type\": \"PropertyClaim\",\n    \"subject\": \"aggregate liability\",\n    \"value\": \"total fees paid by Customer in the twelve months preceding the claim\"\n  }\n]",
+        "score": {
+          "valid_json": true,
+          "n_claims": 2,
+          "conditional": 0,
+          "temporal": 1,
+          "degenerate_fields": 0,
+          "deadline_bound": true,
+          "condition_bound": false
+        }
+      }
+    },
+    {
+      "id": "data-residency-08",
+      "category": "data residency",
+      "text": "Provider shall store and process all Customer Data exclusively within the European Economic Area and shall not transfer such data outside the EEA without Customer's prior written consent.",
+      "expressibility": {
+        "n_total": 4,
+        "n_inexpressible": 1,
+        "inexpressible_kinds": [
+          "conditional"
+        ],
+        "structural_omission_rate": 0.25
+      },
+      "pathB_direct": {
+        "raw": "[{\"type\": \"RelationClaim\", \"subject\": \"Provider\", \"verb\": \"shall store and process\", \"object\": \"Customer Data exclusively within the European Economic Area\"}, {\"type\": \"RelationClaim\", \"subject\": \"Provider\", \"verb\": \"shall not transfer\", \"object\": \"Customer Data outside the EEA without Customer prior written consent\"}]",
+        "narsese": [
+          "<(provider * customer_data_exclusively_within_the_european_economic_area) --> shall_store_and_process>.",
+          "<(provider * customer_data_outside_the_eea_without_customer_prior_written_consent) --> shall_not_transfer>."
+        ],
+        "recall": {
+          "captured": [
+            "actor-action",
+            "location",
+            "prohibition",
+            "exception-cond"
+          ],
+          "n_captured": 4,
+          "n_total": 4,
+          "recall": 1.0
+        },
+        "fabrication": []
+      },
+      "pathA_summary": {
+        "summary": "The provider must store and process all customer data within the European Economic Area and may not transfer this data outside the EEA without the customer's prior written consent.",
+        "raw": "[{\"type\": \"RelationClaim\", \"subject\": \"customer data\", \"verb\": \"must be stored and processed\", \"object\": \"within the European Economic Area\"}, {\"type\": \"RelationClaim\", \"subject\": \"customer data\", \"verb\": \"may not be transferred\", \"object\": \"outside the EEA without the customer prior written consent\"}]",
+        "narsese": [
+          "<(customer_data * within_the_european_economic_area) --> must_be_stored_and_processed>.",
+          "<(customer_data * outside_the_eea_without_the_customer_prior_written_consent) --> may_not_be_transferred>."
+        ],
+        "recall": {
+          "captured": [
+            "location",
+            "prohibition",
+            "exception-cond"
+          ],
+          "n_captured": 3,
+          "n_total": 4,
+          "recall": 0.75
+        },
+        "fabrication": [
+          "stored",
+          "processed",
+          "transferred"
+        ]
+      },
+      "pathC_expanded": {
+        "raw": "[\n  {\n    \"type\": \"PropertyClaim\",\n    \"subject\": \"Provider\",\n    \"value\": \"shall store and process all Customer Data exclusively within the European Economic Area\"\n  },\n  {\n    \"type\": \"PropertyClaim\",\n    \"subject\": \"Provider\",\n    \"value\": \"shall not transfer such data outside the EEA without Customer prior written consent\"\n  }\n]",
+        "score": {
+          "valid_json": true,
+          "n_claims": 2,
+          "conditional": 0,
+          "temporal": 0,
+          "degenerate_fields": 0,
+          "deadline_bound": false,
+          "condition_bound": false
+        }
+      }
+    },
+    {
+      "id": "audit-rights-09",
+      "category": "audit rights + frequency",
+      "text": "Customer may audit Vendor's compliance with this Agreement no more than once per calendar year upon at least fourteen (14) days' prior written notice.",
+      "expressibility": {
+        "n_total": 4,
+        "n_inexpressible": 3,
+        "inexpressible_kinds": [
+          "modal",
+          "quantitative",
+          "temporal"
+        ],
+        "structural_omission_rate": 0.75
+      },
+      "pathB_direct": {
+        "raw": "[{\"type\": \"RelationClaim\", \"subject\": \"Customer\", \"verb\": \"may audit\", \"object\": \"Vendor\"}, {\"type\": \"PropertyClaim\", \"subject\": \"audit\", \"value\": \"no more than once per calendar year\"}, {\"type\": \"PropertyClaim\", \"subject\": \"notice\", \"value\": \"at least fourteen days prior written notice\"}]",
+        "narsese": [
+          "<(customer * vendor) --> may_audit>.",
+          "<audit --> [no_more_than_once_per_calendar_year]>.",
+          "<notice --> [at_least_fourteen_days_prior_written_notice]>."
+        ],
+        "recall": {
+          "captured": [
+            "right",
+            "frequency-cap",
+            "notice-temporal"
+          ],
+          "n_captured": 3,
+          "n_total": 4,
+          "recall": 0.75
+        },
+        "fabrication": []
+      },
+      "pathA_summary": {
+        "summary": "Customers can audit the Vendor's compliance with the Agreement up to once a year, but must provide at least 14 days' notice in writing.",
+        "raw": "[{\"type\": \"RelationClaim\", \"subject\": \"Customers\", \"verb\": \"can\", \"object\": \"audit the Vendor\"}, {\"type\": \"RelationClaim\", \"subject\": \"Customers\", \"verb\": \"must provide\", \"object\": \"at least 14 days notice in writing\"}, {\"type\": \"RelationClaim\", \"subject\": \"Customers\", \"verb\": \"can audit the Vendor\", \"object\": \"up to once a year\"}, {\"type\": \"RelationClaim\", \"subject\": \"audit\", \"verb\": \"is related to\", \"object\": \"compliance with the Agreement\"}]",
+        "narsese": [
+          "<(customers * audit_the_vendor) --> can>.",
+          "<(customers * at_least_14_days_notice_in_writing) --> must_provide>.",
+          "<(customers * up_to_once_a_year) --> can_audit_the_vendor>.",
+          "<(audit * compliance_with_the_agreement) --> is_related_to>."
+        ],
+        "recall": {
+          "captured": [
+            "right",
+            "object",
+            "frequency-cap",
+            "notice-temporal"
+          ],
+          "n_captured": 4,
+          "n_total": 4,
+          "recall": 1.0
+        },
+        "fabrication": [
+          "customers",
+          "provide",
+          "writing",
+          "related"
+        ]
+      },
+      "pathC_expanded": {
+        "raw": "[\n  {\n    \"type\": \"TemporalClaim\",\n    \"subject\": \"Customer\",\n    \"action\": \"audit\",\n    \"object\": \"Vendor\",\n    \"within_value\": \"14\",\n    \"within_unit\": \"days\"\n  },\n  {\n    \"type\": \"PropertyClaim\",\n    \"subject\": \"Customer\",\n    \"value\": \"may audit Vendor\"\n  },\n  {\n    \"type\": \"PropertyClaim\",\n    \"subject\": \"audit\",\n    \"value\": \"compliance with this Agreement\"\n  },\n  {\n    \"type\": \"PropertyClaim\",\n    \"subject\": \"audit frequency\",\n    \"value\": \"no more than once per calendar year\"\n  },\n  {\n    \"type\": \"PropertyClaim\",\n    \"subject\": \"notice\",\n    \"value\": \"prior written notice\"\n  }\n]",
+        "score": {
+          "valid_json": true,
+          "n_claims": 5,
+          "conditional": 0,
+          "temporal": 1,
+          "degenerate_fields": 0,
+          "deadline_bound": true,
+          "condition_bound": false
+        }
+      }
+    },
+    {
+      "id": "warranty-10",
+      "category": "warranty period",
+      "text": "Manufacturer warrants that the Goods will be free from defects in materials and workmanship for ninety (90) days following delivery.",
+      "expressibility": {
+        "n_total": 4,
+        "n_inexpressible": 2,
+        "inexpressible_kinds": [
+          "temporal"
+        ],
+        "structural_omission_rate": 0.5
+      },
+      "pathB_direct": {
+        "raw": "[{\"type\": \"RelationClaim\", \"subject\": \"Manufacturer\", \"verb\": \"warrants\", \"object\": \"Goods\"} , {\"type\": \"RelationClaim\", \"subject\": \"Goods\", \"verb\": \"will be free from\", \"object\": \"defects in materials and workmanship\"} , {\"type\": \"RelationClaim\", \"subject\": \"defects in materials and workmanship\", \"verb\": \"will be free from\", \"object\": \"for ninety days following delivery\"}]",
+        "narsese": [
+          "<(manufacturer * goods) --> warrants>.",
+          "<(goods * defects_in_materials_and_workmanship) --> will_be_free_from>.",
+          "<(defects_in_materials_and_workmanship * for_ninety_days_following_delivery) --> will_be_free_from>."
+        ],
+        "recall": {
+          "captured": [
+            "warranty-relation",
+            "scope",
+            "warranty-period",
+            "period-anchor"
+          ],
+          "n_captured": 4,
+          "n_total": 4,
+          "recall": 1.0
+        },
+        "fabrication": []
+      },
+      "pathA_summary": {
+        "summary": "The manufacturer guarantees that the goods will be free from defects in materials and workmanship for 90 days from the delivery date.",
+        "raw": "[{\"type\": \"RelationClaim\", \"subject\": \"manufacturer\", \"verb\": \"guarantees\", \"object\": \"goods free from defects in materials and workmanship for 90 days from the delivery date\"}]",
+        "narsese": [
+          "<(manufacturer * goods_free_from_defects_in_materials_and_workmanship_for_90_days_from_the_delivery_date) --> guarantees>."
+        ],
+        "recall": {
+          "captured": [
+            "warranty-relation",
+            "scope",
+            "warranty-period",
+            "period-anchor"
+          ],
+          "n_captured": 4,
+          "n_total": 4,
+          "recall": 1.0
+        },
+        "fabrication": [
+          "guarantees",
+          "date"
+        ]
+      },
+      "pathC_expanded": {
+        "raw": "[\n  {\n    \"type\": \"TemporalClaim\",\n    \"subject\": \"Manufacturer\",\n    \"action\": \"warrant\",\n    \"object\": \"Goods free from defects in materials and workmanship\",\n    \"within_value\": \"90\",\n    \"within_unit\": \"days\"\n  },\n  {\n    \"type\": \"PropertyClaim\",\n    \"subject\": \"Goods\",\n    \"value\": \"free from defects in materials and workmanship\"\n  },\n  {\n    \"type\": \"RelationClaim\",\n    \"subject\": \"Goods\",\n    \"verb\": \"be free from\",\n    \"object\": \"defects in materials and workmanship\"\n  },\n  {\n    \"type\": \"RelationClaim\",\n    \"subject\": \"Manufacturer\",\n    \"verb\": \"warrant\",\n    \"object\": \"Goods free from defects in materials and workmanship for ninety days following delivery\"\n  }\n]",
+        "score": {
+          "valid_json": true,
+          "n_claims": 4,
+          "conditional": 0,
+          "temporal": 1,
+          "degenerate_fields": 0,
+          "deadline_bound": true,
+          "condition_bound": false
+        }
+      }
+    },
+    {
+      "id": "subprocessor-11",
+      "category": "subprocessor approval (DPA)",
+      "text": "Processor shall not engage any subprocessor without the Controller's prior written authorization, and shall remain fully liable for the acts and omissions of any approved subprocessor.",
+      "expressibility": {
+        "n_total": 4,
+        "n_inexpressible": 2,
+        "inexpressible_kinds": [
+          "conditional",
+          "modal"
+        ],
+        "structural_omission_rate": 0.5
+      },
+      "pathB_direct": {
+        "raw": "[{\"type\": \"RelationClaim\", \"subject\": \"Processor\", \"verb\": \"shall not engage\", \"object\": \"subprocessor\"}, {\"type\": \"RelationClaim\", \"subject\": \"Processor\", \"verb\": \"remain fully liable\", \"object\": \"acts and omissions of any approved subprocessor\"}, {\"type\": \"PropertyClaim\", \"subject\": \"Controller\", \"value\": \"prior written authorization required\"}]",
+        "narsese": [
+          "<(processor * subprocessor) --> shall_not_engage>.",
+          "<(processor * acts_and_omissions_of_any_approved_subprocessor) --> remain_fully_liable>.",
+          "<controller --> [prior_written_authorization_required]>."
+        ],
+        "recall": {
+          "captured": [
+            "prohibition",
+            "exception-cond",
+            "residual-liability",
+            "modality"
+          ],
+          "n_captured": 4,
+          "n_total": 4,
+          "recall": 1.0
+        },
+        "fabrication": [
+          "required"
+        ]
+      },
+      "pathA_summary": {
+        "summary": "The processor must obtain the controller's prior written approval before using any subprocessor and remains fully responsible for the subprocessor's actions.",
+        "raw": "[{\"type\": \"RelationClaim\", \"subject\": \"processor\", \"verb\": \"must obtain\", \"object\": \"controller prior written approval\"}]",
+        "narsese": [
+          "<(processor * controller_prior_written_approval) --> must_obtain>."
+        ],
+        "recall": {
+          "captured": [
+            "exception-cond"
+          ],
+          "n_captured": 1,
+          "n_total": 4,
+          "recall": 0.25
+        },
+        "fabrication": [
+          "obtain",
+          "approval"
+        ]
+      },
+      "pathC_expanded": {
+        "raw": "[\n  {\n    \"type\": \"RelationClaim\",\n    \"subject\": \"Processor\",\n    \"verb\": \"shall not engage\",\n    \"object\": \"subprocessor\"\n  },\n  {\n    \"type\": \"PropertyClaim\",\n    \"subject\": \"engagement of subprocessor\",\n    \"value\": \"requires Controller prior written authorization\"\n  },\n  {\n    \"type\": \"RelationClaim\",\n    \"subject\": \"Processor\",\n    \"verb\": \"shall remain fully liable for\",\n    \"object\": \"acts and omissions of any approved subprocessor\"\n  }\n]",
+        "score": {
+          "valid_json": true,
+          "n_claims": 3,
+          "conditional": 0,
+          "temporal": 0,
+          "degenerate_fields": 0,
+          "deadline_bound": false,
+          "condition_bound": false
+        }
+      }
+    },
+    {
+      "id": "force-majeure-12",
+      "category": "force majeure + notice",
+      "text": "Neither party shall be liable for any failure to perform due to events beyond its reasonable control, provided that the affected party notifies the other within five (5) business days of the event.",
+      "expressibility": {
+        "n_total": 4,
+        "n_inexpressible": 3,
+        "inexpressible_kinds": [
+          "conditional",
+          "temporal"
+        ],
+        "structural_omission_rate": 0.75
+      },
+      "pathB_direct": {
+        "raw": "[{\"type\": \"RelationClaim\", \"subject\": \"party\", \"verb\": \"shall not be liable for\", \"object\": \"failure to perform due to events beyond its reasonable control\"}, {\"type\": \"PropertyClaim\", \"subject\": \"affected party\", \"value\": \"notifies the other within five business days of the event\"}]",
+        "narsese": [
+          "<(party * failure_to_perform_due_to_events_beyond_its_reasonable_control) --> shall_not_be_liable_for>.",
+          "<affected_party --> [notifies_the_other_within_five_business_days_of_the_event]>."
+        ],
+        "recall": {
+          "captured": [
+            "excuse",
+            "excuse-relation",
+            "proviso-cond",
+            "notice-temporal"
+          ],
+          "n_captured": 4,
+          "n_total": 4,
+          "recall": 1.0
+        },
+        "fabrication": []
+      },
+      "pathA_summary": {
+        "summary": "Neither party is liable for performance failures due to unforeseen events beyond reasonable control, as long as the affected party informs the other within five business days.",
+        "raw": "[{\"type\": \"RelationClaim\", \"subject\": \"party\", \"verb\": \"is liable for\", \"object\": \"performance failures due to unforeseen events beyond reasonable control\"}, {\"type\": \"PropertyClaim\", \"subject\": \"affected party\", \"value\": \"notifies the other within five business days\"}]",
+        "narsese": [
+          "<(party * performance_failures_due_to_unforeseen_events_beyond_reasonable_control) --> is_liable_for>.",
+          "<affected_party --> [notifies_the_other_within_five_business_days]>."
+        ],
+        "recall": {
+          "captured": [
+            "excuse",
+            "excuse-relation",
+            "proviso-cond",
+            "notice-temporal"
+          ],
+          "n_captured": 4,
+          "n_total": 4,
+          "recall": 1.0
+        },
+        "fabrication": [
+          "performance",
+          "failures",
+          "unforeseen"
+        ]
+      },
+      "pathC_expanded": {
+        "raw": "[\n  {\n    \"type\": \"ConditionalClaim\",\n    \"if\": \"a party fails to perform due to events beyond its reasonable control\",\n    \"then\": \"the party is not liable\"\n  },\n  {\n    \"type\": \"TemporalClaim\",\n    \"subject\": \"the affected party\",\n    \"action\": \"notifies\",\n    \"object\": \"the other party\",\n    \"within_value\": \"5\",\n    \"within_unit\": \"business days\"\n  }\n]",
+        "score": {
+          "valid_json": true,
+          "n_claims": 2,
+          "conditional": 1,
+          "temporal": 1,
+          "degenerate_fields": 0,
+          "deadline_bound": true,
+          "condition_bound": true
+        }
+      }
+    }
+  ]
+}
