@@ -1318,7 +1318,7 @@ class Session:
             job = SummaryJob(path, token, action="summarize_file")
         except Exception as exc:  # noqa: BLE001 — a spawn failure is reported, never crashes the daemon
             return False, {"text": f"Couldn't start the local summarizer: {exc}"}
-        self._file_jobs[job.fileno()] = {"job": job, "token": token,
+        self._file_jobs[job.fileno()] = {"job": job, "token": token, "path": path,
                                          "name": os.path.basename(path), "text": None, "error": None}
         return True, {"status": "reading", "token": token, "name": os.path.basename(path)}
 
@@ -1338,6 +1338,16 @@ class Session:
                 if entry["text"]:
                     self._emit("file_result", {"token": entry["token"], "ok": True,
                                                "name": entry["name"], "text": entry["text"]})
+                    # v1.24.0: close the loop — a chat-attached document must LAND in the permanent vault,
+                    # not be discarded after the chat bubble. _on_summary archives it SYNCHRONOUSLY (cheap
+                    # SQLite write -> Activity › Summary shows it was received) and spawns the off-loop
+                    # LearnJob for the heavy 3x-pass guarded distillation ASYNCHRONOUSLY — so the chat reply
+                    # is never blocked by the consensus extraction (ADR: decouple chat latency from the
+                    # distillation pipeline).
+                    try:
+                        self._on_summary(entry["path"], entry["text"])
+                    except Exception as exc:  # noqa: BLE001 — landing the doc must never break the reply
+                        sys.stderr.write(f"[file] could not land '{entry['name']}' in the vault: {exc}\n")
                 else:
                     self._emit("file_result", {"token": entry["token"], "ok": False, "name": entry["name"],
                                                "text": entry["error"] or "The local model couldn't read or "
