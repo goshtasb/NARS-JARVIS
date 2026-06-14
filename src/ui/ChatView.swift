@@ -28,6 +28,9 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
     private let consentLabel = DS.text("", 12, .medium)
     private var verbs: [ActionPicker.Verb] = []
     private var hasMessages = false
+    // Phase 3a Explainability: Analyst mode flips the reasoning-trail premises from their English mirror to
+    // the raw Narsese term (the power-user view). Off by default — the compliance user sees plain English.
+    private var analystMode = false
 
     // ── Dual-Brain (ADR-056): per-conversation brain mode. On-device is the resting state; Cloud is a
     // deliberate, temporary escalation that auto-reverts (new conversation / relaunch). ──
@@ -661,8 +664,61 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
         let text = (body["text"] as? String) ?? ""
         if text.isEmpty {
             addAssistant("The local model couldn't answer that. Toggle ☁️ for the cloud brain.", error: false)
+            return
+        }
+        // Phase 3a: if ONA produced a grounded derivation (the STAMP), render the citation-backed memo —
+        // answer + trust chip + an expandable reasoning trail. Otherwise the plain local-guess bubble.
+        if let ex = body["explanation"] as? [String: Any],
+           let premises = ex["premises"] as? [[String: Any]], !premises.isEmpty {
+            addRow(explanationView(answer: text, explanation: ex, premises: premises), align: .leading)
         } else {
             addRow(localAnswerView(text), align: .leading)
+        }
+    }
+
+    /// Phase 3a Layer 0+1: the citation-backed memo. The synthesized answer (Layer 0) + a trust chip from
+    /// the truth band, over an expandable "Show the work" reasoning trail (Layer 1) of the grounded
+    /// premises unrolled from the NARS evidence stamp. Raw Narsese stays hidden behind the Analyst toggle.
+    private func explanationView(answer: String, explanation: [String: Any],
+                                 premises: [[String: Any]]) -> NSView {
+        let col = NSStackView(); col.orientation = .vertical; col.alignment = .leading; col.spacing = 6
+        col.translatesAutoresizingMaskIntoConstraints = false
+        col.addArrangedSubview(bubble(answer, bg: DS.fill(0.07), fg: DS.label))         // Layer 0: the answer
+        let band = (explanation["band"] as? String) ?? ""
+        col.addArrangedSubview(trustChip(band))                                          // Layer 0: trust chip
+        let statement = (explanation["statement"] as? String) ?? answer
+        col.addArrangedSubview(groundedView(answer: statement, conf: bandLabel(band),
+                                            provenance: premises))                       // Layer 1: the trail
+        return col
+    }
+
+    /// The trust chip — the truth BAND as a human signal (never a raw 0.87). High / Likely / Tentative.
+    private func trustChip(_ band: String) -> NSView {
+        let label: String, color: NSColor, glyph: String
+        switch band {
+        case "CONFIDENT": label = "High confidence"; color = DS.green; glyph = "checkmark.seal.fill"
+        case "LIKELY":    label = "Likely";          color = DS.amber; glyph = "checkmark.seal"
+        default:          label = "Tentative";       color = DS.label3; glyph = "questionmark.circle"
+        }
+        let chip = DS.rounded(bg: color.withAlphaComponent(0.12), radius: 7)
+        let st = NSStackView(views: [DS.symbol(glyph, 11, .medium, color), DS.text(label, 11, .semibold, color)])
+        st.orientation = .horizontal; st.spacing = 5; st.alignment = .centerY
+        st.translatesAutoresizingMaskIntoConstraints = false
+        chip.addSubview(st)
+        NSLayoutConstraint.activate([
+            st.leadingAnchor.constraint(equalTo: chip.leadingAnchor, constant: 8),
+            st.trailingAnchor.constraint(equalTo: chip.trailingAnchor, constant: -8),
+            st.topAnchor.constraint(equalTo: chip.topAnchor, constant: 3),
+            st.bottomAnchor.constraint(equalTo: chip.bottomAnchor, constant: -3),
+        ])
+        return chip
+    }
+
+    private func bandLabel(_ band: String) -> String {
+        switch band {
+        case "CONFIDENT": return "high confidence"
+        case "LIKELY": return "likely"
+        default: return "tentative"
         }
     }
 
@@ -703,17 +759,31 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
         let details = NSStackView(); details.orientation = .vertical; details.alignment = .leading; details.spacing = 4
         details.translatesAutoresizingMaskIntoConstraints = false
         details.isHidden = !expanded
-        for p in provenance { details.addArrangedSubview(provenanceRow(p)) }
         // The mathematical conclusion sits quietly UNDER the English proof — demoted, monospaced.
         let proof = conf.isEmpty ? "⊢  \(answer)" : "⊢  \(answer)   ·   \(conf)"
-        details.addArrangedSubview(DS.text(proof, 10, .regular, DS.label3, mono: true))
+        let rebuild = { [weak details] in
+            guard let details else { return }
+            details.arrangedSubviews.forEach { $0.removeFromSuperview() }
+            for p in provenance { details.addArrangedSubview(self.provenanceRow(p)) }
+            details.addArrangedSubview(DS.text(proof, 10, .regular, DS.label3, mono: true))
+        }
+        rebuild()
 
+        // Analyst toggle (Phase 3a): flip the premises' English mirror <-> raw Narsese for the power user.
+        let analyst = DSButton(analystMode ? "⌥ Narsese" : "⌥ English", variant: .quiet, size: 11) { }
+        analyst.onPress = { [weak analyst] in
+            self.analystMode.toggle()
+            analyst?.titleField?.stringValue = self.analystMode ? "⌥ Narsese" : "⌥ English"
+            rebuild()
+        }
         toggle.onPress = { [weak details, weak toggle] in
             guard let details, let toggle else { return }
             details.isHidden.toggle()
             toggle.titleField?.stringValue = (details.isHidden ? "▸ " : "▾ ") + footer
         }
-        col.addArrangedSubview(toggle)
+        let header = NSStackView(views: [toggle, analyst])
+        header.orientation = .horizontal; header.spacing = 12; header.alignment = .centerY
+        col.addArrangedSubview(header)
         col.addArrangedSubview(details)
         return col
     }
@@ -721,15 +791,19 @@ final class ChatViewController: NSViewController, NSTextFieldDelegate {
     private func provenanceRow(_ p: [String: Any]) -> NSView {
         let english = (p["english"] as? String) ?? ""
         let narsese = (p["narsese"] as? String) ?? ""
-        let primary = english.isEmpty ? narsese : english           // English mirror first…
+        // Default: English mirror is primary, raw Narsese demoted. Analyst mode flips them.
+        let primary = analystMode ? (narsese.isEmpty ? english : narsese)
+                                  : (english.isEmpty ? narsese : english)
+        let demoted = analystMode ? (english == primary ? "" : english)
+                                  : (english.isEmpty ? "" : narsese)
         let when = (p["learned_at"] as? Double).map(learnedString) ?? ""
         let conf = (p["confidence"] as? Double).map { String(format: "%.2f", $0) } ?? ""
         let card = DS.rounded(bg: DS.card, radius: 8, border: DS.separator)
         let glyph = DS.symbol("checkmark.seal.fill", 12, .medium, DS.green)
         var rows: [NSView] = [DS.text(primary, 12.5, .medium, DS.label, wrap: true)]
         if !when.isEmpty { rows.append(DS.text(when, 11, .regular, DS.label3)) }
-        // …the raw Narsese + numeric confidence demoted to quiet monospaced subtext (the proof underneath).
-        let proof = [english.isEmpty ? "" : narsese, conf.isEmpty ? "" : "conf \(conf)"]
+        // …the flipped mirror + numeric confidence demoted to quiet monospaced subtext (the proof underneath).
+        let proof = [demoted, conf.isEmpty ? "" : "conf \(conf)"]
             .filter { !$0.isEmpty }.joined(separator: "   ·   ")
         if !proof.isEmpty { rows.append(DS.text(proof, 10, .regular, DS.label3, mono: true)) }
         let textCol = NSStackView(views: rows); textCol.orientation = .vertical; textCol.alignment = .leading; textCol.spacing = 1
