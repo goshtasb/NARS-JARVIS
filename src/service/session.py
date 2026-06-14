@@ -79,6 +79,7 @@ _SEARCH_WEB = {
 class Session:
     def __init__(self, db_path: str = "jarvis.db", on_event: EventSink | None = None) -> None:
         self._emit = on_event or (lambda kind, body: None)
+        self._db_path = db_path                  # Slice 3a: the triage worker writes the param store here
         self._store = MemoryStore(db_path)
         self._brain = Brain(cycles_per_step=50)
         self._act_buf: list[str] = []
@@ -191,6 +192,8 @@ class Session:
         self._recall_jobs: dict[int, object] = {}      # ADR-056/Gate 2: fd -> in-flight off-loop Stage-4 worker
         self._file_jobs: dict[int, dict] = {}          # on-device file eval: fd -> in-flight local SummaryJob -> chat
         self._learn_jobs: dict[int, dict] = {}         # v1.24.0 Sprint 3: fd -> in-flight off-loop Narsese distillation
+        self._triage_jobs: dict[int, dict] = {}        # Slice 3a: fd -> in-flight off-loop deviation scan
+        self._last_scans: dict[str, dict] = {}         # Slice 3a: doc -> last deviation_scan body (late-join pull)
         self._converse_pending: dict[int, dict] = {}   # ADR-057: token -> {state, question, voice} awaiting decode
         self._token = 0
         self._shutdown = False                          # set by the `shutdown` command (kill switch)
@@ -226,6 +229,7 @@ class Session:
             "lexicon_stats": self._lexicon_stats,                         # ADR-056/Gate 2: inspect the L2 namespace index
             "recall": self._recall,                                       # ADR-056/Gate 2: hybrid retrieval + STAMP provenance
             "file_summarize": self._file_summarize,                       # on-device (private) file evaluation -> chat
+            "triage_scans": self._triage_scans,                           # Slice 3a: latest deviation_scan per doc (late-join pull)
             "metrics": self._metrics_summary,                             # ADR-056 §8: compounding-value readout (Identity tab)
             "intent_parse": self._intent_parse,                           # ADR-054: NL -> validated Canvas intent
             "catalog_schema": self._catalog_schema,                       # ADR-033: palette for the canvas
@@ -1256,6 +1260,66 @@ class Session:
         here on the main thread, so the daemon stays sub-10ms."""
         self._summaries.add(os.path.basename(path), path, text)
         self._spawn_learn(text, source=path)
+        self._spawn_triage(path)                       # Slice 3a: corpus-aware deviation scan (AC-gated)
+
+    # ── Slice 3a: the off-loop deviation scan (extract salient params -> deviate vs the user's own corpus) ──
+    def _triage_allowed(self) -> tuple[bool, str]:
+        """The AC/consent gate. The 3x consensus extraction is computationally brutal, so it only runs on
+        AC power. Consent is structural, not a per-doc prompt: the chat path is an explicit user attach; the
+        passive path only reaches here once the user-opted-in watcher's summary cleared the (AC-gated)
+        overnight runner. Both paths additionally pass this AC check at the triage spawn."""
+        if not self._on_ac_power():
+            return False, "on_battery"
+        return True, ""
+
+    def _spawn_triage(self, path: str) -> None:
+        if not path or not os.path.isfile(path):
+            return
+        allowed, reason = self._triage_allowed()
+        doc = os.path.basename(path)
+        if not allowed:                                # deferred, never silently dropped (no auto-retry yet)
+            body = {"doc": doc, "state": "deferred", "reason": reason}
+            self._last_scans[doc] = body
+            self._emit("deviation_scan", body)
+            return
+        from service.triage_job import TriageJob
+        self._token += 1
+        try:
+            job = TriageJob(path, self._db_path, self._token)
+        except Exception as exc:  # noqa: BLE001 — a spawn failure is logged, never crashes the daemon
+            sys.stderr.write(f"[triage] could not start deviation worker: {exc}\n")
+            return
+        self._triage_jobs[job.fileno()] = {"job": job, "doc": doc, "body": None}
+
+    def _read_triage_job(self, fd: int) -> None:
+        """Drain a completed deviation scan. The expensive re-parse + extraction already ran off-loop; here we
+        only relay the progressive-UI events (pending -> populated/empty) to clients on the main thread."""
+        entry = self._triage_jobs.get(fd)
+        if entry is None:
+            return
+        job = entry["job"]
+        for tag, payload in job.read():
+            if tag == "pending":
+                n = payload.get("salient_count", 0) if isinstance(payload, dict) else 0
+                self._emit("deviation_scan", {"doc": entry["doc"], "state": "pending", "salient_count": n})
+            elif tag == "result":
+                entry["body"] = payload if isinstance(payload, dict) else None
+            elif tag == "error":
+                sys.stderr.write(f"[triage] scan error ({entry['doc']}): {payload}\n")
+            elif tag == "eof":
+                del self._triage_jobs[fd]
+                job.cleanup()
+                body = entry["body"]
+                if body is None:                       # worker errored before a result -> terminal empty
+                    body = {"doc": entry["doc"], "doc_id": "", "salient_count": 0,
+                            "state": "empty", "findings": []}
+                self._last_scans[entry["doc"]] = body
+                self._emit("deviation_scan", body)
+
+    def _triage_scans(self, arg) -> tuple[bool, object]:
+        """Pull the latest deviation_scan body per document (late-join: a client that connects after a scan
+        finished still gets current state). Push is the live plane; this is the catch-up read."""
+        return True, {"rows": list(self._last_scans.values())}
 
     def _spawn_learn(self, text: str, source: str = "") -> None:
         if not text or not text.strip():
@@ -1380,6 +1444,7 @@ class Session:
         fds += list(self._recall_jobs)          # ADR-056/Gate 2: in-flight off-loop Stage-4 workers
         fds += list(self._file_jobs)            # on-device file eval: in-flight local summary -> chat
         fds += list(self._learn_jobs)           # v1.24.0 Sprint 3: in-flight off-loop Narsese distillation
+        fds += list(self._triage_jobs)          # Slice 3a: in-flight off-loop deviation scan
         fds.append(self._localbrain.fileno())   # ADR-057: the Tier-2 decode worker's completion pipe
         fds += self._overnight.extra_fds()      # ADR-052: the offloaded summary worker's stdout
         if self._ingest_watch is not None and (ifd := self._ingest_watch.fileno()) is not None:
@@ -1397,6 +1462,8 @@ class Session:
             self._read_file_job(fd)
         elif fd in self._learn_jobs:             # v1.24.0 Sprint 3: a distillation finished off-loop
             self._read_learn_job(fd)
+        elif fd in self._triage_jobs:            # Slice 3a: a deviation scan finished off-loop
+            self._read_triage_job(fd)
         elif fd == self._localbrain.fileno():    # ADR-057: a Tier-2 decode finished off-loop
             self._drain_converse()
         elif self._ingest_watch is not None and fd == self._ingest_watch.fileno():
