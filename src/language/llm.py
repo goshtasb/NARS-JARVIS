@@ -76,11 +76,12 @@ class LocalLLM:
         return parse_claims(self.generate(system_prompt, sentence))
 
     def generate_json(self, system_prompt: str, user: str, grammar_text: str,
-                      max_tokens: int = 256) -> str:
+                      max_tokens: int = 256, temperature: float = 0.0) -> str:
         """GBNF-constrained free generation (ADR-054 intent router). `grammar_text` is compiled per call
         from the live catalog, so the model PHYSICALLY cannot emit an off-catalog action or malformed
-        JSON. Temp 0. Output is still validated by the Interception Gate (grammar guarantees structure,
-        not semantics)."""
+        JSON. Temp 0 by default; `temperature` is raised only by the off-loop perturbation-consensus loop
+        (v1.24.0) to probe binding STABILITY. Output is still validated by the gate (grammar guarantees
+        structure, not semantics)."""
         from llama_cpp import LlamaGrammar
         grammar = LlamaGrammar.from_string(grammar_text)
         out = self._llm.create_chat_completion(
@@ -89,7 +90,7 @@ class LocalLLM:
                 {"role": "user", "content": user},
             ],
             grammar=grammar,
-            temperature=0.0,
+            temperature=temperature,
             max_tokens=max_tokens,
         )
         return out["choices"][0]["message"]["content"]

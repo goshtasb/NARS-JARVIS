@@ -1,10 +1,10 @@
 {
-  "TP": 15,
-  "FP": 2,
-  "TN": 4,
-  "FN": 2,
-  "precision": 0.882,
-  "recall": 0.882,
+  "TP": 13,
+  "FP": 1,
+  "TN": 5,
+  "FN": 4,
+  "precision": 0.929,
+  "recall": 0.765,
   "n_unlabeled": 0,
   "unlabeled": [],
   "confusion": [
@@ -190,29 +190,29 @@
     },
     {
       "key": "subprocessor-11#1",
-      "cell": "TP",
-      "admit": true,
+      "cell": "FN",
+      "admit": false,
       "degraded": false,
       "reasons": [
-        "ok"
+        "L5:negation_inversion"
       ]
     },
     {
       "key": "force-majeure-12#0",
-      "cell": "FP",
-      "admit": true,
+      "cell": "TN",
+      "admit": false,
       "degraded": false,
       "reasons": [
-        "ok"
+        "L5:negation_inversion"
       ]
     },
     {
       "key": "force-majeure-12#1",
-      "cell": "TP",
-      "admit": true,
+      "cell": "FN",
+      "admit": false,
       "degraded": false,
       "reasons": [
-        "ok"
+        "L5:negation_inversion"
       ]
     }
   ]

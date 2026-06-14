@@ -22,9 +22,9 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _SRC = os.path.join(os.path.dirname(os.path.dirname(_HERE)), "src")
 sys.path.insert(0, _SRC)
 
-from language.guarded_extract import extract_guarded  # noqa: E402
-from language.llm import LocalLLM                      # noqa: E402
-from language.verify_gate import verify                # noqa: E402
+from language.guarded_extract import extract_guarded   # noqa: E402
+from language.llm import LocalLLM                       # noqa: E402
+from language.verify_gate import verify                 # noqa: E402
 
 _EMITTED = os.path.join(_HERE, "gated_emitted.json")
 _LABELS = os.path.join(_HERE, "ground_truth_labels.json")
@@ -79,12 +79,26 @@ def score(emitted: dict, labels: dict) -> dict:
             "n_unlabeled": len(unlabeled), "unlabeled": unlabeled, "confusion": confusion}
 
 
+def regate(emitted: dict) -> dict:
+    """Re-run the (current) gate over the CACHED proposed claims — isolates a gate change from model
+    stochasticity, so a precision/recall delta is attributable purely to the gate logic."""
+    for case in emitted.values():
+        for row in case["claims"]:
+            r = verify(row["proposed"], case["text"])
+            row["admit"], row["degraded"], row["reasons"], row["kept"] = r.admit, r.degraded, r.reasons, r.kept
+    json.dump(emitted, open(_EMITTED, "w"), indent=2)
+    return emitted
+
+
 def main() -> int:
     if not os.path.exists(_EMITTED) or "--reextract" in sys.argv:
         emitted = extract_and_gate()
         sys.stderr.write(f"wrote {_EMITTED}\n")
     else:
         emitted = json.load(open(_EMITTED))
+        if "--regate" in sys.argv:
+            emitted = regate(emitted)
+            sys.stderr.write("re-gated cached claims with current verify()\n")
     if not os.path.exists(_LABELS):
         n = sum(len(c["claims"]) for c in emitted.values())
         print(f"PHASE 1 complete: {n} claims emitted across {len(emitted)} clauses -> {_EMITTED}")

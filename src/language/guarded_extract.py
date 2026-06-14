@@ -33,9 +33,11 @@ def _grammar_text() -> str:
         return fh.read()
 
 
-def extract_guarded(llm, text: str, max_tokens: int = 768) -> list[dict]:
-    """Run the guarded grammar over `text`. Returns the raw proposed claim dicts (UNVERIFIED)."""
-    raw = llm.generate_json(GUARDED_PROMPT, text, _grammar_text(), max_tokens=max_tokens)
+def extract_guarded(llm, text: str, max_tokens: int = 768, temperature: float = 0.0) -> list[dict]:
+    """Run the guarded grammar over `text`. Returns the raw proposed claim dicts (UNVERIFIED).
+    `temperature` is raised only by the perturbation-consensus loop to probe binding stability."""
+    raw = llm.generate_json(GUARDED_PROMPT, text, _grammar_text(), max_tokens=max_tokens,
+                            temperature=temperature)
     try:
         arr = json.loads(raw)
         return arr if isinstance(arr, list) else []
