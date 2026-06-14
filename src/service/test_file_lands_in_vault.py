@@ -28,17 +28,23 @@ def test_chat_document_lands_in_vault_and_archive(tmp_path) -> None:
 
         fake = _FakeFileJob("Vendor shall notify within 72 hours of a breach.")
         path = str(tmp_path / "vendor_nda.pdf")
-        s._file_jobs[fake.fileno()] = {"job": fake, "token": 1, "path": path,
+        # a live Activity row (running) like _file_summarize creates before the worker finishes
+        tid = s._overnight_queue.enqueue("summarize_file", path)
+        s._overnight_queue.mark(tid, "running", result="reading…")
+        s._file_jobs[fake.fileno()] = {"job": fake, "token": 1, "path": path, "tid": tid,
                                        "name": "vendor_nda.pdf", "text": None, "error": None}
         s._read_file_job(fake.fileno())
 
         # 1) the chat bubble still goes out immediately
         results = [b for k, b in events if k == "file_result"]
         assert results and results[0]["ok"] and results[0]["name"] == "vendor_nda.pdf"
-        # 2) archived synchronously -> visible in Activity › Summary (summary_list reads this)
+        # 2) the live Activity row transitioned running -> done (visible in Activity › Now then Log)
+        row = [r for r in s._overnight_queue.list_all() if r["id"] == tid][0]
+        assert row["status"] == "done", row
+        # 3) archived synchronously -> visible in Activity › Summary (summary_list reads this)
         listed = s._summaries.list()
         assert any(r.get("source_name") == "vendor_nda.pdf" for r in listed), listed
-        # 3) the heavy guarded distillation was handed to the OFF-LOOP worker against the raw file path
+        # 4) the heavy guarded distillation was handed to the OFF-LOOP worker against the raw file path
         assert distilled == [path], distilled
         assert fake.fileno() not in s._file_jobs               # reaped
     finally:
