@@ -1,0 +1,219 @@
+{
+  "TP": 15,
+  "FP": 2,
+  "TN": 4,
+  "FN": 2,
+  "precision": 0.882,
+  "recall": 0.882,
+  "n_unlabeled": 0,
+  "unlabeled": [],
+  "confusion": [
+    {
+      "key": "breach-notify-01#0",
+      "cell": "TP",
+      "admit": true,
+      "degraded": false,
+      "reasons": [
+        "ok"
+      ]
+    },
+    {
+      "key": "sla-uptime-02#0",
+      "cell": "TP",
+      "admit": true,
+      "degraded": false,
+      "reasons": [
+        "ok"
+      ]
+    },
+    {
+      "key": "sla-uptime-02#1",
+      "cell": "FN",
+      "admit": false,
+      "degraded": false,
+      "reasons": [
+        "L2:ungrounded_values=['amount']"
+      ]
+    },
+    {
+      "key": "sla-uptime-02#2",
+      "cell": "TN",
+      "admit": false,
+      "degraded": false,
+      "reasons": [
+        "L2:ungrounded_values=['duration']"
+      ]
+    },
+    {
+      "key": "nda-confid-03#0",
+      "cell": "TP",
+      "admit": true,
+      "degraded": true,
+      "reasons": [
+        "L3:temporal_stripped(role=duration;[])"
+      ]
+    },
+    {
+      "key": "nda-confid-03#1",
+      "cell": "TP",
+      "admit": true,
+      "degraded": true,
+      "reasons": [
+        "L3:temporal_stripped(role=duration;[])"
+      ]
+    },
+    {
+      "key": "indemnify-04#0",
+      "cell": "TP",
+      "admit": true,
+      "degraded": false,
+      "reasons": [
+        "ok"
+      ]
+    },
+    {
+      "key": "indemnify-04#1",
+      "cell": "FN",
+      "admit": false,
+      "degraded": false,
+      "reasons": [
+        "L2:ungrounded_values=['protected']"
+      ]
+    },
+    {
+      "key": "indemnify-04#2",
+      "cell": "TP",
+      "admit": true,
+      "degraded": false,
+      "reasons": [
+        "ok"
+      ]
+    },
+    {
+      "key": "indemnify-04#3",
+      "cell": "TN",
+      "admit": false,
+      "degraded": false,
+      "reasons": [
+        "L2:ungrounded_values=['subject']"
+      ]
+    },
+    {
+      "key": "payment-net-05#0",
+      "cell": "TP",
+      "admit": true,
+      "degraded": false,
+      "reasons": [
+        "ok"
+      ]
+    },
+    {
+      "key": "payment-net-05#1",
+      "cell": "TP",
+      "admit": true,
+      "degraded": false,
+      "reasons": [
+        "ok"
+      ]
+    },
+    {
+      "key": "termination-06#0",
+      "cell": "TP",
+      "admit": true,
+      "degraded": false,
+      "reasons": [
+        "ok"
+      ]
+    },
+    {
+      "key": "termination-06#1",
+      "cell": "FP",
+      "admit": true,
+      "degraded": false,
+      "reasons": [
+        "ok"
+      ]
+    },
+    {
+      "key": "liability-cap-07#0",
+      "cell": "TP",
+      "admit": true,
+      "degraded": false,
+      "reasons": [
+        "ok"
+      ]
+    },
+    {
+      "key": "data-residency-08#0",
+      "cell": "TN",
+      "admit": false,
+      "degraded": false,
+      "reasons": [
+        "L3:conditional_without_cue"
+      ]
+    },
+    {
+      "key": "audit-rights-09#0",
+      "cell": "TP",
+      "admit": true,
+      "degraded": false,
+      "reasons": [
+        "ok"
+      ]
+    },
+    {
+      "key": "audit-rights-09#1",
+      "cell": "TP",
+      "admit": true,
+      "degraded": true,
+      "reasons": [
+        "L3:temporal_stripped(role=rate;[])"
+      ]
+    },
+    {
+      "key": "warranty-10#0",
+      "cell": "TP",
+      "admit": true,
+      "degraded": true,
+      "reasons": [
+        "L3:temporal_stripped(role=duration;[])"
+      ]
+    },
+    {
+      "key": "subprocessor-11#0",
+      "cell": "TN",
+      "admit": false,
+      "degraded": false,
+      "reasons": [
+        "L3:conditional_without_cue"
+      ]
+    },
+    {
+      "key": "subprocessor-11#1",
+      "cell": "TP",
+      "admit": true,
+      "degraded": false,
+      "reasons": [
+        "ok"
+      ]
+    },
+    {
+      "key": "force-majeure-12#0",
+      "cell": "FP",
+      "admit": true,
+      "degraded": false,
+      "reasons": [
+        "ok"
+      ]
+    },
+    {
+      "key": "force-majeure-12#1",
+      "cell": "TP",
+      "admit": true,
+      "degraded": false,
+      "reasons": [
+        "ok"
+      ]
+    }
+  ]
+}
