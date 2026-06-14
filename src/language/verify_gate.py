@@ -124,6 +124,26 @@ def conditional_cued(evidence: str) -> bool:
     return _has_cue(_norm(evidence), _COND_CUES)
 
 
+# ── L5: negation tripwire (Option A) — a cheap, deliberately-simple polarity guard ──
+_INVERSION_CUES = ("not", "neither", "nor", "without", "except")
+_NEG_DEONTIC = frozenset(("shall_not", "must_not"))
+
+
+def polarity_ok(claim: dict, evidence: str) -> bool:
+    """If the (L1-verified) evidence carries an explicit inversion cue, the claim MUST encode negativity —
+    a shall_not/must_not deontic, OR an inversion cue inside its OWN asserted relation. Otherwise fail
+    closed. O(1), whole-word. Deliberately simple: NL negation scoping is brittle, so we accept the
+    false-negatives (omission, the safe direction) to kill blatant negation drops like 'Neither party shall
+    be liable' -> 'shall be liable'."""
+    if not _has_cue(_norm(evidence), _INVERSION_CUES):
+        return True
+    if claim.get("deontic") in _NEG_DEONTIC:
+        return True
+    own = _norm(" ".join(str(claim.get(f, "")) for f in
+                         ("verb", "object", "value", "action", "then", "metric", "amount")))
+    return _has_cue(own, _INVERSION_CUES)
+
+
 # ── L4: closed-set sanity ──
 def sanity_ok(claim: dict) -> list[str]:
     problems: list[str] = []
@@ -160,6 +180,8 @@ def verify(claim: dict, source: str) -> GateResult:
     missing = values_grounded(claim, ev)                                   # L2
     if missing:
         return GateResult(False, None, [f"L2:ungrounded_values={missing}"])
+    if not polarity_ok(claim, ev):                                         # L5 negation tripwire
+        return GateResult(False, None, ["L5:negation_inversion"])
     problems = sanity_ok(claim)                                            # L4
     ctype = claim.get("type")
     if ctype == "TemporalClaim":

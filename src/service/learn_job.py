@@ -24,11 +24,13 @@ class LearnJob:
     def __init__(self, text: str, token: int, source: str = "") -> None:
         self.token = token
         self.source = source
+        # v1.24.0 redesign: pass the SOURCE PATH as argv — the worker reads & chunks the RAW file off-loop
+        # (Path B direct extraction). `text` is still piped as a fallback for a caller with no backing file.
         self._proc = safespawn.popen(
-            [sys.executable, "-m", "service.learn_worker"], cwd=_SRC,
+            [sys.executable, "-m", "service.learn_worker", source], cwd=_SRC,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         try:
-            self._proc.stdin.write(text.encode())
+            self._proc.stdin.write((text or "").encode())
             self._proc.stdin.close()
         except (BrokenPipeError, OSError):
             pass

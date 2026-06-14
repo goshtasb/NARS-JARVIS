@@ -2,7 +2,8 @@
 the gate is pure: source text + fixed lexicons in, admit/reject out. Anchored on the two real failure
 modes the empirical harness surfaced (the 1500-bps fabrication, the 12-month look-back mis-binding)."""
 from language.verify_gate import (
-    GateResult, conditional_cued, cue_role, evidence_grounded, sanity_ok, values_grounded, verify,
+    GateResult, conditional_cued, cue_role, evidence_grounded, polarity_ok, sanity_ok, values_grounded,
+    verify,
 )
 
 _BREACH = "Vendor shall notify Customer in writing within seventy-two (72) hours of discovering any data breach."
@@ -89,6 +90,29 @@ def test_verify_rejects_fabricated_evidence() -> None:
              "object": "Regulator", "evidence": "Vendor shall notify the Regulator immediately"}
     r = verify(claim, _BREACH)                          # "Regulator" / "immediately" not in source
     assert not r.admit and r.kept is None
+
+
+# ── L5 negation tripwire (Option A) ──
+def test_polarity_tripwire_blocks_dropped_negation() -> None:
+    # the real force-majeure leak: evidence has "Neither", claim asserts the positive consequent.
+    claim = {"type": "ConditionalClaim", "deontic": "shall", "if": "Neither party",
+             "then": "shall be liable for any failure to perform",
+             "evidence": "Neither party shall be liable for any failure to perform"}
+    assert not polarity_ok(claim, claim["evidence"])
+    assert not verify(claim, "Neither party shall be liable for any failure to perform").admit
+
+
+def test_polarity_tripwire_passes_correctly_negated_claim() -> None:
+    claim = {"type": "RelationClaim", "deontic": "shall_not", "subject": "Receiving Party",
+             "verb": "disclose", "object": "Confidential Information",
+             "evidence": "shall not disclose Confidential Information to any third party"}
+    assert polarity_ok(claim, claim["evidence"])                 # shall_not satisfies the cue
+
+
+def test_polarity_tripwire_passes_when_no_inversion_cue() -> None:
+    claim = {"type": "RelationClaim", "deontic": "shall", "subject": "Buyer", "verb": "pay",
+             "object": "invoices", "evidence": "Buyer shall pay all undisputed invoices"}
+    assert polarity_ok(claim, claim["evidence"])                 # no cue -> unaffected
 
 
 def test_verify_rejects_fabricated_value_even_with_real_evidence() -> None:
