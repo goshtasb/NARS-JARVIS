@@ -7,6 +7,10 @@
 # llama-cpp-python — local GGUF inference for the 7B brain + embeddings (imported lazily).
 # psutil          — system sentinel + the overnight resource monitor.
 # pypdf           — pure-Python PDF text extraction for the ADR-032 read_file/summarize_file primitives.
+# pdfplumber      — LAYOUT-aware PDF extraction (word bbox + font size/weight) for the triage StructureSensor
+#                   (born-digital contract structure). MIT (built on pdfminer.six). Chosen over PyMuPDF,
+#                   whose AGPL license is an enterprise/due-diligence hazard. (matplotlib/PIL are dev-only,
+#                   used solely to generate committed test fixtures — NOT runtime/CI deps.)
 # readability-lxml + beautifulsoup4 + lxml — ADR-034 web reader (extract a page's main article text).
 #                   HTTP itself uses the standard library (urllib) — no requests/httpx dependency.
 # truststore      — make urllib verify TLS against the macOS Keychain (so a corporate/proxy root that
@@ -18,6 +22,7 @@
 llama-cpp-python
 psutil
 pypdf
+pdfplumber
 readability-lxml
 beautifulsoup4
 lxml
