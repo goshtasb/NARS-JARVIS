@@ -1318,7 +1318,14 @@ class Session:
             job = SummaryJob(path, token, action="summarize_file")
         except Exception as exc:  # noqa: BLE001 — a spawn failure is reported, never crashes the daemon
             return False, {"text": f"Couldn't start the local summarizer: {exc}"}
-        self._file_jobs[job.fileno()] = {"job": job, "token": token,
+        # Mirror this chat read into the overnight queue as a LIVE job so it's visible in Activity › Now
+        # (running) -> Log (done). It is chat-managed, NOT run by the overnight runner: marked 'running'
+        # immediately so next_pending (pending-only) never double-processes it. A crash leaves it 'running'
+        # -> reset_running reverts it to pending -> it is gracefully re-summarized on the next overnight run.
+        tid = self._overnight_queue.enqueue("summarize_file", path)
+        self._overnight_queue.mark(tid, "running", result="reading…")
+        self._emit("overnight_progress", {"id": tid, "action": "summarize_file", "status": "running"})
+        self._file_jobs[job.fileno()] = {"job": job, "token": token, "path": path, "tid": tid,
                                          "name": os.path.basename(path), "text": None, "error": None}
         return True, {"status": "reading", "token": token, "name": os.path.basename(path)}
 
@@ -1335,13 +1342,32 @@ class Session:
             elif tag == "eof":
                 del self._file_jobs[fd]
                 job.cleanup()
+                tid = entry.get("tid")
                 if entry["text"]:
                     self._emit("file_result", {"token": entry["token"], "ok": True,
                                                "name": entry["name"], "text": entry["text"]})
+                    if tid is not None:                       # close the live Activity row: running -> done
+                        self._overnight_queue.mark(tid, "done", result=entry["text"])
+                        self._emit("overnight_progress", {"id": tid, "action": "summarize_file",
+                                                          "status": "done"})
+                    # v1.24.0: close the loop — a chat-attached document must LAND in the permanent vault,
+                    # not be discarded after the chat bubble. _on_summary archives it SYNCHRONOUSLY (cheap
+                    # SQLite write -> Activity › Summary shows it was received) and spawns the off-loop
+                    # LearnJob for the heavy 3x-pass guarded distillation ASYNCHRONOUSLY — so the chat reply
+                    # is never blocked by the consensus extraction (ADR: decouple chat latency from the
+                    # distillation pipeline).
+                    try:
+                        self._on_summary(entry["path"], entry["text"])
+                    except Exception as exc:  # noqa: BLE001 — landing the doc must never break the reply
+                        sys.stderr.write(f"[file] could not land '{entry['name']}' in the vault: {exc}\n")
                 else:
                     self._emit("file_result", {"token": entry["token"], "ok": False, "name": entry["name"],
                                                "text": entry["error"] or "The local model couldn't read or "
                                                "summarize that file."})
+                    if tid is not None:                       # close the live Activity row: running -> failed
+                        self._overnight_queue.mark(tid, "failed", result=entry["error"] or "read failed")
+                        self._emit("overnight_progress", {"id": tid, "action": "summarize_file",
+                                                          "status": "failed"})
 
     # ── select-loop hooks for the daemon (sensor pipe + voice jobs) ────
     def extra_fds(self) -> list[int]:
