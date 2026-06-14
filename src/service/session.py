@@ -324,7 +324,12 @@ class Session:
             gap_ms = round(self._loop_gap_max * 1000, 1)   # ADR-057 liveness reading for this decode
             sys.stderr.write(f"[tier2] local decode done; worst select()-loop gap while in flight: {gap_ms} ms\n")
             self._persona_loop.observe(final, "assistant")
-            self._emit("local_answer", {"token": token, "text": final, "loop_max_gap_ms": gap_ms})
+            try:                                          # Phase 3a: attach the grounded derivation if ONA has one
+                explanation = self._jarvis.explain(entry["question"])
+            except Exception:  # noqa: BLE001 — explainability is additive; it must never break the answer
+                explanation = None
+            self._emit("local_answer", {"token": token, "text": final, "loop_max_gap_ms": gap_ms,
+                                        "explanation": explanation})
             if entry["voice"]:
                 self._emit("answer", {"text": final})
                 speak(strip_acknowledgment(final))

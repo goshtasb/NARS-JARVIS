@@ -26,6 +26,7 @@ from contradiction import ContradictionGuard
 from execution import DecisionStats, Executor, decide
 from language import (
     QUESTION_SYSTEM_PROMPT,
+    Band,
     Decision,
     IngestionGate,
     Polarity,
@@ -893,29 +894,51 @@ class Jarvis:
             claims = []
         if not claims:
             return self._voice.say_unknown("I couldn't read that as a question I can answer.")
-        claim = claims[0]
-        term = statement_term(to_narsese(claim))
-        answer = self.ask(term + "?")  # existing path: query L1, reload from L2 on a miss
-        if answer is None or answer.truth is None:
+        data = self._explain_claim(claims[0])
+        if data is None:
             return self._voice.say_unknown()
+        verdict = Verdict(Polarity[data["polarity"]], Band[data["band"]], data["statement"],
+                          data["confidence"], data["frequency"], [p["english"] for p in data["premises"]])
+        return self._voice.say(verdict)
+
+    def explain(self, question: str) -> dict | None:
+        """Phase 3a (Explainability View): the STRUCTURED grounded verdict — the symbolic NARS answer plus
+        its derivation premises unrolled from the ONA evidence stamp. Returns None when ONA has no grounded
+        answer (the UI then shows the LLM prose alone, with no 'work' to display). Cheap + synchronous (no
+        model decode), so the daemon can attach it to an answer without blocking the loop."""
+        try:
+            claims = self._translator.claims(question, QUESTION_SYSTEM_PROMPT)
+        except Exception:  # noqa: BLE001
+            return None
+        return self._explain_claim(claims[0]) if claims else None
+
+    def _explain_claim(self, claim) -> dict | None:
+        """Shared core of the grounded verdict: ask ONA, unroll the stamp to premises. Returns a
+        JSON-serializable dict {statement, polarity, band, confidence, frequency, premises:[{english,
+        narsese}]} — or None if ONA has no truth for the claim."""
+        term = statement_term(to_narsese(claim))
+        answer = self.ask(term + "?")  # query L1, reload from L2 on a miss
+        if answer is None or answer.truth is None:
+            return None
         polarity, band = assess(answer.truth.frequency, answer.truth.confidence)
         # Polarity-correct statement: flip the claim's negation when ONA says it's false.
         shown = claim if polarity is not Polarity.NO else replace(claim, negated=not claim.negated)
         statement = back_render(shown).rstrip(".")
-        # The audit trail is the product: dedup identical canonical premises (ONA may cite the same
-        # belief via several evidence ids) and render each through one fallback — English alias if the
-        # L2 store has one, else the clean canonical Narsese term (expert `tell` path).
-        evidence: list[str] = []
+        # The audit trail is the product: dedup identical canonical premises (ONA may cite the same belief
+        # via several evidence ids); carry BOTH the English mirror (for the memo) and the raw canonical
+        # Narsese (for the Analyst toggle), so the UI never has to re-derive either.
+        premises: list[dict] = []
         seen: set[str] = set()
         for premise_term in self._brain.evidence_terms(answer.stamp):
             if premise_term in seen:
                 continue
             seen.add(premise_term)
             fact = self._store.get(premise_term)
-            evidence.append(fact.english if (fact and fact.english) else premise_term)
-        verdict = Verdict(polarity, band, statement, answer.truth.confidence,
-                          answer.truth.frequency, evidence)
-        return self._voice.say(verdict)
+            premises.append({"english": fact.english if (fact and fact.english) else premise_term,
+                             "narsese": premise_term})
+        return {"statement": statement, "polarity": polarity.name, "band": band.name,
+                "confidence": answer.truth.confidence, "frequency": answer.truth.frequency,
+                "premises": premises}
 
     def act(self, op_name: str, arg_name: str, stats: DecisionStats):
         """Route a proposed action through the C4 decision gate to the wired executor.
