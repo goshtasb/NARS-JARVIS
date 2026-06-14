@@ -278,6 +278,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             chat.localAnswer(body)
         case "overnight_progress", "overnight_started", "overnight_done":  // drive the Activity tab, not chat
             activity.onOvernightEvent()
+        case "deviation_scan":                               // Slice 3b: corpus-aware deviation -> Risk panel
+            activity.onDeviationScan(body)
         default:                                             // "alert" (sentinel / system)
             let text = body["text"] as? String ?? ""
             chat.append(text)
