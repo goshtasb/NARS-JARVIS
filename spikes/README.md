@@ -64,25 +64,31 @@ primings (a mimicked edge tracks its prompt and dies under the other set). A **c
 `source ≠ target` is a post-parse filter because GBNF is context-free and cannot enforce inequality.
 Run: `python3 spikes/ontology_edge_ablation.py` (set `ABLATION_MODEL=…` to swap the local weight).
 
-**Results (16 clauses; 7B-instruct, then size-controlled 7B-coder):**
-| | run 1 (0-shot, 3×temp) | instruct | coder |
-|---|---|---|---|
-| raw edges/prompt | collapsed | 14/13 | 9/7 |
-| admitted (gated) | 2 | 3 | 3 |
-| degenerate self-loops | 1 | **0** | **0** |
-| contamination_rate | — | **0% (0/4)** | **0% (0/4)** |
-| κ | not computed | not computed | not computed |
+**Results (16 clauses; 7B-instruct, size-controlled 7B-coder, then the 14B arm):**
+| | run 1 (0-shot, 3×temp) | 7B-instruct | 7B-coder | 14B-instruct |
+|---|---|---|---|---|
+| raw edges/prompt | collapsed | 14/13 | 9/7 | 19/20 |
+| prompt-invariant (pre-gate) | 2 | ~3 | ~3 | ~10 |
+| noise ratio (non-invariant) | — | ~78% | ~67% | ~49% |
+| admitted (gated) | 2 | 3 | 3 | 6 |
+| density (edges/clause) | 0.12 | 0.19 | 0.19 | 0.38 |
+| degenerate self-loops | 1 (survived) | **0** | **0** | 3 (filtered) |
+| contamination_rate | — | **0% (0/4)** | **0% (0/4)** | **0% (0/4)** |
+| κ | not computed | not computed | not computed | not computed |
 
-- **Collapse was substantially a harness artifact:** the model emits 9–14 edges/prompt — it was never
-  silent; 3×-temperature intersection strangled it. Self-loop is gone under the new gate.
-- **But the deeper signal is real model instability:** only ~3 of ~14 raw edges survive cross-prompt
-  invariance — ~75% is prompt-specific noise. The limiting factor is model capability, not the filter.
-- **Mimicry not detected:** contamination 0% on both models (n=4 placebo — disconfirms gross mimicry, not
+- **Collapse was substantially a harness artifact:** models emit 9–20 edges/prompt — never silent;
+  3×-temperature intersection strangled it. Self-loop gone under the new gate (for the 7Bs).
+- **The ceiling is partly hardware-bound:** 7B→14B roughly **halved noise (78%→49%)** and **doubled yield
+  (3→6) and density (0.19→0.38)**. The feared "14B still ~75% noise" kill condition did NOT occur.
+- **But not solved:** the 14B emitted a **cross-clause false edge** (`limitation_of_liability --excludes-->
+  force_majeure`) that passed verbatim grounding — grounding ≠ correctness, the exact blast-radius failure
+  mode. It also produced **more** self-loops (3, caught only by the degeneracy filter).
+- **Mimicry not detected** at any scale: contamination 0% (n=4 placebo — disconfirms gross mimicry, not
   subtle bias).
-- **One genuinely robust edge:** `audit_rights --involves--> data_access` survived temperature + prompt-set
-  + **model** perturbation (4 axes). Precision otherwise mixed; **κ still uncomputable** (no labeler).
+- **κ still uncomputable** (no human/frontier labeler, offline). Per-edge "looks right" is the author's read,
+  explicitly discounted — NOT a precision metric.
 
-**Verdict:** acquitting the harness does not save the thesis. A local 7B is a **low-yield, medium-precision**
-edge proposer (~0.19 edges/clause robust residue). Highest-value next test = the **deferred 14B arm**
-(no local weight; ~8 GB download; separate variable). A real CUAD + human/frontier-κ test remains required
-before any production claim — this offline sandbox cannot provide it.
+**Verdict:** scaling helps but does not make the LLM an autonomous author — even the 14B is a **better
+*proposer* (≈half-signal, one-click-reject) that still needs a human gate**, not an auto-committer. That
+points to a **human-in-the-loop confirmation UX** regardless of model size. The real precision gate (CUAD +
+an independent κ labeler) remains required before any production claim — this offline sandbox cannot provide it.
