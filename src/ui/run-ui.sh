@@ -10,9 +10,13 @@ root="$(cd "$here/../.." && pwd)"
 LLM="$root/models/qwen2.5-7b-instruct-q4_k_m.gguf"          # prefer the 7B brain (ADR-007)
 [ -f "$LLM" ] || LLM="$root/models/qwen2.5-3b-instruct-q4_k_m.gguf"
 EMBED="$root/models/nomic-embed-text-v1.5.f16.gguf"
-# Slice 4 hardening: the GBNF-constrained triage extraction runs on the lighter 3B (~2 GB vs ~4.4 GB) so a
-# background contract scan never stacks a second 7B on top of the daemon's resident model (the swap-freeze).
-TRIAGE="$root/models/qwen2.5-3b-instruct-q4_k_m.gguf"
+# Slice 4 hardening + 0.5B interim: the GBNF-constrained triage extraction runs on the SMALLEST model that
+# can do constrained extraction. Prefer the 0.5B (~400 MB) so a background scan barely dents RAM; fall back
+# to the 3B (~2 GB) if the 0.5B isn't downloaded yet (triage_model_path falls back further to the 7B). NOTE:
+# GBNF guarantees the output SHAPE, not extraction ACCURACY — the 0.5B's accuracy is eval-gated (Issue #24)
+# before it is trusted as the production default; until then the 3B remains the safe fallback.
+TRIAGE="$root/models/qwen2.5-0.5b-instruct-q4_k_m.gguf"
+[ -f "$TRIAGE" ] || TRIAGE="$root/models/qwen2.5-3b-instruct-q4_k_m.gguf"
 [ -f "$LLM" ]    && export NARS_JARVIS_LLM_GGUF="$LLM"
 [ -f "$EMBED" ]  && export NARS_JARVIS_EMBED_GGUF="$EMBED"
 [ -f "$TRIAGE" ] && export NARS_JARVIS_TRIAGE_GGUF="$TRIAGE"
