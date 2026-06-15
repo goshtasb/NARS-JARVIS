@@ -158,11 +158,16 @@ enum RiskPanel {
         if let r = reasoning, let rThis = r["this"] as? String {
             let detailView = reasoningView(rThis, r["standard"] as? String)
             detailView.isHidden = true
-            var toggle: DSButton!
-            toggle = DSButton("Show the reasoning", symbol: "function", variant: .quiet, size: 11) { [weak detailView, weak toggle] in
+            // Construct the button FIRST, then set onPress — so `[weak toggle]` captures the LIVE button.
+            // (The old form `toggle = DSButton(...){ [weak toggle] … }` captured `toggle` while it was still
+            // nil — the closure was built as the initializer argument, before the assignment — so the guard
+            // always returned and the click did nothing. DSButton.onPress is provided for exactly this.)
+            let toggle = DSButton("Show the reasoning", symbol: "function", variant: .quiet, size: 11) {}
+            toggle.onPress = { [weak detailView, weak toggle] in
                 guard let detailView, let toggle else { return }
                 detailView.isHidden.toggle()
                 toggle.titleField?.stringValue = detailView.isHidden ? "Show the reasoning" : "Hide the reasoning"
+                detailView.superview?.layoutSubtreeIfNeeded()   // reflow the stack immediately so it expands
             }
             col.addArrangedSubview(toggle)        // intrinsic width (a small leading button), not full-width
             add(detailView)
