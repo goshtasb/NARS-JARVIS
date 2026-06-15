@@ -7,15 +7,17 @@ import AppKit
 
 final class ActivityViewController: NSViewController {
     weak var client: JarvisClient?
-    private let seg = NSSegmentedControl(labels: ["Now", "Scheduled", "Log", "Summary"],
+    private let seg = NSSegmentedControl(labels: ["Now", "Scheduled", "Log", "Summary", "Risk"],
                                          trackingMode: .selectOne, target: nil, action: nil)
     private let list = NSStackView()
     private var listScroll: NSScrollView!
     private var clearBtn: DSButton!
     private var pollTimer: Timer?
-    private var sub = 0      // 0 Now · 1 Scheduled · 2 Log · 3 Summary
+    private var sub = 0      // 0 Now · 1 Scheduled · 2 Log · 3 Summary · 4 Risk
     private var activitySig: String?   // Activity rows are terminal; skip the 1 Hz teardown when unchanged
     private var summarySig: String?    // ADR-058: same skip for the Summary tab's archived rows
+    private var scans: [String: [String: Any]] = [:]   // Slice 3b: doc -> latest deviation_scan body
+    private var riskSig: String?       // skip the teardown when the deviation set is unchanged
 
     override func loadView() {
         let root = LayerView(); root.wantsLayer = true; root.bg = DS.contentBG; root.layer?.backgroundColor = DS.contentBG.cgColor
@@ -66,7 +68,7 @@ final class ActivityViewController: NSViewController {
     }
     @objc private func subChanged() {
         sub = seg.selectedSegment; clearBtn.isHidden = (sub != 2)
-        activitySig = nil; summarySig = nil      // a tab switch always rebuilds
+        activitySig = nil; summarySig = nil; riskSig = nil      // a tab switch always rebuilds
         refresh()
     }
 
@@ -78,15 +80,77 @@ final class ActivityViewController: NSViewController {
             }
             return
         }
+        if sub == 4 {                            // Slice 3b: the Risk & Anomalies panel (late-join pull)
+            client?.call("triage_scans") { [weak self] _, body in
+                let rows = (body["rows"] as? [[String: Any]]) ?? []
+                DispatchQueue.main.async { self?.ingestScans(rows); self?.renderRisk() }
+            }
+            return
+        }
         client?.call("overnight_status") { [weak self] _, body in
             let rows = (body["rows"] as? [[String: Any]]) ?? []
             DispatchQueue.main.async { self?.render(rows) }
         }
     }
 
+    // ── Slice 3b: the Risk & Anomalies panel ──
+    private func ingestScans(_ rows: [[String: Any]]) {
+        for r in rows { if let doc = r["doc"] as? String { scans[doc] = r } }
+    }
+
+    /// Live `deviation_scan` push (pending -> populated/empty/deferred). AppDelegate forwards it here.
+    func onDeviationScan(_ body: [String: Any]) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if let doc = body["doc"] as? String { self.scans[doc] = body }
+            if self.sub == 4 { self.renderRisk() }
+        }
+    }
+
+    private func renderRisk() {
+        // action-required (populated) floats to the top, then in-flight, then deferred, then the all-clear.
+        let order = ["populated": 0, "pending": 1, "deferred": 2, "empty": 3]
+        let items = scans.values.sorted {
+            let a = order[$0["state"] as? String ?? ""] ?? 9, b = order[$1["state"] as? String ?? ""] ?? 9
+            return a != b ? a < b : ($0["doc"] as? String ?? "") < ($1["doc"] as? String ?? "")
+        }
+        let sig = items.map { r in
+            "\(r["doc"] as? String ?? "")|\(r["state"] as? String ?? "")|\((r["findings"] as? [[String: Any]])?.count ?? 0)|\(r["salient_count"] as? Int ?? -1)"
+        }.joined(separator: "¦")
+        if sig == riskSig { return }             // unchanged → don't tear down (e.g. the spinner) on the 1 Hz poll
+        riskSig = sig
+        list.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        let rows: [NSView] = items.isEmpty
+            ? [emptyRow("No documents scanned yet.  Brief a contract from Chat and its deviations appear here.")]
+            : items.map { RiskPanel.card($0) }
+        for r in rows {
+            list.addArrangedSubview(r)
+            r.widthAnchor.constraint(equalTo: list.widthAnchor, constant: -48).isActive = true
+        }
+    }
+
     /// Headless layout preview (offline) — render representative rows without a daemon.
     func previewSeed(_ which: Int) {
         seg.selectedSegment = which; sub = which; clearBtn.isHidden = (which != 2)
+        if which == 4 {                          // Slice 3b: the four progressive states, side by side
+            let demo: [[String: Any]] = [
+                ["doc": "Acme-MSA.pdf", "state": "populated", "salient_count": 6, "findings": [
+                    ["clause_type": "breach_notification", "render": "strict", "verdict": "LOOSER",
+                     "this": ["raw_quote": "within three (3) business days", "unit": "business_days", "kind": "duration_business"],
+                     "baseline": ["kind": "duration_calendar", "median": 72, "n": 5]],
+                    ["clause_type": "limitation_of_liability", "render": "neutral", "verdict": "DIFFERS_IN_KIND_UNRANKABLE",
+                     "this": ["raw_quote": "shall not exceed $3,000,000", "unit": "usd", "kind": "money"],
+                     "baseline": ["kind": "money", "median": 1000000, "n": 4]],
+                    ["clause_type": "breach_notification", "render": "qualitative", "verdict": "INCOMPARABLE_QUALITATIVE",
+                     "this": ["raw_quote": "promptly", "unit": "none", "kind": "qualitative"], "baseline": NSNull()],
+                ]],
+                ["doc": "Beta-NDA.pdf", "state": "pending", "salient_count": 4],
+                ["doc": "Gamma-DPA.pdf", "state": "empty", "salient_count": 8, "findings": []],
+                ["doc": "Delta-SOW.pdf", "state": "deferred", "reason": "on_battery"],
+            ]
+            scans = [:]; for d in demo { if let doc = d["doc"] as? String { scans[doc] = d } }
+            renderRisk(); return
+        }
         let nowRows: [[String: Any]] = [
             ["action": "summarize_file", "arg": "/Users/me/Q3-PRD.pdf", "status": "running", "result": "summarizing… chunk 7/12"],
             ["action": "find_file", "arg": "notes", "status": "pending"],
