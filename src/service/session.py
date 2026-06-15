@@ -194,6 +194,9 @@ class Session:
         self._learn_jobs: dict[int, dict] = {}         # v1.24.0 Sprint 3: fd -> in-flight off-loop Narsese distillation
         self._triage_jobs: dict[int, dict] = {}        # Slice 3a: fd -> in-flight off-loop deviation scan
         self._last_scans: dict[str, dict] = {}         # Slice 3a: doc -> last deviation_scan body (late-join pull)
+        from triage.paramstore import ParamStore       # Slice 4: read handle for dedup + corpus-size denominator
+        self._paramstore = ParamStore(self._db_path)   # (the off-loop worker WRITES via its own WAL connection)
+        self._last_corpus: dict = {}                   # Slice 4: last corpus_progress body (coalesce + late-join)
         self._converse_pending: dict[int, dict] = {}   # ADR-057: token -> {state, question, voice} awaiting decode
         self._token = 0
         self._shutdown = False                          # set by the `shutdown` command (kill switch)
@@ -230,6 +233,8 @@ class Session:
             "recall": self._recall,                                       # ADR-056/Gate 2: hybrid retrieval + STAMP provenance
             "file_summarize": self._file_summarize,                       # on-device (private) file evaluation -> chat
             "triage_scans": self._triage_scans,                           # Slice 3a: latest deviation_scan per doc (late-join pull)
+            "corpus_ingest": self._corpus_ingest,                         # Slice 4: bulk-ingest a folder of contracts
+            "corpus_status": self._corpus_status,                         # Slice 4: cumulative ingest progress (late-join)
             "metrics": self._metrics_summary,                             # ADR-056 §8: compounding-value readout (Identity tab)
             "intent_parse": self._intent_parse,                           # ADR-054: NL -> validated Canvas intent
             "catalog_schema": self._catalog_schema,                       # ADR-033: palette for the canvas
@@ -1272,24 +1277,33 @@ class Session:
             return False, "on_battery"
         return True, ""
 
-    def _spawn_triage(self, path: str) -> None:
-        if not path or not os.path.isfile(path):
-            return
-        allowed, reason = self._triage_allowed()
+    def _spawn_triage(self, path: str, tid: int | None = None) -> None:
+        """Off-loop deviation scan. `tid` set == a bulk-ingest task (Slice 4): the corpus drainer already
+        owns the AC gate, so we skip the live deferred-event path and instead settle the queue row on
+        completion. tid None == the live chat/watch path, which keeps its own AC gate + deferred event."""
         doc = os.path.basename(path)
-        if not allowed:                                # deferred, never silently dropped (no auto-retry yet)
-            body = {"doc": doc, "state": "deferred", "reason": reason}
-            self._last_scans[doc] = body
-            self._emit("deviation_scan", body)
+        if not path or not os.path.isfile(path):
+            if tid is not None:
+                self._overnight_queue.mark(tid, "failed", result="missing file")
             return
+        if tid is None:
+            allowed, reason = self._triage_allowed()
+            if not allowed:                            # deferred, never silently dropped (no auto-retry yet)
+                body = {"doc": doc, "state": "deferred", "reason": reason}
+                self._last_scans[doc] = body
+                self._emit("deviation_scan", body)
+                return
         from service.triage_job import TriageJob
         self._token += 1
         try:
             job = TriageJob(path, self._db_path, self._token)
         except Exception as exc:  # noqa: BLE001 — a spawn failure is logged, never crashes the daemon
             sys.stderr.write(f"[triage] could not start deviation worker: {exc}\n")
+            if tid is not None:
+                self._overnight_queue.mark(tid, "failed", result=str(exc))
+                self._emit_corpus_progress()
             return
-        self._triage_jobs[job.fileno()] = {"job": job, "doc": doc, "body": None}
+        self._triage_jobs[job.fileno()] = {"job": job, "doc": doc, "body": None, "tid": tid}
 
     def _read_triage_job(self, fd: int) -> None:
         """Drain a completed deviation scan. The expensive re-parse + extraction already ran off-loop; here we
@@ -1310,16 +1324,71 @@ class Session:
                 del self._triage_jobs[fd]
                 job.cleanup()
                 body = entry["body"]
-                if body is None:                       # worker errored before a result -> terminal empty
+                errored = body is None
+                if errored:                            # worker errored before a result -> terminal empty
                     body = {"doc": entry["doc"], "doc_id": "", "salient_count": 0,
                             "state": "empty", "findings": []}
                 self._last_scans[entry["doc"]] = body
                 self._emit("deviation_scan", body)
+                if entry.get("tid") is not None:        # Slice 4: settle the bulk queue row + advance progress
+                    self._overnight_queue.mark(entry["tid"], "failed" if errored else "done",
+                                               result=body.get("state", ""))
+                    self._emit_corpus_progress()
 
     def _triage_scans(self, arg) -> tuple[bool, object]:
         """Pull the latest deviation_scan body per document (late-join: a client that connects after a scan
         finished still gets current state). Push is the live plane; this is the catch-up read."""
         return True, {"rows": list(self._last_scans.values())}
+
+    # ── Slice 4: onboarding bulk ingest (cold-start mitigation — populate the deviation baseline) ──
+    def _corpus_body(self) -> dict:
+        from service.corpus import progress_body
+        return progress_body(self._overnight_queue.list_all(), len(self._paramstore.known_doc_ids()))
+
+    def _emit_corpus_progress(self) -> None:
+        body = self._corpus_body()
+        if body != self._last_corpus:                  # coalesce: only broadcast when the counters actually move
+            self._last_corpus = body
+            self._emit("corpus_progress", body)
+
+    def _corpus_ingest(self, arg) -> tuple[bool, object]:
+        """Connect a folder of historical contracts -> queue each valid, not-already-ingested PDF for the
+        off-loop triage worker. TRIAGE-ONLY (params -> baseline); never the summarize/learn pipeline."""
+        path = arg.get("path", "") if isinstance(arg, dict) else str(arg or "")
+        path = str(path).strip()
+        if not path or not os.path.isdir(path):
+            return False, {"text": f"Not a folder: {path}"}
+        from service.corpus import scan_folder
+        from triage.devscan import file_doc_id
+        scan = scan_folder(path, self._paramstore.known_doc_ids(), file_doc_id)
+        for p in scan.to_enqueue:
+            self._overnight_queue.enqueue("triage_file", p)
+        if scan.truncated:
+            sys.stderr.write(f"[corpus] {scan.truncated} file(s) over the per-import cap were not queued\n")
+        if not self._overnight.active:                 # wake the AC-gated drain loop if it was idle
+            self._overnight.start()
+        self._emit_corpus_progress()
+        return True, {"queued": len(scan.to_enqueue), "skipped_dup": scan.skipped_dup,
+                      "skipped_invalid": scan.skipped_invalid, "truncated": scan.truncated,
+                      "corpus_size": len(self._paramstore.known_doc_ids())}
+
+    def _corpus_status(self, arg) -> tuple[bool, object]:
+        """Late-join pull of the cumulative corpus-ingest progress (a client connecting mid-drain)."""
+        return True, self._corpus_body()
+
+    def _drain_corpus(self) -> None:
+        """AC-gated, SERIAL bulk-ingest drain (one triage_file at a time — concurrent 7B/CPU workers would
+        thrash). On battery it idles; the durable queue + reset_running() resume it on AC / after a restart."""
+        if not self._on_ac_power():
+            return
+        if any(e.get("tid") is not None for e in self._triage_jobs.values()):   # one bulk scan at a time
+            return
+        from service.corpus import next_triage_task
+        task = next_triage_task(self._overnight_queue.list_all())
+        if task is None:
+            return
+        self._overnight_queue.mark(task["id"], "running")
+        self._spawn_triage(task["arg"], tid=task["id"])
 
     def _spawn_learn(self, text: str, source: str = "") -> None:
         if not text or not text.strip():
@@ -1493,6 +1562,10 @@ class Session:
         except Exception as exc:  # noqa: BLE001 — an overnight hiccup must never kill the loop
             self._emit("alert", {"text": f"[overnight error] {exc}"})
         try:
+            self._drain_corpus()             # Slice 4: AC-gated serial bulk-ingest drain (cold-start baseline)
+        except Exception as exc:  # noqa: BLE001 — a corpus-drain hiccup must never kill the loop
+            self._emit("alert", {"text": f"[corpus error] {exc}"})
+        try:
             idle = (time.time() - self._last_request_at) >= IDLE_SECONDS   # ADR-036: persona ingestion,
             self._persona_loop.tick(idle and not self._localbrain.busy,    # idle-gated, batched; ADR-057:
                                     overnight_active=self._overnight.active)  # never during a Tier-2 decode
@@ -1524,6 +1597,10 @@ class Session:
         for entry in list(self._learn_jobs.values()):  # Sprint 3: reap any in-flight distillation worker
             entry["job"].cleanup()
         self._learn_jobs.clear()
+        for entry in list(self._triage_jobs.values()): # Slice 3a/4: reap any in-flight deviation scan
+            entry["job"].cleanup()
+        self._triage_jobs.clear()
+        self._paramstore.close()          # Slice 4: the corpus dedup/size read handle
         self._localbrain.close()          # ADR-057: close the Tier-2 decode self-pipe
         if self._ingest_watch is not None:
             self._ingest_watch.stop()     # v1.24.0: reap the FSEvents helper + close the ingest queue
