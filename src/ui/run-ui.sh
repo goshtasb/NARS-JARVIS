@@ -10,12 +10,12 @@ root="$(cd "$here/../.." && pwd)"
 LLM="$root/models/qwen2.5-7b-instruct-q4_k_m.gguf"          # prefer the 7B brain (ADR-007)
 [ -f "$LLM" ] || LLM="$root/models/qwen2.5-3b-instruct-q4_k_m.gguf"
 EMBED="$root/models/nomic-embed-text-v1.5.f16.gguf"
-# Slice 4 hardening + 0.5B interim: the GBNF-constrained triage extraction runs on the SMALLEST model that
-# can do constrained extraction. Prefer the 0.5B (~400 MB) so a background scan barely dents RAM; fall back
-# to the 3B (~2 GB) if the 0.5B isn't downloaded yet (triage_model_path falls back further to the 7B). NOTE:
-# GBNF guarantees the output SHAPE, not extraction ACCURACY — the 0.5B's accuracy is eval-gated (Issue #24)
-# before it is trusted as the production default; until then the 3B remains the safe fallback.
-TRIAGE="$root/models/qwen2.5-0.5b-instruct-q4_k_m.gguf"
+# ROLLBACK (empirical): the 0.5B general model could NOT do reliable GBNF extraction — live, it MISSED a
+# real 24h breach clause and HALLUCINATED a duration from a section number ("3. Indemnification" -> "3
+# business days"), poisoning the deviation engine. A generalized small model is not a substitute for
+# task-specific fine-tuning; the true fix is the 150 MB encoder (Issue #24). Until then, triage runs on the
+# proven-accurate 7B (16 GB+/dev tiers only — the 8 GB tier stays blocked on #24). Falls back to the 3B.
+TRIAGE="$root/models/qwen2.5-7b-instruct-q4_k_m.gguf"
 [ -f "$TRIAGE" ] || TRIAGE="$root/models/qwen2.5-3b-instruct-q4_k_m.gguf"
 [ -f "$LLM" ]    && export NARS_JARVIS_LLM_GGUF="$LLM"
 [ -f "$EMBED" ]  && export NARS_JARVIS_EMBED_GGUF="$EMBED"
