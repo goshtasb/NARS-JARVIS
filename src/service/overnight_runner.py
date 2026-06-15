@@ -52,6 +52,12 @@ class OvernightRunner:
     def active(self) -> bool:
         return self._active or self._job is not None
 
+    @property
+    def offloading(self) -> bool:
+        """A heavy model SUBPROCESS (a SummaryJob, ~one resident 7B) is in flight off-loop. The corpus
+        drain's memory firewall yields to this so two heavy model contexts never co-reside."""
+        return self._job is not None
+
     def start(self) -> int:
         """Begin (or resume) draining the queue. Reverts any crash-orphaned 'running' rows to pending."""
         self._queue.reset_running()

@@ -10,8 +10,12 @@ root="$(cd "$here/../.." && pwd)"
 LLM="$root/models/qwen2.5-7b-instruct-q4_k_m.gguf"          # prefer the 7B brain (ADR-007)
 [ -f "$LLM" ] || LLM="$root/models/qwen2.5-3b-instruct-q4_k_m.gguf"
 EMBED="$root/models/nomic-embed-text-v1.5.f16.gguf"
-[ -f "$LLM" ]   && export NARS_JARVIS_LLM_GGUF="$LLM"
-[ -f "$EMBED" ] && export NARS_JARVIS_EMBED_GGUF="$EMBED"
+# Slice 4 hardening: the GBNF-constrained triage extraction runs on the lighter 3B (~2 GB vs ~4.4 GB) so a
+# background contract scan never stacks a second 7B on top of the daemon's resident model (the swap-freeze).
+TRIAGE="$root/models/qwen2.5-3b-instruct-q4_k_m.gguf"
+[ -f "$LLM" ]    && export NARS_JARVIS_LLM_GGUF="$LLM"
+[ -f "$EMBED" ]  && export NARS_JARVIS_EMBED_GGUF="$EMBED"
+[ -f "$TRIAGE" ] && export NARS_JARVIS_TRIAGE_GGUF="$TRIAGE"
 
 SOCK="${NARS_JARVIS_SOCK:-${TMPDIR:-/tmp}/nars-jarvis.sock}"
 export NARS_JARVIS_SOCK="$SOCK"
