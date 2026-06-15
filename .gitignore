@@ -9,6 +9,8 @@ __pycache__/
 
 # Local runtime artifacts
 *.db
+*.db.bak*
+*.bak
 *.log
 
 # runtime state (local L2 db)
