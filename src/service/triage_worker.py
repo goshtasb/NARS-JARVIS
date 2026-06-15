@@ -23,6 +23,13 @@ def emit(tag: str, payload) -> None:
     sys.stdout.flush()
 
 
+def triage_model_path(env) -> str | None:
+    """Slice 4 hardening: triage extraction is GBNF-constrained, so the lighter 3B model extracts a
+    parameter just as deterministically as the 7B at ~half the resident RAM. Prefer NARS_JARVIS_TRIAGE_GGUF
+    (the 3B); fall back to the daemon's NARS_JARVIS_LLM_GGUF; None lets LocalLLM raise its own clear error."""
+    return env.get("NARS_JARVIS_TRIAGE_GGUF") or env.get("NARS_JARVIS_LLM_GGUF")
+
+
 def main(argv: list[str]) -> int:
     path = argv[0].strip() if argv and argv[0].strip() else ""
     db_path = argv[1].strip() if len(argv) > 1 and argv[1].strip() else ":memory:"
@@ -40,7 +47,7 @@ def main(argv: list[str]) -> int:
         return 1
 
     try:
-        llm = LocalLLM()
+        llm = LocalLLM(model_path=triage_model_path(os.environ))   # 3B (lighter) for the constrained extract
     except Exception as exc:  # noqa: BLE001
         emit("error", f"model unavailable: {exc}")
         return 0
