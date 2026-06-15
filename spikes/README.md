@@ -51,3 +51,38 @@ model-weakness from filter-strictness before any conclusion.
 
 **Bottom line:** the ontology bottleneck is **harder than the hand-fed toy implied**. This first run does not
 validate the "LLM proposes edges" leg of ADR-060 — it's a red flag requiring iteration.
+
+## `ontology_edge_ablation.py` — controlled re-run: was the collapse harness or model?
+Phase-1 ablation isolating *why* the first run collapsed. It does **not** loosen precision: it replaces the
+recall-killing **3×-temperature** consensus (correlated voters) with a **decorrelated, precision-biased** gate —
+
+    admit e  ⟺  grounded_verbatim(e)  ∧  source ≠ target  ∧  invariant_across(SetA, SetB)
+
+Two few-shot sets with **disjoint node vocabularies** teach the same *form*; an edge must survive **both**
+primings (a mimicked edge tracks its prompt and dies under the other set). A **contamination control**
+(placebo clauses) measures the leak rate of exact exemplar edges — the mathematical mimicry proof.
+`source ≠ target` is a post-parse filter because GBNF is context-free and cannot enforce inequality.
+Run: `python3 spikes/ontology_edge_ablation.py` (set `ABLATION_MODEL=…` to swap the local weight).
+
+**Results (16 clauses; 7B-instruct, then size-controlled 7B-coder):**
+| | run 1 (0-shot, 3×temp) | instruct | coder |
+|---|---|---|---|
+| raw edges/prompt | collapsed | 14/13 | 9/7 |
+| admitted (gated) | 2 | 3 | 3 |
+| degenerate self-loops | 1 | **0** | **0** |
+| contamination_rate | — | **0% (0/4)** | **0% (0/4)** |
+| κ | not computed | not computed | not computed |
+
+- **Collapse was substantially a harness artifact:** the model emits 9–14 edges/prompt — it was never
+  silent; 3×-temperature intersection strangled it. Self-loop is gone under the new gate.
+- **But the deeper signal is real model instability:** only ~3 of ~14 raw edges survive cross-prompt
+  invariance — ~75% is prompt-specific noise. The limiting factor is model capability, not the filter.
+- **Mimicry not detected:** contamination 0% on both models (n=4 placebo — disconfirms gross mimicry, not
+  subtle bias).
+- **One genuinely robust edge:** `audit_rights --involves--> data_access` survived temperature + prompt-set
+  + **model** perturbation (4 axes). Precision otherwise mixed; **κ still uncomputable** (no labeler).
+
+**Verdict:** acquitting the harness does not save the thesis. A local 7B is a **low-yield, medium-precision**
+edge proposer (~0.19 edges/clause robust residue). Highest-value next test = the **deferred 14B arm**
+(no local weight; ~8 GB download; separate variable). A real CUAD + human/frontier-κ test remains required
+before any production claim — this offline sandbox cannot provide it.
