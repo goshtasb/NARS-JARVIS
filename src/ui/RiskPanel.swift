@@ -90,6 +90,9 @@ enum RiskPanel {
         let this = f["this"] as? [String: Any] ?? [:]
         let newQuote = this["raw_quote"] as? String ?? ""
         let baseline = f["baseline"] as? [String: Any]
+        let detail = f["detail_label"] as? String ?? ""      // Slice 3c: server-authored plain-English reason
+        let page = f["page"] as? Int                          // Slice 3c: citation provenance
+        let reasoning = f["reasoning"] as? [String: Any]      // Slice 3c: canonical bounds for the disclosure
 
         let bg = color.withAlphaComponent(render == "strict" ? 0.12 : 0.06)
         let row = DS.rounded(bg: bg, radius: 8, border: color.withAlphaComponent(0.30), borderWidth: 0.5)
@@ -104,13 +107,23 @@ enum RiskPanel {
         col.translatesAutoresizingMaskIntoConstraints = false
         func add(_ v: NSView) { col.addArrangedSubview(v); v.widthAnchor.constraint(equalTo: col.widthAnchor).isActive = true }
 
-        if render == "qualitative" {
-            add(DS.text("Qualitative term — manual review required.", 12, .regular, DS.label2, wrap: true))
-            if !newQuote.isEmpty { add(quoteLine("This contract", newQuote)) }
-        } else {
-            // never just the verdict word: ALWAYS show this contract's quote AND the corpus standard.
-            if !newQuote.isEmpty { add(quoteLine("This contract", newQuote)) }
-            if let b = baseline { add(quoteLine("Your standard", baselinePhrase(b))) }
+        // 1) the plain-English reason — always visible, every render class (Mirror, not Advisor)
+        if !detail.isEmpty { add(DS.text(detail, 12, .regular, DS.label2, wrap: true)) }
+        // 2) never just the verdict word: this contract's quote (with its page citation) AND the corpus standard
+        if !newQuote.isEmpty { add(quoteLine("This contract", newQuote, page: page)) }
+        if render != "qualitative", let b = baseline { add(quoteLine("Your standard", baselinePhrase(b), page: nil)) }
+        // 3) the math, behind a click: the canonical bounds the deterministic comparator actually used
+        if let r = reasoning, let rThis = r["this"] as? String {
+            let detailView = reasoningView(rThis, r["standard"] as? String)
+            detailView.isHidden = true
+            var toggle: DSButton!
+            toggle = DSButton("Show the reasoning", symbol: "function", variant: .quiet, size: 11) { [weak detailView, weak toggle] in
+                guard let detailView, let toggle else { return }
+                detailView.isHidden.toggle()
+                toggle.titleField?.stringValue = detailView.isHidden ? "Show the reasoning" : "Hide the reasoning"
+            }
+            col.addArrangedSubview(toggle)        // intrinsic width (a small leading button), not full-width
+            add(detailView)
         }
 
         head.widthAnchor.constraint(equalTo: col.widthAnchor).isActive = true
@@ -124,12 +137,33 @@ enum RiskPanel {
         return row
     }
 
-    private static func quoteLine(_ label: String, _ quote: String) -> NSView {
-        let col = NSStackView(views: [DS.text(label.uppercased(), 10, .semibold, DS.label3),
+    private static func quoteLine(_ label: String, _ quote: String, page: Int?) -> NSView {
+        let tag = page.map { "\(label.uppercased())   ·   P. \($0)" } ?? label.uppercased()   // citation on the quote
+        let col = NSStackView(views: [DS.text(tag, 10, .semibold, DS.label3),
                                       DS.text("“\(quote)”", 12, .regular, DS.label, wrap: true, selectable: true)])
         col.orientation = .vertical; col.alignment = .leading; col.spacing = 1
         col.translatesAutoresizingMaskIntoConstraints = false
         return col
+    }
+
+    /// The optional "show the reasoning" disclosure: the canonical bounds the deterministic comparator used.
+    private static func reasoningView(_ thisBounds: String, _ standardBounds: String?) -> NSView {
+        let box = DS.rounded(bg: DS.fill(0.05), radius: 6)
+        box.translatesAutoresizingMaskIntoConstraints = false
+        let col = NSStackView(); col.orientation = .vertical; col.alignment = .leading; col.spacing = 2
+        col.translatesAutoresizingMaskIntoConstraints = false
+        col.addArrangedSubview(DS.text("This contract (normalized):  \(thisBounds)", 11, .regular, DS.label2, wrap: true, mono: true))
+        if let s = standardBounds {
+            col.addArrangedSubview(DS.text("Your standard (normalized):  \(s)", 11, .regular, DS.label2, wrap: true, mono: true))
+        }
+        box.addSubview(col)
+        NSLayoutConstraint.activate([
+            col.leadingAnchor.constraint(equalTo: box.leadingAnchor, constant: 8),
+            col.trailingAnchor.constraint(equalTo: box.trailingAnchor, constant: -8),
+            col.topAnchor.constraint(equalTo: box.topAnchor, constant: 6),
+            col.bottomAnchor.constraint(equalTo: box.bottomAnchor, constant: -6),
+        ])
+        return box
     }
 
     private static func verdictBadge(_ verdict: String?, _ render: String, _ color: NSColor) -> NSView {

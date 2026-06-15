@@ -23,11 +23,69 @@ import os
 from triage.aggregator import build_baseline, find_deviations
 from triage.extract import extract_parameters
 from triage.map import build_triage_map
-from triage.parameter import Comparison
+from triage.parameter import Comparison, ParameterKind
 from triage.preamble import extract_preamble
 from triage.structure import LayoutStructureSensor, StructureSensor
 
 _STRICT = {Comparison.TIGHTER, Comparison.LOOSER}
+
+# Slice 3c: the deterministic enums -> plain-English reason the lawyer reads (server-authored, NEVER in
+# Swift — keeps the explanation logic in the testable core). Keyed by (verdict name, detail); falls back to
+# the no-detail row, then a generic. "Mirror, not Advisor": each states WHAT and WHY-it-can('t)-rank, no advice.
+_DETAIL_LABELS = {
+    ("TIGHTER", ""): "Stricter than your standard.",
+    ("LOOSER", ""): "Looser than your standard.",
+    ("LOOSER", "open_upper_ge"): "At least as long as your standard, with no fixed upper bound — so looser.",
+    ("DIFFERS_IN_KIND_UNRANKABLE", "cross_kind"):
+        "Can't be ranked: the units don't convert cleanly, so neither is provably stricter. Read both and decide.",
+    ("DIFFERS_IN_KIND_UNRANKABLE", "ambiguous_overlap"):
+        "Can't be ranked: the possible ranges overlap, so neither is provably stricter. Read both and decide.",
+    ("DIFFERS_IN_KIND_UNRANKABLE", "cross_currency"): "Can't be ranked: different currencies.",
+    ("DIFFERS_IN_KIND_UNRANKABLE", "neutral_magnitude"): "Differs in amount — shown for review, not ranked.",
+    ("DIFFERS_IN_KIND_UNRANKABLE", "unknown"): "Couldn't interpret one of the values — review manually.",
+    ("INCOMPARABLE_QUALITATIVE", "qualitative"): "Qualitative term — manual review required.",
+    ("EQUAL", ""): "Matches your standard.",
+}
+
+
+def detail_label(verdict) -> str:
+    """Plain-English reason for a finding (None == new-to-corpus). Server-authored; the Swift client renders it."""
+    if verdict is None:
+        return "New to your corpus — no prior standard to compare against."
+    return _DETAIL_LABELS.get((verdict.result.name, verdict.detail or ""),
+                              _DETAIL_LABELS.get((verdict.result.name, ""), "Flagged for review."))
+
+
+def _num(x) -> str:
+    return str(int(x)) if float(x).is_integer() else f"{x:.2f}"
+
+
+def _hours(x) -> str:
+    return f"{int(x)}h" if float(x).is_integer() else f"{x:.1f}h"
+
+
+def _canon_label(p) -> str | None:
+    """The canonical interpretation the deterministic comparator actually used — for the 'show the reasoning'
+    disclosure. None when there is nothing to normalize (qualitative)."""
+    if p.is_qualitative or p.kind is ParameterKind.QUALITATIVE or p.canon_lo is None:
+        return None
+    if p.kind is ParameterKind.DURATION_BUSINESS:
+        return f"≥ {_hours(p.canon_lo)} (open upper — depends on weekends/holidays)"
+    if p.kind is ParameterKind.DURATION_CALENDAR:
+        if p.canon_hi is not None and p.canon_lo != p.canon_hi:
+            return f"{_hours(p.canon_lo)}–{_hours(p.canon_hi)}"            # length-ambiguous interval
+        return _hours(p.canon_lo)
+    return f"{_num(p.value)} {p.unit}".strip() if p.value is not None else None   # money / percent / count
+
+
+def _cohort_canon_label(cohort) -> str | None:
+    if cohort is None:
+        return None
+    if cohort.kind in ("duration_calendar", "duration_business"):
+        return _hours(cohort.median)
+    if cohort.kind == "percent":
+        return f"{_num(cohort.median)}%"
+    return _num(cohort.median)
 
 
 def file_doc_id(path: str) -> str:
@@ -60,15 +118,20 @@ def is_surfaced(verdict) -> bool:
 
 def _finding_dict(finding) -> dict:
     p, v, cohort = finding.param, finding.verdict, finding.cohort
+    this_canon = _canon_label(p)
     return {
         "clause_type": p.clause_type,
         "role": p.role,
-        "page": p.anchor.page,
+        "page": p.anchor.page,                            # citation provenance (Slice 3c surfaces it on the glass)
         "render": render_class(v),
         "verdict": v.result.name if v else None,          # "TIGHTER" | "LOOSER" | ... (locked enum name)
         "detail": (v.detail or None) if v else None,
+        "detail_label": detail_label(v),                  # Slice 3c: the plain-English reason (always shown)
         "this": {"raw_quote": p.raw_quote, "value": p.value, "unit": p.unit, "kind": p.kind.value},
         "baseline": ({"kind": cohort.kind, "median": cohort.median, "n": cohort.n} if cohort else None),
+        # Slice 3c: canonical bounds for the optional "show the reasoning" disclosure (None == nothing to show)
+        "reasoning": ({"this": this_canon, "standard": _cohort_canon_label(cohort)}
+                      if this_canon is not None else None),
     }
 
 

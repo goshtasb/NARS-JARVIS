@@ -8,7 +8,7 @@ spans are extracted, the new doc is excluded from its own baseline, and a real T
 import json
 
 from triage.aggregator import Cohort, Finding
-from triage.devscan import build_scan_body, is_surfaced, render_class, scan_document
+from triage.devscan import build_scan_body, detail_label, is_surfaced, render_class, scan_document
 from triage.parameter import Comparison, Verdict, normalize
 from triage.paramstore import ParamStore
 from triage.structure import Anchor, DocumentStructure, Span
@@ -53,6 +53,42 @@ def test_build_scan_body_filters_equal_and_carries_baseline() -> None:
 def test_build_scan_body_empty_when_no_surfaced_findings() -> None:
     body = build_scan_body("nda.pdf", "id", 3, [Finding(_param("72", "hours"), None, None)])  # new to corpus
     assert body["state"] == "empty" and body["findings"] == []
+
+
+# ── Slice 3c: explainability (detail_label) + citation (page) + the canonical-bounds disclosure (reasoning) ──
+def test_detail_label_maps_each_verdict_to_plain_english() -> None:
+    assert detail_label(None).startswith("New to your corpus")
+    assert detail_label(Verdict(Comparison.TIGHTER)) == "Stricter than your standard."
+    assert detail_label(Verdict(Comparison.LOOSER, "open_upper_ge")).startswith("At least as long")
+    assert "overlap" in detail_label(Verdict(Comparison.DIFFERS_IN_KIND_UNRANKABLE, "ambiguous_overlap"))
+    assert "don't convert" in detail_label(Verdict(Comparison.DIFFERS_IN_KIND_UNRANKABLE, "cross_kind"))
+    assert "not ranked" in detail_label(Verdict(Comparison.DIFFERS_IN_KIND_UNRANKABLE, "neutral_magnitude"))
+    assert detail_label(Verdict(Comparison.INCOMPARABLE_QUALITATIVE, "qualitative")).startswith("Qualitative")
+
+
+def test_finding_carries_label_page_and_canonical_reasoning() -> None:
+    coh = Cohort("duration_calendar", 5, 72.0, 72.0, 72.0)
+    d = build_scan_body("nda.pdf", "id", 1, [Finding(_param("24", "hours"), Verdict(Comparison.TIGHTER), coh)])["findings"][0]
+    assert d["detail_label"] == "Stricter than your standard."
+    assert d["page"] == 1                                       # anchor page surfaced for the citation
+    assert d["reasoning"] == {"this": "24h", "standard": "72h"}  # canonical bounds for the disclosure
+
+
+def test_business_days_reasoning_is_open_upper_floor() -> None:
+    coh = Cohort("duration_calendar", 5, 120.0, 120.0, 120.0)
+    f = Finding(_param("3", "business_days"), Verdict(Comparison.DIFFERS_IN_KIND_UNRANKABLE, "cross_kind"), coh)
+    d = build_scan_body("x", "id", 1, [f])["findings"][0]
+    assert "Can't be ranked" in d["detail_label"]
+    assert d["reasoning"]["this"].startswith("≥ 72h (open upper")   # the floor + open-upper convention, in English
+    assert d["reasoning"]["standard"] == "120h"
+
+
+def test_qualitative_finding_has_no_reasoning_disclosure() -> None:
+    f = Finding(_param("", "none", qualitative=True),
+                Verdict(Comparison.INCOMPARABLE_QUALITATIVE, "qualitative"), None)
+    d = build_scan_body("x", "id", 1, [f])["findings"][0]
+    assert d["detail_label"] == "Qualitative term — manual review required."
+    assert d["reasoning"] is None                               # nothing to normalize -> no math disclosure
 
 
 # ── end-to-end scan: fake sensor + scripted LLM + real ParamStore ──
