@@ -50,6 +50,48 @@ enum RiskPanel {
         return card
     }
 
+    // ── Slice 4: the persistent, non-blocking corpus-ingest banner (server-authored label) ──
+    static func banner(_ p: [String: Any]) -> NSView? {
+        let total = p["total"] as? Int ?? 0
+        let label = p["label"] as? String ?? ""
+        if total == 0 || label.isEmpty { return nil }      // nothing ingested yet -> no banner
+        let done = p["done"] as? Int ?? 0
+        let state = p["state"] as? String ?? "idle"
+        let color = state == "ingesting" ? DS.blue : DS.green
+        let card = DS.rounded(bg: color.withAlphaComponent(0.10), radius: 10,
+                              border: color.withAlphaComponent(0.25), borderWidth: 0.5)
+        card.translatesAutoresizingMaskIntoConstraints = false
+        let glyph = DS.symbol(state == "ingesting" ? "arrow.triangle.2.circlepath" : "checkmark.seal.fill",
+                              14, .medium, color)
+        let head = NSStackView(views: [glyph, DS.text(label, 12, .medium, DS.label, wrap: true), NSView()])
+        head.orientation = .horizontal; head.spacing = 8; head.alignment = .centerY
+        let col = NSStackView(views: [head]); col.orientation = .vertical; col.alignment = .leading; col.spacing = 6
+        col.translatesAutoresizingMaskIntoConstraints = false
+        func add(_ v: NSView) { col.addArrangedSubview(v); v.widthAnchor.constraint(equalTo: col.widthAnchor).isActive = true }
+        if state == "ingesting" { add(bar(Double(done) / Double(max(1, total)), color)) }   // determinate, no shift
+        head.widthAnchor.constraint(equalTo: col.widthAnchor).isActive = true
+        card.addSubview(col)
+        NSLayoutConstraint.activate([
+            col.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 12),
+            col.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -12),
+            col.topAnchor.constraint(equalTo: card.topAnchor, constant: 10),
+            col.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -10),
+        ])
+        return card
+    }
+
+    private static func bar(_ frac: Double, _ color: NSColor) -> NSView {
+        let track = DS.rounded(bg: DS.fill(0.10), radius: 3)
+        let fill = DS.rounded(bg: color, radius: 3)
+        track.addSubview(fill)
+        track.heightAnchor.constraint(equalToConstant: 6).isActive = true
+        fill.topAnchor.constraint(equalTo: track.topAnchor).isActive = true
+        fill.bottomAnchor.constraint(equalTo: track.bottomAnchor).isActive = true
+        fill.leadingAnchor.constraint(equalTo: track.leadingAnchor).isActive = true
+        fill.widthAnchor.constraint(equalTo: track.widthAnchor, multiplier: max(0.02, min(1, frac))).isActive = true
+        return track
+    }
+
     // ── the four progressive states ──
     static func pendingView(_ body: [String: Any]) -> NSView {
         let n = body["salient_count"] as? Int ?? 0

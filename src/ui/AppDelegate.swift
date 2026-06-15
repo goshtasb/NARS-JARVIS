@@ -280,6 +280,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             activity.onOvernightEvent()
         case "deviation_scan":                               // Slice 3b: corpus-aware deviation -> Risk panel
             activity.onDeviationScan(body)
+        case "corpus_progress":                              // Slice 4: bulk-ingest baseline progress -> banner
+            activity.onCorpusProgress(body)
         default:                                             // "alert" (sentinel / system)
             let text = body["text"] as? String ?? ""
             chat.append(text)
