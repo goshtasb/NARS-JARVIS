@@ -1365,8 +1365,8 @@ class Session:
             self._overnight_queue.enqueue("triage_file", p)
         if scan.truncated:
             sys.stderr.write(f"[corpus] {scan.truncated} file(s) over the per-import cap were not queued\n")
-        if not self._overnight.active:                 # wake the AC-gated drain loop if it was idle
-            self._overnight.start()
+        # NOTE: do NOT start the OvernightRunner here — triage_file is drained by the tick-driven
+        # _drain_corpus (a separate consumer); the runner explicitly skips triage_file (_NOT_OURS).
         self._emit_corpus_progress()
         return True, {"queued": len(scan.to_enqueue), "skipped_dup": scan.skipped_dup,
                       "skipped_invalid": scan.skipped_invalid, "truncated": scan.truncated,
@@ -1376,10 +1376,19 @@ class Session:
         """Late-join pull of the cumulative corpus-ingest progress (a client connecting mid-drain)."""
         return True, self._corpus_body()
 
+    def _heavy_inference_active(self) -> bool:
+        """Memory firewall (Slice 4 hardening): True when a heavy model context is already resident/active —
+        the daemon's Metal decode, an off-loop SummaryJob, or a distillation worker. The corpus drain yields
+        to these so only ONE heavy model is ever active at a time (19 GB unified-memory safety; the freeze)."""
+        return self._localbrain.busy or self._overnight.offloading or bool(self._learn_jobs)
+
     def _drain_corpus(self) -> None:
-        """AC-gated, SERIAL bulk-ingest drain (one triage_file at a time — concurrent 7B/CPU workers would
-        thrash). On battery it idles; the durable queue + reset_running() resume it on AC / after a restart."""
+        """AC-gated, SERIAL bulk-ingest drain (one triage_file at a time — concurrent model workers would
+        thrash). Blocks (auto-resumes next idle tick) while another heavy model context is active. On battery
+        it idles; the durable queue + reset_running() resume it on AC / after a restart."""
         if not self._on_ac_power():
+            return
+        if self._heavy_inference_active():     # memory firewall: yield to the primary/live model context
             return
         if any(e.get("tid") is not None for e in self._triage_jobs.values()):   # one bulk scan at a time
             return
