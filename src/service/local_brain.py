@@ -21,6 +21,7 @@ from __future__ import annotations
 import os
 import queue
 import threading
+import time
 
 # The inference entry points on the model — these acquire the context lock. Everything else (cloud_complete,
 # mode toggles, capability probes) is plain delegation: cloud I/O runs on its own thread and never touches
@@ -29,13 +30,21 @@ _SERIALIZED = frozenset({"generate", "generate_json", "generate_text", "to_claim
 
 
 class LocalBrain:
-    def __init__(self, llm: object) -> None:
+    def __init__(self, llm: object, idle_evict_s: float | None = None) -> None:
         self._llm = llm
         self._lock = threading.Lock()                 # the context is single-owner; serialize ALL access
         self._busy = False                            # a long async generation is in flight
         self._results: "queue.Queue[tuple]" = queue.Queue()
         self._r, self._w = os.pipe()                  # self-pipe: the worker wakes the select() loop
         os.set_blocking(self._r, False)
+        # Phase 1 (memory): unload the heavy model after it has been idle this long, so its ~4.2 GB isn't
+        # pinned while the user isn't using it (the 8/16 GB swap-freeze). Next call lazily reloads (~5 s).
+        self._idle_evict_s = (float(os.environ.get("NARS_JARVIS_MODEL_IDLE_SEC", "300"))
+                              if idle_evict_s is None else idle_evict_s)
+        self._last_use = time.monotonic()
+        self._evict_stop = threading.Event()
+        self._evictor = threading.Thread(target=self._evict_loop, name="model-evictor", daemon=True)
+        self._evictor.start()
 
     def __getattr__(self, name: str):
         # Only reached for names not found as real attributes (so the private fields/methods below are
@@ -47,7 +56,10 @@ class LocalBrain:
         if name in _SERIALIZED and callable(attr):
             def locked(*a, **k):
                 with self._lock:
-                    return attr(*a, **k)
+                    try:
+                        return attr(*a, **k)
+                    finally:
+                        self._last_use = time.monotonic()   # mark activity (reloads under this same lock)
             return locked
         return attr
 
@@ -65,6 +77,7 @@ class LocalBrain:
         """Decode one generation on a background thread. The result `(token, ok, text)` is queued and the
         self-pipe is poked so the select() loop drains it via `results()` on the next pass."""
         self._busy = True
+        self._last_use = time.monotonic()
         threading.Thread(target=self._run, args=(token, system, user, max_tokens),
                          name="localbrain", daemon=True).start()
 
@@ -77,6 +90,7 @@ class LocalBrain:
             self._results.put((token, False, str(exc)))
         finally:
             self._busy = False
+            self._last_use = time.monotonic()
             try:
                 os.write(self._w, b"x")               # wake the loop (it polls self._r)
             except OSError:
@@ -96,7 +110,37 @@ class LocalBrain:
                 break
         return out
 
+    # ── Phase 1 (memory): idle eviction of the heavy model, on a background timer ──
+    def _evict_loop(self) -> None:
+        """Wake every 30 s and unload the model if it has been idle past the threshold. Exits promptly on
+        close() (the Event short-circuits the wait)."""
+        while not self._evict_stop.wait(30.0):
+            try:
+                self._maybe_evict()
+            except Exception:  # noqa: BLE001 — a hiccup in maintenance must never take down the daemon
+                pass
+
+    def _maybe_evict(self) -> None:
+        """Unload the model iff it is loaded, not busy, and idle past the threshold. Acquires the SAME lock
+        every inference takes, so it can never evict mid-decode; the re-check under the lock closes the race
+        where a call arrives between the idle test and the lock."""
+        if self._busy:
+            return
+        if (time.monotonic() - self._last_use) < self._idle_evict_s:
+            return
+        if not getattr(self._llm, "loaded", False):           # nothing loaded (or DemoClaims) -> no-op
+            return
+        with self._lock:                                      # serialized against every context user
+            if self._busy or (time.monotonic() - self._last_use) < self._idle_evict_s:
+                return                                        # a decode raced in under the lock -> abort
+            evict = getattr(self._llm, "evict", None)
+            if callable(evict):
+                evict()
+
     def close(self) -> None:
+        self._evict_stop.set()                                # stop the evictor thread first
+        if self._evictor.is_alive():
+            self._evictor.join(timeout=1.0)
         for fd in (self._r, self._w):
             try:
                 os.close(fd)
