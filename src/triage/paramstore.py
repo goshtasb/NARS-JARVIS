@@ -52,6 +52,11 @@ class ParamStore:
                  int(p.is_qualitative), p.raw_quote, p.anchor.page, json.dumps(list(p.anchor.bbox)), now))
         self._db.commit()
 
+    def known_doc_ids(self) -> set[str]:
+        """The set of distinct source documents already ingested — Slice 4 dedup (skip a re-dropped folder's
+        contracts) and the corpus-size denominator for the bulk-ingest progress state."""
+        return {r[0] for r in self._db.execute("SELECT DISTINCT doc_id FROM clause_parameters").fetchall()}
+
     def rows(self, exclude_doc_id: str | None = None) -> list[dict]:
         sql = f"SELECT {', '.join(_COLS)} FROM clause_parameters"
         args: tuple = ()
