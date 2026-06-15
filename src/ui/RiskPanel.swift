@@ -1,0 +1,189 @@
+// Risk & Anomalies — the glass for the corpus-aware deviation engine (Slice 3b).
+//
+// A pure view builder (mirrors the DS enum): given a `deviation_scan` event body from the daemon, it
+// renders one card per scanned document and, inside a populated card, one DeviationRow per finding. It
+// owns NO state and NO interpretation: the daemon already decided strictness and handed us a `render`
+// class per finding (strict / neutral / unrankable / qualitative), so this file only maps that class to
+// AppKit styling. ActivityViewController holds the scan state and calls these builders.
+//
+// Contract note (factual): the baseline arrives as an AGGREGATE cohort {kind, median, n}, never a verbatim
+// "corpus quote" — "your standard" is the median across n of the user's own documents, not one of them.
+// `baselinePhrase` formats that aggregate for display (presentation only; it is not strictness logic).
+import AppKit
+
+enum RiskPanel {
+
+    // ── one card per scanned document ──
+    static func card(_ body: [String: Any]) -> NSView {
+        let doc = body["doc"] as? String ?? "document"
+        let state = body["state"] as? String ?? "pending"
+
+        let card = DS.rounded(bg: DS.card, radius: 11, border: DS.separator, borderWidth: 0.5)
+        card.translatesAutoresizingMaskIntoConstraints = false
+
+        let glyph = DS.symbol("doc.text.magnifyingglass", 16, .medium, DS.blue)
+        let head = NSStackView(views: [glyph, DS.text(doc, 13.5, .semibold, DS.label), NSView()])
+        head.orientation = .horizontal; head.spacing = 8; head.alignment = .centerY
+
+        let col = NSStackView(views: [head]); col.orientation = .vertical
+        col.alignment = .leading; col.spacing = 8
+        col.translatesAutoresizingMaskIntoConstraints = false
+        func add(_ v: NSView) { col.addArrangedSubview(v); v.widthAnchor.constraint(equalTo: col.widthAnchor).isActive = true }
+
+        switch state {
+        case "pending":  add(pendingView(body))
+        case "deferred": add(deferredView())
+        case "empty":    add(emptyView())
+        default:                                                        // populated
+            let findings = (body["findings"] as? [[String: Any]]) ?? []
+            if findings.isEmpty { add(emptyView()) } else { for f in findings { add(deviationRow(f)) } }
+        }
+
+        head.widthAnchor.constraint(equalTo: col.widthAnchor).isActive = true
+        card.addSubview(col)
+        NSLayoutConstraint.activate([
+            col.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 13),
+            col.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -13),
+            col.topAnchor.constraint(equalTo: card.topAnchor, constant: 11),
+            col.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -11),
+        ])
+        return card
+    }
+
+    // ── the four progressive states ──
+    static func pendingView(_ body: [String: Any]) -> NSView {
+        let n = body["salient_count"] as? Int ?? 0
+        let spin = NSProgressIndicator()
+        spin.style = .spinning; spin.controlSize = .small
+        spin.translatesAutoresizingMaskIntoConstraints = false
+        spin.startAnimation(nil)
+        let label = DS.text("Checking \(n) salient clause\(n == 1 ? "" : "s") against your corpus…",
+                            12, .regular, DS.label2)
+        let row = NSStackView(views: [spin, label, NSView()])
+        row.orientation = .horizontal; row.spacing = 8; row.alignment = .centerY
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.heightAnchor.constraint(equalToConstant: 26).isActive = true     // reserve space -> no layout shift
+        return row
+    }
+
+    static func emptyView() -> NSView {
+        badgeLine("checkmark.seal.fill", DS.green, "No deviations found against your baseline.")
+    }
+
+    static func deferredView() -> NSView {
+        badgeLine("bolt.slash.fill", DS.amber, "Scan deferred: system on battery power.")
+    }
+
+    private static func badgeLine(_ symbol: String, _ color: NSColor, _ text: String) -> NSView {
+        let g = DS.symbol(symbol, 14, .medium, color)
+        let row = NSStackView(views: [g, DS.text(text, 12, .regular, DS.label2, wrap: true), NSView()])
+        row.orientation = .horizontal; row.spacing = 8; row.alignment = .centerY
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.heightAnchor.constraint(greaterThanOrEqualToConstant: 26).isActive = true
+        return row
+    }
+
+    // ── the DeviationRow: the core visual atom (both sides always visible) ──
+    static func deviationRow(_ f: [String: Any]) -> NSView {
+        let render = f["render"] as? String ?? "neutral"
+        let color = renderColor(render)
+        let this = f["this"] as? [String: Any] ?? [:]
+        let newQuote = this["raw_quote"] as? String ?? ""
+        let baseline = f["baseline"] as? [String: Any]
+
+        let bg = color.withAlphaComponent(render == "strict" ? 0.12 : 0.06)
+        let row = DS.rounded(bg: bg, radius: 8, border: color.withAlphaComponent(0.30), borderWidth: 0.5)
+        row.translatesAutoresizingMaskIntoConstraints = false
+
+        let head = NSStackView(views: [DS.symbol(renderGlyph(render), 12, .bold, color),
+                                       DS.text(title(f["clause_type"] as? String ?? ""), 12.5, .semibold, DS.label),
+                                       verdictBadge(f["verdict"] as? String, render, color), NSView()])
+        head.orientation = .horizontal; head.spacing = 6; head.alignment = .centerY
+
+        let col = NSStackView(views: [head]); col.orientation = .vertical; col.alignment = .leading; col.spacing = 4
+        col.translatesAutoresizingMaskIntoConstraints = false
+        func add(_ v: NSView) { col.addArrangedSubview(v); v.widthAnchor.constraint(equalTo: col.widthAnchor).isActive = true }
+
+        if render == "qualitative" {
+            add(DS.text("Qualitative term — manual review required.", 12, .regular, DS.label2, wrap: true))
+            if !newQuote.isEmpty { add(quoteLine("This contract", newQuote)) }
+        } else {
+            // never just the verdict word: ALWAYS show this contract's quote AND the corpus standard.
+            if !newQuote.isEmpty { add(quoteLine("This contract", newQuote)) }
+            if let b = baseline { add(quoteLine("Your standard", baselinePhrase(b))) }
+        }
+
+        head.widthAnchor.constraint(equalTo: col.widthAnchor).isActive = true
+        row.addSubview(col)
+        NSLayoutConstraint.activate([
+            col.leadingAnchor.constraint(equalTo: row.leadingAnchor, constant: 10),
+            col.trailingAnchor.constraint(equalTo: row.trailingAnchor, constant: -10),
+            col.topAnchor.constraint(equalTo: row.topAnchor, constant: 8),
+            col.bottomAnchor.constraint(equalTo: row.bottomAnchor, constant: -8),
+        ])
+        return row
+    }
+
+    private static func quoteLine(_ label: String, _ quote: String) -> NSView {
+        let col = NSStackView(views: [DS.text(label.uppercased(), 10, .semibold, DS.label3),
+                                      DS.text("“\(quote)”", 12, .regular, DS.label, wrap: true, selectable: true)])
+        col.orientation = .vertical; col.alignment = .leading; col.spacing = 1
+        col.translatesAutoresizingMaskIntoConstraints = false
+        return col
+    }
+
+    private static func verdictBadge(_ verdict: String?, _ render: String, _ color: NSColor) -> NSView {
+        DS.pill(verdictWord(verdict), symbol: renderGlyph(render), color: color)
+    }
+
+    // ── render-class -> styling (the only mapping this file owns) ──
+    private static func renderColor(_ r: String) -> NSColor {
+        switch r {
+        case "strict":      return DS.amber                  // duration TIGHTER/LOOSER — warn, both quotes
+        case "qualitative": return DS.blue                   // info badge — manual review
+        default:            return DS.grey                   // neutral / unrankable — factual, no strictness color
+        }
+    }
+    private static func renderGlyph(_ r: String) -> String {
+        switch r {
+        case "strict":      return "exclamationmark.triangle.fill"
+        case "qualitative": return "info.circle.fill"
+        default:            return "arrow.left.arrow.right"
+        }
+    }
+    private static func verdictWord(_ v: String?) -> String {
+        switch v {
+        case "TIGHTER":                    return "Tighter"
+        case "LOOSER":                     return "Looser"
+        case "INCOMPARABLE_QUALITATIVE":   return "Qualitative"
+        case "DIFFERS_IN_KIND_UNRANKABLE": return "Differs"
+        case "EQUAL":                      return "Equal"
+        default:                           return "Flagged"
+        }
+    }
+    private static func title(_ clauseType: String) -> String {
+        clauseType.split(separator: "_")
+            .map { String($0.prefix(1)).uppercased() + String($0.dropFirst()) }
+            .joined(separator: " ")
+    }
+
+    /// Presentation-only: the aggregate cohort median rendered for the human (NOT a verbatim corpus quote).
+    private static func baselinePhrase(_ b: [String: Any]) -> String {
+        let kind = b["kind"] as? String ?? ""
+        let n = b["n"] as? Int ?? 0
+        let median = (b["median"] as? Double) ?? Double((b["median"] as? Int) ?? 0)
+        let noun: String
+        switch kind {
+        case "duration_calendar", "duration_business": noun = "\(fmtNum(median)) hours"
+        case "percent":                                 noun = "\(fmtNum(median))%"
+        default:                                        noun = fmtNum(median)   // money / count / other
+        }
+        return n > 0 ? "≈ \(noun)  (median of \(n))" : "≈ \(noun)"
+    }
+    private static let grouping: NumberFormatter = {
+        let f = NumberFormatter(); f.numberStyle = .decimal; f.maximumFractionDigits = 2; return f
+    }()
+    private static func fmtNum(_ d: Double) -> String {
+        grouping.string(from: NSNumber(value: d)) ?? String(d)
+    }
+}
