@@ -25,6 +25,10 @@ from .summary_job import SummaryJob
 
 # Heavy actions that must run off the loop (detached worker), keyed to the SummaryJob construct.
 _OFFLOAD = {"summarize_file"}
+# Action kinds owned by a DIFFERENT consumer of the shared queue (Slice 4: Session._drain_corpus drives the
+# corpus deviation scans). The runner must never pick these up — otherwise it disposes them as "unknown
+# action" before the corpus drainer can spawn the triage worker (the queue-collision regression).
+_NOT_OURS = ("triage_file",)
 
 
 class OvernightRunner:
@@ -51,7 +55,8 @@ class OvernightRunner:
     def start(self) -> int:
         """Begin (or resume) draining the queue. Reverts any crash-orphaned 'running' rows to pending."""
         self._queue.reset_running()
-        pending = sum(1 for r in self._queue.list_all() if r["status"] == "pending")
+        pending = sum(1 for r in self._queue.list_all()
+                      if r["status"] == "pending" and r["action"] not in _NOT_OURS)
         self._active = pending > 0
         self._emit("overnight_started", {"queued": pending})
         return pending
@@ -66,7 +71,7 @@ class OvernightRunner:
             self.start()                                    # ADR-053: a scheduled task came due -> auto-start
         if not self._active:
             return
-        task = self._queue.next_pending(now)
+        task = self._queue.next_pending(now, exclude_actions=_NOT_OURS)   # never steal the corpus drain's tasks
         if task is None:                                    # queue drained -> done
             self._active = False
             if self._on_idle_maintenance is not None:       # v1.24.0 Step 3: L2 decay sweep on idle
