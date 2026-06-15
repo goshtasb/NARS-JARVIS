@@ -67,13 +67,19 @@ class OvernightQueue:
         self._db.commit()
         return cur.lastrowid
 
-    def next_pending(self, now: float | None = None) -> dict | None:
+    def next_pending(self, now: float | None = None, exclude_actions: tuple[str, ...] = ()) -> dict | None:
         """The next runnable task: pending AND either manual (run_at NULL) or scheduled-and-due
-        (run_at <= now). A task scheduled for the future is invisible here until its time arrives."""
-        row = self._db.execute(
-            "SELECT id,action,arg FROM overnight_queue "
-            "WHERE status='pending' AND (run_at IS NULL OR run_at <= ?) ORDER BY id LIMIT 1",
-            (_now(now),)).fetchone()
+        (run_at <= now). A task scheduled for the future is invisible here until its time arrives.
+        `exclude_actions` lets a consumer skip action kinds it does not own — the OvernightRunner passes
+        the corpus drain's `triage_file` so the two consumers of this shared queue never collide."""
+        sql = ("SELECT id,action,arg FROM overnight_queue "
+               "WHERE status='pending' AND (run_at IS NULL OR run_at <= ?)")
+        args: tuple = (_now(now),)
+        if exclude_actions:
+            sql += " AND action NOT IN (%s)" % ",".join("?" * len(exclude_actions))
+            args += tuple(exclude_actions)
+        sql += " ORDER BY id LIMIT 1"
+        row = self._db.execute(sql, args).fetchone()
         return {"id": row[0], "action": row[1], "arg": row[2]} if row else None
 
     def due_scheduled(self, now: float | None = None) -> int:

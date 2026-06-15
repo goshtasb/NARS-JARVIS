@@ -1365,8 +1365,8 @@ class Session:
             self._overnight_queue.enqueue("triage_file", p)
         if scan.truncated:
             sys.stderr.write(f"[corpus] {scan.truncated} file(s) over the per-import cap were not queued\n")
-        if not self._overnight.active:                 # wake the AC-gated drain loop if it was idle
-            self._overnight.start()
+        # NOTE: do NOT start the OvernightRunner here — triage_file is drained by the tick-driven
+        # _drain_corpus (a separate consumer); the runner explicitly skips triage_file (_NOT_OURS).
         self._emit_corpus_progress()
         return True, {"queued": len(scan.to_enqueue), "skipped_dup": scan.skipped_dup,
                       "skipped_invalid": scan.skipped_invalid, "truncated": scan.truncated,
