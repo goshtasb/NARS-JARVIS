@@ -17,6 +17,7 @@ final class ActivityViewController: NSViewController {
     private var activitySig: String?   // Activity rows are terminal; skip the 1 Hz teardown when unchanged
     private var summarySig: String?    // ADR-058: same skip for the Summary tab's archived rows
     private var scans: [String: [String: Any]] = [:]   // Slice 3b: doc -> latest deviation_scan body
+    private var corpus: [String: Any] = [:]            // Slice 4: latest corpus_progress body
     private var riskSig: String?       // skip the teardown when the deviation set is unchanged
 
     override func loadView() {
@@ -80,10 +81,13 @@ final class ActivityViewController: NSViewController {
             }
             return
         }
-        if sub == 4 {                            // Slice 3b: the Risk & Anomalies panel (late-join pull)
+        if sub == 4 {                            // Slice 3b/4: the Risk & Anomalies panel (late-join pull)
             client?.call("triage_scans") { [weak self] _, body in
                 let rows = (body["rows"] as? [[String: Any]]) ?? []
                 DispatchQueue.main.async { self?.ingestScans(rows); self?.renderRisk() }
+            }
+            client?.call("corpus_status") { [weak self] _, body in       // Slice 4: the bulk-ingest banner
+                DispatchQueue.main.async { self?.corpus = body; self?.renderRisk() }
             }
             return
         }
@@ -107,6 +111,35 @@ final class ActivityViewController: NSViewController {
         }
     }
 
+    /// Live `corpus_progress` push (Slice 4 bulk ingest). AppDelegate forwards it here.
+    func onCorpusProgress(_ body: [String: Any]) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.corpus = body
+            if self.sub == 4 { self.renderRisk() }
+        }
+    }
+
+    private func riskHeader() -> NSView {
+        let btn = DSButton("Connect a folder…", symbol: "folder.badge.plus", variant: .secondary, size: 12) {
+            [weak self] in self?.connectFolder()
+        }
+        let row = NSStackView(views: [btn, NSView()]); row.orientation = .horizontal; row.alignment = .centerY
+        return row
+    }
+
+    private func connectFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false
+        panel.prompt = "Connect"; panel.message = "Connect a folder of historical contracts to build your deviation baseline."
+        panel.begin { [weak self] resp in
+            guard resp == .OK, let url = panel.url else { return }
+            self?.client?.call("corpus_ingest", ["path": url.path]) { _, _ in
+                DispatchQueue.main.async { self?.refresh() }
+            }
+        }
+    }
+
     private func renderRisk() {
         // action-required (populated) floats to the top, then in-flight, then deferred, then the all-clear.
         let order = ["populated": 0, "pending": 1, "deferred": 2, "empty": 3]
@@ -114,14 +147,17 @@ final class ActivityViewController: NSViewController {
             let a = order[$0["state"] as? String ?? ""] ?? 9, b = order[$1["state"] as? String ?? ""] ?? 9
             return a != b ? a < b : ($0["doc"] as? String ?? "") < ($1["doc"] as? String ?? "")
         }
-        let sig = items.map { r in
+        let cs = "\(corpus["state"] as? String ?? "")|\(corpus["done"] as? Int ?? -1)|\(corpus["total"] as? Int ?? -1)"
+        let sig = cs + "‖" + items.map { r in
             "\(r["doc"] as? String ?? "")|\(r["state"] as? String ?? "")|\((r["findings"] as? [[String: Any]])?.count ?? 0)|\(r["salient_count"] as? Int ?? -1)"
         }.joined(separator: "¦")
         if sig == riskSig { return }             // unchanged → don't tear down (e.g. the spinner) on the 1 Hz poll
         riskSig = sig
         list.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        let rows: [NSView] = items.isEmpty
-            ? [emptyRow("No documents scanned yet.  Brief a contract from Chat and its deviations appear here.")]
+        var rows: [NSView] = [riskHeader()]                       // the persistent "Connect a folder…" affordance
+        if let banner = RiskPanel.banner(corpus) { rows.append(banner) }   // Slice 4: compounding-baseline progress
+        rows += items.isEmpty
+            ? [emptyRow("No deviations yet.  Connect a folder of contracts (above) or brief one from Chat.")]
             : items.map { RiskPanel.card($0) }
         for r in rows {
             list.addArrangedSubview(r)
@@ -155,6 +191,9 @@ final class ActivityViewController: NSViewController {
                 ["doc": "Delta-SOW.pdf", "state": "deferred", "reason": "on_battery"],
             ]
             scans = [:]; for d in demo { if let doc = d["doc"] as? String { scans[doc] = d } }
+            corpus = ["state": "ingesting", "done": 12, "total": 50, "failed": 0, "in_flight": 38,
+                      "corpus_size": 12,
+                      "label": "Corpus baseline: 12 of 50 documents ingested. Deviation confidence improving."]
             renderRisk(); return
         }
         let nowRows: [[String: Any]] = [
