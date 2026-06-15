@@ -1,0 +1,94 @@
+# spikes
+
+Throwaway, reproducible experiments that validate (or kill) an architectural assumption **before** it's
+built. Not production code; not part of the test suite. Each script is self-contained and prints its result.
+
+## `tripartite_openworld_spike.py` — NARS vs embeddings, open-world tasks (ADR-060)
+The bake-off behind [ADR-060](../docs/adrs/ADR-060-tripartite-neurosymbolic-architecture.md). On a dummy
+20-contract corpus it pits a local embedding baseline (nomic via `llama_cpp`) against the real ONA engine
+(`brain.Brain`) on three open-world tasks: **novelty**, **anomalous omission**, and **compositional risk**.
+
+Run (from repo root, needs the ONA binary at `OpenNARS-for-Applications/NAR` and the nomic GGUF in `models/`):
+```sh
+python3 spikes/tripartite_openworld_spike.py
+```
+
+**Result captured in ADR-060 (this run):**
+- Novelty → embeddings win (cosine 0.571 flagged; NARS has no native novelty signal).
+- Omission → tie (embeddings centroid 0.499; NARS induced `has_liability_cap` f=1.0, c=0.85, no hand-written rule).
+- Compositional risk → **NARS wins**: derived `audit → data_access → high_risk` (f=1.0, c=0.73) **with a
+  provenance chain**; embeddings could only report 0.505 similarity, no conclusion.
+
+**Honest scope:** toy scale (3 hand-fed ontology edges, 20 trivial contracts). Proves the *capability exists*
+on the real engine; does **not** prove it scales, that the ontology is authorable, or that multi-hop
+confidence holds at depth. See ADR-060 "The Ontology Bottleneck."
+
+## `ontology_edge_proposal.py` — can a 7B *propose* the ontology edges? (ADR-060 bottleneck)
+The previous spike **hand-fed** the ontology edges; this one tests the harder, real question from ADR-060's
+"Ontology Bottleneck": can a local 7B *generate* `(source, relation, target)` edges from raw clause text,
+under a GBNF grammar + closed risk-concept vocab + 3× temperature-consensus + verbatim-quote grounding?
+
+Run (needs the 7B GGUF in `models/`; CUAD was unavailable offline, so 16 curated real-style clauses stand in):
+```sh
+python3 spikes/ontology_edge_proposal.py
+```
+
+**Result (first run): NEGATIVE / inconclusive — reported as-is, not spun.**
+- **Yield collapse:** only **2 edges** survived from 16 clauses; **density 0.12 edges/clause** — the failure
+  is severe *under*-extraction, the opposite of the feared combinatorial explosion.
+- **Grounding ≠ correctness (empirically):** both survivors passed the verbatim-quote gate (0% fabricated
+  quotes), yet one — `indemnity --requires--> indemnity` — is a **logically degenerate self-loop**. A
+  nonsense edge cleared the grounding gate.
+- **Dedup/fatigue hypothesis: untestable** at this yield (nothing to deduplicate).
+- **κ NOT COMPUTED** — no independent second labeler available in this sandbox (no human; no API key for a
+  frontier proxy; offline). Not faked.
+
+**Prime suspect:** strict **3-of-3 full-tuple consensus** over-filtered — a generative 7B mapping free text
+onto a closed vocab doesn't pick the identical canonical tuple three times running, so `stable_across`
+annihilated almost everything. Partly a harness artifact, not purely model weakness. **Needs a controlled
+re-run** (relax to 2-of-3, add few-shot exemplars, forbid self-loops in the grammar) to separate
+model-weakness from filter-strictness before any conclusion.
+
+**Bottom line:** the ontology bottleneck is **harder than the hand-fed toy implied**. This first run does not
+validate the "LLM proposes edges" leg of ADR-060 — it's a red flag requiring iteration.
+
+## `ontology_edge_ablation.py` — controlled re-run: was the collapse harness or model?
+Phase-1 ablation isolating *why* the first run collapsed. It does **not** loosen precision: it replaces the
+recall-killing **3×-temperature** consensus (correlated voters) with a **decorrelated, precision-biased** gate —
+
+    admit e  ⟺  grounded_verbatim(e)  ∧  source ≠ target  ∧  invariant_across(SetA, SetB)
+
+Two few-shot sets with **disjoint node vocabularies** teach the same *form*; an edge must survive **both**
+primings (a mimicked edge tracks its prompt and dies under the other set). A **contamination control**
+(placebo clauses) measures the leak rate of exact exemplar edges — the mathematical mimicry proof.
+`source ≠ target` is a post-parse filter because GBNF is context-free and cannot enforce inequality.
+Run: `python3 spikes/ontology_edge_ablation.py` (set `ABLATION_MODEL=…` to swap the local weight).
+
+**Results (16 clauses; 7B-instruct, size-controlled 7B-coder, then the 14B arm):**
+| | run 1 (0-shot, 3×temp) | 7B-instruct | 7B-coder | 14B-instruct |
+|---|---|---|---|---|
+| raw edges/prompt | collapsed | 14/13 | 9/7 | 19/20 |
+| prompt-invariant (pre-gate) | 2 | ~3 | ~3 | ~10 |
+| noise ratio (non-invariant) | — | ~78% | ~67% | ~49% |
+| admitted (gated) | 2 | 3 | 3 | 6 |
+| density (edges/clause) | 0.12 | 0.19 | 0.19 | 0.38 |
+| degenerate self-loops | 1 (survived) | **0** | **0** | 3 (filtered) |
+| contamination_rate | — | **0% (0/4)** | **0% (0/4)** | **0% (0/4)** |
+| κ | not computed | not computed | not computed | not computed |
+
+- **Collapse was substantially a harness artifact:** models emit 9–20 edges/prompt — never silent;
+  3×-temperature intersection strangled it. Self-loop gone under the new gate (for the 7Bs).
+- **The ceiling is partly hardware-bound:** 7B→14B roughly **halved noise (78%→49%)** and **doubled yield
+  (3→6) and density (0.19→0.38)**. The feared "14B still ~75% noise" kill condition did NOT occur.
+- **But not solved:** the 14B emitted a **cross-clause false edge** (`limitation_of_liability --excludes-->
+  force_majeure`) that passed verbatim grounding — grounding ≠ correctness, the exact blast-radius failure
+  mode. It also produced **more** self-loops (3, caught only by the degeneracy filter).
+- **Mimicry not detected** at any scale: contamination 0% (n=4 placebo — disconfirms gross mimicry, not
+  subtle bias).
+- **κ still uncomputable** (no human/frontier labeler, offline). Per-edge "looks right" is the author's read,
+  explicitly discounted — NOT a precision metric.
+
+**Verdict:** scaling helps but does not make the LLM an autonomous author — even the 14B is a **better
+*proposer* (≈half-signal, one-click-reject) that still needs a human gate**, not an auto-committer. That
+points to a **human-in-the-loop confirmation UX** regardless of model size. The real precision gate (CUAD +
+an independent κ labeler) remains required before any production claim — this offline sandbox cannot provide it.

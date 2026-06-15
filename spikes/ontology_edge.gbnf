@@ -1,0 +1,7 @@
+root ::= ws "[" ws ( edge ( ws "," ws edge )* )? ws "]" ws
+edge ::= "{" ws "\"source\"" ws ":" ws node ws "," ws "\"relation\"" ws ":" ws rel ws "," ws "\"target\"" ws ":" ws node ws "," ws "\"quote\"" ws ":" ws ev ws "}"
+node ::= "\"audit_rights\"" | "\"data_access\"" | "\"personal_data\"" | "\"breach_notice\"" | "\"limitation_of_liability\"" | "\"indemnity\"" | "\"confidentiality\"" | "\"term\"" | "\"termination\"" | "\"governing_law\"" | "\"ip_assignment\"" | "\"payment_term\"" | "\"warranty\"" | "\"force_majeure\"" | "\"sub_processor\"" | "\"dispute_resolution\"" | "\"security_obligation\""
+rel ::= "\"involves\"" | "\"requires\"" | "\"excludes\"" | "\"triggers\"" | "\"grants\"" | "\"limits\""
+ev ::= "\"" ec* "\""
+ec ::= [a-zA-Z0-9] | " " | "-" | "." | "," | "(" | ")" | "/" | ";" | ":" | "'" | "%"
+ws ::= [ \t\n]*
