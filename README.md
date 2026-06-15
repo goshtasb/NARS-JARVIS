@@ -134,7 +134,8 @@ Safety isn't a feature here; it's the architecture. The guarantees:
 ## What it can do today
 
 Each capability links to the Architecture Decision Record (ADR) that documents how and why it was built.
-Released in tagged increments **v1.0.0 → v1.23.0**; **625 automated tests** currently pass.
+Released in tagged increments **v1.0.0 → v1.23.0**, plus the Phase-2 document-triage engine merged since;
+**780 automated tests** currently pass.
 
 ### The Dual-Brain & the Cognitive Vault (ADR-056) — the headline
 Every On-device question runs a strict, descending **3-tier cascade** — local truth first, the cloud only
@@ -155,6 +156,29 @@ as a last resort:
 
 Local, **content-free** metrics (First-Ask Local Grounding Rate, Stamp-Age Depth, Flywheel Close Rate)
 track that the vault compounds over time — computed on-device, never phoned home.
+
+### Document triage & corpus-aware deviation (ADR-059)
+Drop in a born-digital commercial agreement (NDA/MSA/DPA) and JARVIS builds a salience-ranked **triage map**,
+extracts its operative SLA parameters ("notify within 72 hours", "$5M cap"), and flags how each one
+**deviates from your *own* corpus** of previously-ingested contracts — surfaced in the **Activity › Risk**
+panel with the verbatim quote, a page citation, and a plain-English reason. It's a **dual-engine** design,
+stated honestly:
+
+- **A deterministic symbolic engine does the comparison** — plain Python over a SQLite parameter store
+  (`statistics.median` per-kind cohorts + a partial-order comparator), **hallucination-free by construction**
+  because the math never runs a model: business days compare as a calendar floor with an open upper
+  (`n biz ≥ n cal`, no holiday calendar); months/years as intervals (no false precision); qualitative terms
+  ("promptly") are declared incomparable, never measured; money/% magnitudes are shown as neutral facts, not
+  ranked (Mirror-not-Advisor).
+- **The LLM is touched at one boundary only** (`extract.py`, AST-guarded): GBNF-constrained, 3×-consensus,
+  source-grounded reading of English into structured parameters. Everything else is model-free.
+- **This is *not* NARS.** The deviation math is symbolic-deterministic Python; NARS/ONA powers a *separate*
+  feature (belief distillation). The baseline is *your* corpus, never market norms (which would be stale
+  legal-advisory liability).
+
+Bulk onboarding ("connect a folder") ingests a back-catalogue so the baseline compounds; the heavy
+extraction runs off-loop in its own model subprocess, AC-gated, with the conversational model lazy-evicted so
+a scan never stacks two models. ([ADR-059])
 
 ### Conversation & memory
 - **Chat in plain English** — ask questions, give it facts to remember. ([ADR-007], [ADR-008])
@@ -283,6 +307,7 @@ Dependencies flow inward toward `shared/`; modules never reach into each other's
 | `habits/` | Habit quantization (time/day/app buckets) + the durable habit store. |
 | `overnight/` | The overnight queue, the durable held-action ledger, and the read-only safety classifier. |
 | `sentinel/` | The machine-watching second brain: discretizer, surprise detector, narration. |
+| `triage/` | Document triage + the **deterministic** corpus-aware deviation engine (structure → extract → normalize → compare). Model-free except the AST-guarded `extract.py` boundary; **not** NARS. ([ADR-059]) |
 | `execution/` | A sandboxed execution tier (closed typed catalog + autonomy predicate); network-locked. |
 | `context/` | Renders live context (habits, system state) into prompts. |
 | `service/` | The daemon: the `select()` server, the session/dispatch plane, and all the loops. |
@@ -307,7 +332,9 @@ Dependencies flow inward toward `shared/`; modules never reach into each other's
 ## Getting started
 
 > **Platform:** macOS on **Apple Silicon** (the local 7B needs Metal; Intel would be unusably slow,
-> so it isn't pretended at). Expect ~4.5 GB of RAM resident for the model. Everything runs offline.
+> so it isn't pretended at). The conversational model **lazy-loads and idle-evicts** (~4.5 GB resident only
+> while in use; ≈0 idle, unloaded after 5 min). **16 GB+ recommended** — the contract-triage feature
+> currently needs the 7B for extraction. Everything runs offline.
 
 ### The one-command way
 
@@ -347,7 +374,7 @@ sh src/ui/restart.sh                   # launch the daemon + app (🔵 appears i
 python3 -m playwright install chromium # one-time ~160MB; without it the web layer stays static-only
 
 # 5. Run the tests
-cd src && python3 -m pytest .          # 519 passing
+cd src && python3 -m pytest .          # 780 passing
 ```
 
 > The reference folders (`OpenNARS-for-Applications/`, `NARS-GPT/`, `OmniGlass/`) and your model weights
@@ -377,6 +404,9 @@ Built so far: a complete **compose → queue → run (safely) → review** overn
 habit-learning brain with a dashboard, conversational + GUI actions behind consent, and voice. Natural
 next steps (and things deliberately deferred, stated honestly):
 
+- **8 GB tier for contract triage** — a ~150 MB task-specific extraction model (+ a leaner conversational
+  tier) so the deviation engine fits 8/16 GB machines, not just 16 GB+; plus a fix for the months/years
+  deviation false-positive. (Tracked in GitHub issues #24, #26.)
 - **More document formats** — `.docx` / `.pptx` extraction (PDF + text already work).
 - **Drag-and-drop + a "Context Tray"** — drop a folder of files into the Batch Canvas (today: click-to-add
   + a native file picker; no drag/drop infrastructure yet).
@@ -455,6 +485,11 @@ editing working code. Common extension points:
 - **The local 7B is a 7B** — summaries are useful scaffolding, not a human analyst, and quality/endurance
   over long overnight runs is something this project measures rather than assumes.
 - **You bring the model** — no weights are shipped; offline-only by design.
+- **Contract triage needs a capable model and ~16 GB.** Its parameter extraction runs on the local 7B (a
+  general 0.5B was tried and hallucinated values, so it was rolled back); an 8 GB-friendly, task-specific
+  extractor is in progress. The conversational model now lazy-loads and idle-evicts (idle RAM ≈ 0). One
+  known deviation-engine bug: identical months/years values are over-reported as "differs" (interval
+  comparison) — being fixed.
 - **Single machine, single user.** No multi-user, no remote access, no scheduler yet.
 - **Web research turns take 45–60 seconds** — the assistant reads up to three rendered pages and makes
   several model decisions per research answer. Bounded and logged, but not instant. Plain chat turns
@@ -512,3 +547,4 @@ separately are governed by their own (MIT) licenses.
 [ADR-048]: docs/adrs/ADR-048-sentinel-autostart.md
 [ADR-049]: docs/adrs/ADR-049-context-orchestration-layer.md
 [ADR-050]: docs/adrs/ADR-050-passive-observation-mirror.md
+[ADR-059]: docs/adrs/ADR-059-document-triage-deviation-engine.md
