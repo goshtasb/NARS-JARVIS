@@ -7,8 +7,9 @@ future reference.
 
 | Document | Scope | Status |
 |---|---|---|
-| [PRD.md](PRD.md) | The foundational PRD — NARS-JARVIS as a local, learning, explainable cognitive assistant. Source of truth for overall scope. | Living |
-| [PRODUCT-BRIEF.md](PRODUCT-BRIEF.md) | The original product brief for NARS-JARVIS (vision, audience, value proposition). | Ratified |
+| [PRD.md](PRD.md) | **Current directional source of truth** — JARVIS as the Zero-Leak Neurosymbolic (Tripartite) contract-review layer. | **Proposed pivot** — moat pending the ontology spike; layers 2–3 unbuilt |
+| [PRD-v1-assistant.md](PRD-v1-assistant.md) | The **v1 as-built** PRD — NARS-JARVIS as a local, learning, explainable cognitive assistant (chat/habits/Sentinel/overnight; shipped, ~780 tests). Superseded *in direction* by PRD.md; kept as the accurate as-built record. | As-built (superseded-in-direction) |
+| [PRODUCT-BRIEF.md](PRODUCT-BRIEF.md) | The original product brief for NARS-JARVIS (vision, audience, value proposition). | Ratified (v1) |
 | [ADR-049-context-orchestration-brief.md](ADR-049-context-orchestration-brief.md) | The Context Orchestration Layer — tiered verified-actuation backend that gives JARVIS "muscles"; includes the locked 4-step implementation roadmap and the go-gate to the Passive Observer. | Ratified; bootstrap shipped (v1.15.0), remaining steps post-validation |
 | [ADR-050-passive-mirror-brief.md](ADR-050-passive-mirror-brief.md) | The Passive Observation Mirror ("What I've noticed about your computer use") + the falsifiable validation experiment (data-sufficiency gate, 4 criteria, decision logic, scope limits). | Ratified & deployed (v1.16.x); in validation |
 
