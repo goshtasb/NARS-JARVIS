@@ -101,3 +101,75 @@ def test_corpus_ingest_rejects_non_folder(tmp_path) -> None:
         assert ok is False and "Not a folder" in body["text"]
     finally:
         s.close()
+
+
+def test_triage_model_path_prefers_3b_then_falls_back() -> None:
+    from service.triage_worker import triage_model_path
+    assert triage_model_path({"NARS_JARVIS_TRIAGE_GGUF": "/m/3b.gguf",
+                              "NARS_JARVIS_LLM_GGUF": "/m/7b.gguf"}) == "/m/3b.gguf"   # prefer the light model
+    assert triage_model_path({"NARS_JARVIS_LLM_GGUF": "/m/7b.gguf"}) == "/m/7b.gguf"   # fall back to the daemon's
+    assert triage_model_path({}) is None                                              # neither -> LocalLLM raises
+
+
+def test_drain_firewall_holds_while_a_heavy_model_is_active(tmp_path) -> None:
+    """Memory firewall: while a heavy model context (Metal decode / SummaryJob / distillation) is active, the
+    corpus drain must HOLD (auto-resume next idle tick) so two heavy contexts never co-reside (the freeze)."""
+    s = Session(db_path=str(tmp_path / "j.db"))
+    try:
+        s._on_ac_power = lambda: True
+        spawned: list = []
+        s._spawn_triage = lambda path, tid=None: spawned.append((path, tid))
+        s._overnight_queue.enqueue("triage_file", "/x/a.pdf")
+
+        s._localbrain._busy = True                 # daemon's Metal 7B mid-decode
+        s._drain_corpus(); assert spawned == []    # held
+
+        s._localbrain._busy = False
+        s._overnight._job = object()               # an off-loop SummaryJob (~7B) resident
+        s._drain_corpus(); assert spawned == []    # still held
+        s._overnight._job = None
+
+        s._learn_jobs[-1] = {"job": None}          # a distillation worker (~7B) resident
+        s._drain_corpus(); assert spawned == []    # still held
+        del s._learn_jobs[-1]
+
+        s._drain_corpus()                          # all clear -> resumes
+        assert len(spawned) == 1 and spawned[0][0] == "/x/a.pdf"
+    finally:
+        s.close()
+
+
+def test_next_pending_excludes_actions(tmp_path) -> None:
+    from overnight.store import OvernightQueue
+    q = OvernightQueue(str(tmp_path / "q.db"))
+    try:
+        a = q.enqueue("triage_file", "/a.pdf"); b = q.enqueue("report_system", "")
+        assert q.next_pending()["id"] == a                                   # default: head is the triage_file
+        assert q.next_pending(exclude_actions=("triage_file",))["id"] == b   # excluded -> the next task
+        q.mark(b, "done")
+        assert q.next_pending(exclude_actions=("triage_file",)) is None      # only triage_file left -> None
+    finally:
+        q.close()
+
+
+def test_overnight_runner_does_not_steal_triage_file(tmp_path) -> None:
+    """Regression for the queue-collision bug: the OvernightRunner and the corpus drainer share one queue.
+    The runner must SKIP triage_file (it previously disposed them as 'I don't know how to do that' before
+    the drainer could spawn the worker), while still processing real tasks queued behind them."""
+    s = Session(db_path=str(tmp_path / "j.db"))
+    try:
+        s._on_ac_power = lambda: True
+        spawned: list = []
+        s._spawn_triage = lambda path, tid=None: spawned.append((path, tid))
+        t_tri = s._overnight_queue.enqueue("triage_file", "/x/a.pdf")   # head of queue (lowest id)
+        t_real = s._overnight_queue.enqueue("report_system", "")        # a real task queued BEHIND it
+        s._overnight.start()
+        for _ in range(5):
+            s._overnight.advance()
+        rows = {r["id"]: r["status"] for r in s._overnight_queue.list_all()}
+        assert rows[t_tri] == "pending"        # the runner left the corpus task alone (was: stolen -> done)
+        assert rows[t_real] != "pending"       # and it was NOT blocked — it processed the real task behind it
+        s._drain_corpus()                      # the rightful owner now picks up the triage_file
+        assert spawned == [("/x/a.pdf", t_tri)]
+    finally:
+        s.close()
